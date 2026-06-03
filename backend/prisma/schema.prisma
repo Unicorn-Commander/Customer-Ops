@@ -1,0 +1,178 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+// Customer-Ops — the relationship / funnel cockpit of the
+// Unicorn Commander suite.
+//
+// PHASE 1 = the tenancy FOUNDATION only (the Workspace+Membership
+// tenancy boundary, SSO identity, the thin relationship projection,
+// RLS, and the MCP skeleton). The CRM cockpit (Contact-Ops / AO /
+// Outreach / Meeting-Ops federation surfaces) is Phase 2+.
+//
+// Customer-Ops is a SURFACE, not an engine: it OWNS the relationship
+// (the lifecycle stage + pipeline keyed on workspace_id + contactId)
+// and FEDERATES contacts, invoices, email, and meeting signal. It must
+// never become a second contact store or a second invoicing engine.
+// ============================================================
+
+// ============================================================
+// ENUMS
+// ============================================================
+
+// ── Suite tenancy (SUITE-IDENTITY.md §2 / §7) ────────────
+//
+// The canonical suite roles + membership lifecycle. Roles rank
+// viewer < member < manager < admin < owner (SUITE-IDENTITY §7).
+enum WorkspaceRole {
+  VIEWER
+  MEMBER
+  MANAGER
+  ADMIN
+  OWNER
+}
+
+enum MembershipStatus {
+  ACTIVE
+  SUSPENDED
+  REVOKED
+}
+
+// ── Relationship lifecycle stage (Customer-Ops OWNS this) ──
+//
+// The funnel the cockpit drives (README "The golden rule"): a "lead" is
+// just a federated Contact-Ops contact at an early `stage`. Customer-Ops
+// manages the stage transitions + the pipeline view; the contact record
+// itself never moves or copies. Phase 1 ships the three load-bearing
+// stages; richer sub-stages land with the Phase 2 cockpit.
+enum RelationshipStage {
+  LEAD
+  PROSPECT
+  CUSTOMER
+}
+
+// ============================================================
+// SUITE TENANCY (SUITE-IDENTITY.md §2 — VERBATIM)
+// ============================================================
+//
+// Phase 1 of the suite tenancy foundation. These two models + a
+// `workspaceId` on every tenant-scoped model land the DB-enforced
+// tenancy boundary. RLS is created-and-FORCED by the migration but
+// inert for the running app until the runtime DATABASE_URL is flipped
+// to the NOBYPASSRLS `customer_ops_app` role (a later phase). Nothing
+// here changes the running app's default behavior.
+
+/// Thin mirror of the uc-registry workspace record. Customer-Ops NEVER mints workspace_id.
+model Workspace {
+  id                String       @id // == uc-registry workspace_id (uuidv7). NO @default.
+  slug              String       @unique
+  displayName       String
+  parentWorkspaceId String?
+  isolationMode     String       @default("standard") // 'strict'|'standard'|'open'  (TEXT+CHECK, §5)
+  isolationTier     String       @default("shared") // 'shared'|'premium'|'enterprise'|'dedicated'
+  hipaaMode         Boolean      @default(false)
+  gdprMode          Boolean      @default(false)
+  dataResidency     String?      @default("us-east")
+  status            String       @default("active") // active|suspended|archived|deleting
+  entitlementCache  Json? // offline/dedicated only; null on shared SaaS
+  syncedAt          DateTime     @default(now())
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+  memberships       Membership[]
+  customers         Customer[]
+
+  @@index([slug])
+  @@index([status])
+  @@map("workspaces")
+}
+
+model Membership {
+  userKey     String // == User.keycloakId == uchub sub
+  workspaceId String
+  role        WorkspaceRole    @default(MEMBER)
+  status      MembershipStatus @default(ACTIVE)
+  isDefault   Boolean          @default(false)
+  createdAt   DateTime         @default(now())
+  workspace   Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@id([userKey, workspaceId])
+  @@index([userKey])
+  @@index([workspaceId])
+  @@map("memberships")
+}
+
+// ============================================================
+// IDENTITY
+// ============================================================
+//
+// The SSO-linked user. NOT workspace-scoped (SUITE-IDENTITY §2: User is
+// a global identity; the Membership row is the tenancy boundary). A valid
+// uchub token JIT-provisions this row (gated by the access list), but it
+// grants ZERO workspace access until an explicit Membership exists (§D5).
+model User {
+  id          String    @id @default(uuid())
+  email       String    @unique
+  username    String    @unique
+  firstName   String    @default("")
+  lastName    String    @default("")
+  keycloakId  String?   @unique // == uchub sub once SSO-linked; the Membership.userKey
+  isActive    Boolean   @default(true)
+  lastLoginAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([email])
+  @@index([keycloakId])
+  @@map("users")
+}
+
+// ============================================================
+// RELATIONSHIP PROJECTION (Customer-Ops OWNS this — tenant-scoped)
+// ============================================================
+//
+// The thin relationship/funnel projection. This is the ONLY customer-facing
+// data Customer-Ops stores in Phase 1, and it is deliberately thin:
+//   - `contactId` is the FEDERATED Contact-Ops contact id. We hold the id +
+//     the relationship projection, NEVER a copy of the contact record
+//     (README "What it owns vs federates" + the golden rule).
+//   - `stage` (lead→prospect→customer) is the lifecycle Customer-Ops owns and
+//     drives. Stage transitions are the cockpit's job; the contact never moves.
+//   - `workspaceId` is the tenancy boundary (RLS-fenced).
+//
+// One relationship per (workspaceId, contactId): a contact has exactly one
+// lifecycle position within a workspace.
+model Customer {
+  id          String            @id @default(uuid())
+  workspaceId String
+  // Federated Contact-Ops contact id. NOT a foreign key — Contact-Ops is the
+  // canonical phonebook; this is a reference, resolved over the federation
+  // seam (Phase 2). Never copy the contact record here.
+  contactId   String
+  stage       RelationshipStage @default(LEAD)
+  // Source provenance + consent live on the projection so Outreach stays
+  // CAN-SPAM / GDPR-clean (README golden rule). Thin in Phase 1; the cockpit
+  // enriches these in Phase 2.
+  source      String?
+  notes       String?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  // A contact holds exactly one lifecycle position per workspace.
+  @@unique([workspaceId, contactId])
+  @@index([workspaceId])
+  @@index([workspaceId, stage])
+  @@map("customers")
+}
+
+// NOTE: The Workspace↔Customer relation is declared here to satisfy Prisma's
+// relation requirement. It does NOT make Workspace a tenant-scoped table —
+// Workspace is the tenancy CONTROL table (not RLS-fenced); Customer is the
+// scoped projection (RLS-fenced by the migration).
