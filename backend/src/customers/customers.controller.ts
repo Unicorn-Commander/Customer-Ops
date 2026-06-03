@@ -26,6 +26,7 @@ import { CustomersService } from './customers.service';
 import {
   AddNoteDto,
   CreateCustomerDto,
+  CreateInvoiceDto,
   ListCustomersQueryDto,
   MarkLostDto,
   TransitionStageDto,
@@ -145,5 +146,40 @@ export class CustomersController {
     @Body() dto: AddNoteDto,
   ) {
     return this.customers.addNoteForUser(user, id, dto, workspaceId);
+  }
+
+  // ── Phase 3: the Accounting-Ops invoicing surface ──
+  // Customer-Ops FEDERATES invoicing to Accounting-Ops (the ledger SoR); these
+  // routes never post a journal entry. Degrade-clean when AO is unconfigured;
+  // dual-SKU (customer-ops + accounting-ops) gated on create.
+
+  @Get(':id/invoices')
+  @ApiOperation({
+    summary:
+      "This customer's invoices, federated from Accounting-Ops (live status polled). " +
+      'Reports connect/entitlement affordances when AO is unconfigured / not entitled.',
+  })
+  async listInvoices(
+    @CurrentUser() user: AuthedUser,
+    @Param('workspaceId') workspaceId: string,
+    @Param('id') id: string,
+  ) {
+    return this.customers.invoicesForUser(user, id, workspaceId);
+  }
+
+  @Post(':id/invoices')
+  @ApiOperation({
+    summary:
+      'Assemble a draft from this customer and create the invoice in Accounting-Ops ' +
+      '(idempotent on a deterministic external_ref; requires both customer-ops + ' +
+      'accounting-ops entitlements).',
+  })
+  async createInvoice(
+    @CurrentUser() user: AuthedUser,
+    @Param('workspaceId') workspaceId: string,
+    @Param('id') id: string,
+    @Body() dto: CreateInvoiceDto,
+  ) {
+    return this.customers.createInvoiceForUser(user, id, dto, workspaceId);
   }
 }

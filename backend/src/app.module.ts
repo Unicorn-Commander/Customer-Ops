@@ -9,6 +9,7 @@ import { AuthModule } from './auth/auth.module';
 import { HealthModule } from './health/health.module';
 import { McpModule } from './mcp/mcp.module';
 import { ContactOpsModule } from './contact-ops/contact-ops.module';
+import { AccountingOpsModule } from './accounting-ops/accounting-ops.module';
 import { CustomersModule } from './customers/customers.module';
 
 @Module({
@@ -32,6 +33,8 @@ import { CustomersModule } from './customers/customers.module';
     HealthModule,
     // Phase 2 — the relationship cockpit + the Contact-Ops federation seam.
     ContactOpsModule,
+    // Phase 3 — the invoicing surface (the Accounting-Ops AR federation seam).
+    AccountingOpsModule,
     CustomersModule,
     // MCP last so it can consume the cockpit tools.
     McpModule,

@@ -24,12 +24,16 @@ import { User } from '@prisma/client';
 export const DEFAULT_WORKSPACE_FALLBACK = '0190a000-7e57-7000-8000-00000000c007';
 
 // `User` augmented by JwtStrategy.validate with the validated workspace claim
-// (`__workspaceClaim` = the token's `workspace_id`/`tenant_id`) and the acting
+// (`__workspaceClaim` = the token's `workspace_id`/`tenant_id`), the acting
 // uchub subject (`__ucUid` = the token `sub`, used for `app.uc_uid` attribution
-// and as the Membership key). Both are non-persistent, request-scoped only.
+// and as the Membership key), and the verified entitlement SKUs
+// (`__entitlements` = the token's flat `entitlements`/`products` claim, used by
+// the Phase-3 Accounting-Ops federation dual-SKU gate). All are non-persistent,
+// request-scoped only — surfaced off the verified token, never an HTTP header.
 export type WithWorkspaceClaim = User & {
   __workspaceClaim?: string | null;
   __ucUid?: string | null;
+  __entitlements?: string[] | null;
 };
 
 /**
@@ -63,4 +67,17 @@ export function defaultWorkspaceId(
 ): string {
   const v = getEnv('DEFAULT_WORKSPACE_ID');
   return v && v.trim() ? v.trim() : DEFAULT_WORKSPACE_FALLBACK;
+}
+
+/**
+ * The verified entitlement SKUs on the acting user's token (`__entitlements`,
+ * surfaced by JwtStrategy from the flat `entitlements`/`products` claim). Always
+ * returns an array (possibly empty when the token carries no entitlement claim,
+ * which the federation gate treats as "no entitlements present"). The
+ * normalization of SKU spellings/aliases is the federation client's job — this
+ * just hands back the raw verified list.
+ */
+export function entitlementsOf(user: Partial<WithWorkspaceClaim> | null | undefined): string[] {
+  const e = (user as WithWorkspaceClaim | undefined)?.__entitlements;
+  return Array.isArray(e) ? e : [];
 }

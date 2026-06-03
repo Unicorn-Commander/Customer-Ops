@@ -15,13 +15,21 @@ datasource db {
 // boundary, SSO identity, the thin relationship projection, RLS, the
 // MCP skeleton).
 //
-// PHASE 2 (this layer) = the relationship cockpit + the Contact-Ops
-// federation seam: pipeline fields on the Customer relationship, a
-// tenant-scoped CustomerActivity log (stage-transition + note audit
-// trail), and the read surfaces (list/filter by stage, pipeline board,
-// customer-360). The contact details on a 360 are FEDERATED from
-// Contact-Ops at read time — never copied. AO/Outreach/Email-Ops/
-// Meeting-Ops remain Phase 3+ seams (the 360 leaves slots for them).
+// PHASE 2 = the relationship cockpit + the Contact-Ops federation seam:
+// pipeline fields on the Customer relationship, a tenant-scoped
+// CustomerActivity log (stage-transition + note audit trail), and the
+// read surfaces (list/filter by stage, pipeline board, customer-360). The
+// contact details on a 360 are FEDERATED from Contact-Ops at read time —
+// never copied.
+//
+// PHASE 3 (this layer) = the invoicing surface: the Accounting-Ops AR
+// federation seam. Customer-Ops calls AO's native invoicing
+// (create_invoice_from_draft / get_invoice) over MCP — AO is the ONE
+// ledger / system-of-record. Customer-Ops holds only a THIN local link
+// (CustomerInvoiceLink) so it can list "this customer's invoices" and
+// poll their live status; it NEVER posts a ledger entry or stores invoice
+// line detail. The link is RLS-fenced exactly like the other scoped
+// tables. Outreach/Email-Ops/Meeting-Ops remain later-phase seams.
 //
 // Customer-Ops is a SURFACE, not an engine: it OWNS the relationship
 // (the lifecycle stage + pipeline keyed on workspace_id + contactId)
@@ -88,6 +96,10 @@ enum CustomerActivityKind {
   REOPENED
   MARKED_LOST
   OWNER_CHANGED
+  // Phase 3: an invoice was assembled for this customer and sent to
+  // Accounting-Ops (the ledger SoR). The activity body records the AO
+  // invoice number + external_ref; the ledger itself lives in AO.
+  INVOICE_CREATED
 }
 
 // ============================================================
@@ -117,9 +129,10 @@ model Workspace {
   syncedAt          DateTime     @default(now())
   createdAt         DateTime     @default(now())
   updatedAt         DateTime     @updatedAt
-  memberships        Membership[]
-  customers          Customer[]
-  customerActivities CustomerActivity[]
+  memberships          Membership[]
+  customers            Customer[]
+  customerActivities   CustomerActivity[]
+  customerInvoiceLinks CustomerInvoiceLink[]
 
   @@index([slug])
   @@index([status])
@@ -224,8 +237,9 @@ model Customer {
   createdAt   DateTime          @default(now())
   updatedAt   DateTime          @updatedAt
 
-  workspace  Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  activities CustomerActivity[]
+  workspace     Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  activities    CustomerActivity[]
+  invoiceLinks  CustomerInvoiceLink[]
 
   // A contact holds exactly one lifecycle position per workspace.
   @@unique([workspaceId, contactId])
@@ -277,8 +291,77 @@ model CustomerActivity {
   @@map("customer_activities")
 }
 
-// NOTE: The Workspace↔Customer / Workspace↔CustomerActivity relations are
-// declared here to satisfy Prisma's relation requirement. They do NOT make
-// Workspace a tenant-scoped table — Workspace is the tenancy CONTROL table
-// (not RLS-fenced); Customer + CustomerActivity are the scoped projections
-// (RLS-fenced by the migration).
+// ============================================================
+// INVOICE FEDERATION LINK (Customer-Ops OWNS this thin link — tenant-scoped)
+// ============================================================
+//
+// PHASE 3. The ONLY invoicing data Customer-Ops persists, and deliberately
+// thin: Accounting-Ops is the AR engine + the system-of-record for the
+// invoice (the ledger, the double-entry hash chain, the balance). This row
+// is a LINK from a Customer-Ops relationship to an AO invoice, keyed by the
+// deterministic idempotency tuple AO is idempotent on:
+//   (workspaceId, externalSource='customer-ops', externalRef).
+//
+// Why hold it at all (federate, don't fork): AO has no "list invoices by
+// external_source" surface — only get_invoice(external_source, external_ref)
+// and get_invoice(invoice_id). To render "this customer's invoices" the
+// cockpit must remember WHICH external_refs it created for the customer, then
+// poll each via AO get_invoice. This link is that memory — NOT a second
+// invoicing engine. It stores no line detail and posts no ledger entry.
+//
+// The cached status/balance/number/total are a render convenience refreshed
+// on each poll (AO remains authoritative; a stale cache is corrected on the
+// next get_invoice). Money is NUMERIC(20,4) decimal — never float — matching
+// the suite money shape and AO's own columns.
+//
+// RLS-fenced on workspaceId exactly like `customers` / `customer_activities`:
+// the workspaceId is denormalized onto the row, a no-GUC read returns zero
+// rows (fail-closed), and a write into another workspace is blocked by the
+// WITH CHECK. ENABLE + FORCE, identical policy.
+model CustomerInvoiceLink {
+  id          String  @id @default(uuid())
+  workspaceId String
+  customerId  String
+  // The deterministic idempotency key AO is idempotent on. external_source is
+  // always 'customer-ops' for links this app creates; stored explicitly so the
+  // (source, ref) tuple is self-describing and a future second source is clean.
+  externalSource String @default("customer-ops")
+  externalRef    String
+  // The AO billing entity this invoice posts under (AO requires an entity_id;
+  // it is AO's, resolved/configured per workspace — Customer-Ops just carries
+  // it through so the create + poll address the same entity).
+  entityId    String
+  // The AO invoice id once known (returned by create_invoice_from_draft /
+  // resolved on first successful poll). Null only in the window between a
+  // create attempt and the first successful AO round-trip.
+  aoInvoiceId String?
+  // ── Cached AO projection (render convenience; AO is authoritative) ──
+  invoiceNumber String?
+  lastStatus    String? // draft|sent|partial|paid|void (AO's invoice.status)
+  currency      String  @default("USD")
+  totalAmount   Decimal? @db.Decimal(20, 4)
+  lastBalanceDue Decimal? @db.Decimal(20, 4)
+  lastPolledAt   DateTime?
+  // Attribution + provenance.
+  createdByUcUid String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  customer  Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  // The idempotency tuple is unique per workspace — one link per AO invoice
+  // origin ref. (workspace, source, ref) mirrors AO's own partial unique index.
+  @@unique([workspaceId, externalSource, externalRef])
+  @@index([workspaceId])
+  // The customer-360 invoice panel reads a customer's links newest-first.
+  @@index([workspaceId, customerId, createdAt])
+  @@map("customer_invoice_links")
+}
+
+// NOTE: The Workspace↔Customer / Workspace↔CustomerActivity /
+// Workspace↔CustomerInvoiceLink relations are declared here to satisfy
+// Prisma's relation requirement. They do NOT make Workspace a tenant-scoped
+// table — Workspace is the tenancy CONTROL table (not RLS-fenced); Customer +
+// CustomerActivity + CustomerInvoiceLink are the scoped projections (RLS-fenced
+// by the migrations).

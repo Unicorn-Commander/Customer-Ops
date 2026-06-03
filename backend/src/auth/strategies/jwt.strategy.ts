@@ -174,6 +174,51 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     return aud === expected;
   }
 
+  /**
+   * Extract the flat entitlement SKU list from a verified token, tolerant of how
+   * the claim eventually lands (mirrors AO's `_read_entitlements` shapes, first
+   * non-empty wins):
+   *   1. `entitlements` — array OR space/comma-separated string of SKUs.
+   *   2. `products`     — same idea under a different key.
+   *   3. `subscription.products` / `subscription.entitlements` (nested).
+   * Items may be plain strings or `{code|product|sku, active?}` objects. Returns
+   * a de-duplicated string[] (raw — the federation client normalizes/aliases).
+   */
+  static readEntitlements(payload: any): string[] {
+    const coerce = (value: unknown): string[] => {
+      if (value == null) return [];
+      if (typeof value === 'string') {
+        return value
+          .replace(/,/g, ' ')
+          .split(/\s+/)
+          .map((s) => s.trim())
+          .filter(Boolean);
+      }
+      if (Array.isArray(value)) {
+        const out: string[] = [];
+        for (const item of value) {
+          if (typeof item === 'string') {
+            const t = item.trim();
+            if (t) out.push(t);
+          } else if (item && typeof item === 'object') {
+            const code = (item as any).code ?? (item as any).product ?? (item as any).sku;
+            const active = (item as any).active ?? true;
+            if (code && active) out.push(String(code).trim());
+          }
+        }
+        return out;
+      }
+      return [];
+    };
+
+    let codes = coerce(payload?.entitlements);
+    if (codes.length === 0) codes = coerce(payload?.products);
+    if (codes.length === 0 && payload?.subscription && typeof payload.subscription === 'object') {
+      codes = coerce(payload.subscription.products ?? payload.subscription.entitlements);
+    }
+    return [...new Set(codes)];
+  }
+
   async validate(payload: any): Promise<User> {
     try {
       // Any token whose `iss` is a trusted Brigade broker is a federation token:
@@ -197,9 +242,15 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       const augmented = user as User & {
         __workspaceClaim?: string | null;
         __ucUid?: string | null;
+        __entitlements?: string[] | null;
       };
       augmented.__workspaceClaim = payload?.workspace_id ?? payload?.tenant_id ?? null;
       augmented.__ucUid = typeof payload?.sub === 'string' ? payload.sub : null;
+      // The verified entitlement SKUs (Phase-3 Accounting-Ops dual-SKU gate).
+      // Read from the flat `entitlements`/`products` claim (or nested
+      // subscription.products) and normalized to a string[]; never an HTTP
+      // header — this rides only on the cryptographically-verified token.
+      augmented.__entitlements = JwtStrategy.readEntitlements(payload);
       return user;
     } catch (error) {
       this.logger.warn(`JWT validation failed: ${(error as Error).message ?? 'unknown'}`);

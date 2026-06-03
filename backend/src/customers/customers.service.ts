@@ -12,9 +12,10 @@
  *     append-only CustomerActivity row in the SAME transaction, so the timeline
  *     can never drift from the stage.
  *   - The customer-360 stitches the LOCAL relationship together with the
- *     FEDERATED contact (ContactOpsPort.getContact) and leaves explicit slots
- *     for the Phase-3 federations (invoices/meetings/email) — never copying the
- *     contact.
+ *     FEDERATED contact (ContactOpsPort.getContact) and the FEDERATED
+ *     Accounting-Ops invoice panel (AccountingOpsPort; AO is the ledger SoR —
+ *     Customer-Ops keeps only a thin link), leaving meeting/email as later-phase
+ *     seams — never copying the contact or posting a ledger entry.
  *
  * The methods that mutate or read relationship state accept a transaction
  * client (`tx`) so the orchestration (workspace resolution + GUC) is decoupled
@@ -25,19 +26,28 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { CustomerActivityKind, Prisma, RelationshipStage, User } from '@prisma/client';
 import { WorkspaceContextService } from '../common/workspace/workspace-context.service';
 import { WorkspaceTxClient } from '../prisma/prisma.service';
-import { WithWorkspaceClaim, ucUidOf } from '../common/workspace/workspace.util';
+import { WithWorkspaceClaim, entitlementsOf, ucUidOf } from '../common/workspace/workspace.util';
 import { ContactOpsPort, FederationContext } from '../contact-ops/contact-ops.port';
+import {
+  AccountingOpsPort,
+  FederationContext as InvoiceFederationContext,
+} from '../accounting-ops/accounting-ops.port';
+import { FederatedInvoice, InvoiceDraft } from '../accounting-ops/accounting-ops.types';
 import { checkTransition, STAGE_ORDER } from './funnel';
 import {
   AddNoteDto,
   CreateCustomerDto,
+  CreateInvoiceDto,
   ListCustomersQueryDto,
   MarkLostDto,
   TransitionStageDto,
@@ -78,6 +88,7 @@ export class CustomersService {
   constructor(
     private readonly workspaces: WorkspaceContextService,
     private readonly contactOps: ContactOpsPort,
+    private readonly accountingOps: AccountingOpsPort,
   ) {}
 
   // ========================================================================
@@ -119,7 +130,8 @@ export class CustomersService {
 
   /**
    * The customer-360: the LOCAL relationship + its timeline + the FEDERATED
-   * contact, with explicit Phase-3 slots (invoices/meetings/email) left empty.
+   * contact + the FEDERATED Accounting-Ops invoice panel (live status), with
+   * meeting/email left as later-phase seams.
    */
   async customer360ForUser(
     user: User & Partial<WithWorkspaceClaim>,
@@ -127,7 +139,7 @@ export class CustomersService {
     requestedWorkspaceId?: string | null,
   ) {
     const fedCtx = await this.federationContext(user, requestedWorkspaceId);
-    const { relationship, activities } = await this.workspaces.runForUser(
+    const { relationship, activities, invoiceLinks } = await this.workspaces.runForUser(
       user,
       async (tx) => {
         const relationship = await this.getInTx(tx, id);
@@ -136,13 +148,25 @@ export class CustomersService {
           orderBy: { createdAt: 'desc' },
           take: 50,
         });
-        return { relationship, activities };
+        // The thin local invoice links for this customer (RLS-scoped). AO is the
+        // ledger SoR; these are just the (source, ref) memory + cached status.
+        const invoiceLinks = await tx.customerInvoiceLink.findMany({
+          where: { customerId: id },
+          orderBy: { createdAt: 'desc' },
+          take: 100,
+        });
+        return { relationship, activities, invoiceLinks };
       },
       requestedWorkspaceId,
     );
 
     // Federate the contact detail (read-time; never persisted).
     const contact = await this.contactOps.getContact(fedCtx, relationship.contactId);
+
+    // Federate the invoice panel: poll AO for each linked invoice's live status
+    // (best-effort; degrade-clean). Outside the DB tx — federation must not hold
+    // a transaction open. Refreshes the cached projection on the link rows.
+    const invoices = await this.buildInvoicePanel(user, invoiceLinks, requestedWorkspaceId);
 
     return {
       relationship: this.serialize(relationship),
@@ -162,11 +186,11 @@ export class CustomersService {
         actorUcUid: a.actorUcUid,
         createdAt: a.createdAt,
       })),
-      // ── Phase-3 federation slots (intentionally empty; seams only) ──
-      // Accounting-Ops: this customer's invoices/AR (create_invoice_from_draft +
-      // get_invoice poll). Meeting-Ops: meetings/action-items. Email-Ops:
-      // Stalwart threads. Outreach: campaign membership. Wired in Phase 3.
-      invoices: { federated: false, source: 'accounting-ops', items: [] as unknown[] },
+      // ── Phase-3: the Accounting-Ops invoice panel (federated, live status) ──
+      invoices,
+      // ── Later-phase federation slots (intentionally empty; seams only) ──
+      // Meeting-Ops: meetings/action-items. Email-Ops: Stalwart threads.
+      // Outreach: campaign membership.
       meetings: { federated: false, source: 'meeting-ops', items: [] as unknown[] },
       email: { federated: false, source: 'email-ops', items: [] as unknown[] },
     };
@@ -297,6 +321,345 @@ export class CustomersService {
         count: joined.length,
         expectedValue: joined.reduce((s, c) => s + Number(c.expectedValue ?? 0), 0).toFixed(2),
       },
+    };
+  }
+
+  // ========================================================================
+  // PHASE 3 — INVOICING SURFACE (the Accounting-Ops AR federation seam).
+  //
+  // Customer-Ops FEDERATES invoicing: AO is the AR engine + the ledger
+  // system-of-record. These entry points (a) assemble a draft and call AO's
+  // native create_invoice_from_draft (idempotent on (workspace, source, ref)),
+  // keeping only a thin local CustomerInvoiceLink, and (b) poll AO get_invoice
+  // for live status. They NEVER post a ledger entry or store line detail.
+  // ========================================================================
+
+  /**
+   * The customer's invoices: the local links joined with AO's live status
+   * (polled). Degrade-clean: when AO is unconfigured the panel reports
+   * `configured:false` ("connect Accounting-Ops") and no call is made; when the
+   * caller lacks the dual SKU it reports `entitled:false`. The list still shows
+   * whatever links exist (with their last-cached status) so history is never
+   * hidden by a transient AO outage.
+   */
+  async invoicesForUser(
+    user: User & Partial<WithWorkspaceClaim>,
+    customerId: string,
+    requestedWorkspaceId?: string | null,
+  ) {
+    const links = await this.workspaces.runForUser(
+      user,
+      async (tx) => {
+        // Confirm the relationship exists in this workspace (404 otherwise),
+        // then read its links — both RLS-scoped.
+        await this.getInTx(tx, customerId);
+        return tx.customerInvoiceLink.findMany({
+          where: { customerId },
+          orderBy: { createdAt: 'desc' },
+          take: 100,
+        });
+      },
+      requestedWorkspaceId,
+    );
+    return this.buildInvoicePanel(user, links, requestedWorkspaceId);
+  }
+
+  /**
+   * Create an invoice for this customer in Accounting-Ops and record a thin
+   * local link. Gated on BOTH customer-ops AND accounting-ops entitlements
+   * (UC_ENTITLEMENT_MODE=open bypasses with a WARN); 403 when not entitled,
+   * 400 when AO is unconfigured (degrade-clean — nothing to call), 502 when AO
+   * is reachable but the call fails. Idempotent: the deterministic external_ref
+   * (derived from the optional idempotencyKey) means a retry returns the same AO
+   * invoice and upserts the same link.
+   */
+  async createInvoiceForUser(
+    user: User & Partial<WithWorkspaceClaim>,
+    customerId: string,
+    dto: CreateInvoiceDto,
+    requestedWorkspaceId?: string | null,
+  ) {
+    const ucUid = ucUidOf(user);
+    const fedCtx = await this.invoiceFederationContext(user, requestedWorkspaceId);
+
+    // Degrade-clean: no AO target → make no call, surface a clean affordance.
+    if (!this.accountingOps.isConfigured()) {
+      throw new BadRequestException(
+        'Accounting-Ops is not connected for this deployment. Set AO_BASE_URL to ' +
+          'enable invoicing. (Customer-Ops federates AR to Accounting-Ops; it is ' +
+          'not an invoicing engine.)',
+      );
+    }
+
+    // Dual-SKU gate (pre-check; the client re-checks as defense-in-depth).
+    const gate = this.accountingOps.checkEntitlement(fedCtx);
+    if (!gate.allowed) {
+      this.logger.warn(
+        `Invoice create denied for ${ucUid} (ws=${fedCtx.workspaceId}): ${gate.reason}`,
+      );
+      throw new ForbiddenException(gate.reason);
+    }
+
+    // The deterministic idempotency key → external_ref. A caller-supplied key
+    // makes a retry idempotent; otherwise we mint one (a fresh invoice).
+    const idemKey = dto.idempotencyKey?.trim() || randomUUID();
+    const externalSource = 'customer-ops';
+    const externalRef = `cust:${customerId}:${idemKey}`;
+
+    // 1) Resolve the relationship (404 if absent) + record/locate the link FIRST
+    //    so the (source, ref) is durably remembered even if the AO call fails
+    //    mid-flight — the next poll/retry reuses the same ref (idempotent).
+    const link = await this.workspaces.runForUser(
+      user,
+      async (tx) => {
+        await this.getInTx(tx, customerId);
+        const workspaceId = await this.boundWorkspaceId(tx);
+        const existing = await tx.customerInvoiceLink.findUnique({
+          where: {
+            workspaceId_externalSource_externalRef: {
+              workspaceId,
+              externalSource,
+              externalRef,
+            },
+          },
+        });
+        if (existing) return existing;
+        return tx.customerInvoiceLink.create({
+          data: {
+            workspaceId,
+            customerId,
+            externalSource,
+            externalRef,
+            entityId: dto.entityId,
+            currency: dto.currency ?? 'USD',
+            createdByUcUid: ucUid || null,
+          },
+        });
+      },
+      requestedWorkspaceId,
+    );
+
+    // 2) Call AO create_invoice_from_draft (idempotent on the tuple). Outside the
+    //    DB tx (federation must not hold a transaction open).
+    const draft = this.assembleDraft(dto, externalSource, externalRef);
+    const invoice = await this.accountingOps.createInvoice(fedCtx, draft);
+    if (!invoice) {
+      // AO was reachable+entitled (we gated above) but the call failed. The link
+      // persists (status pending) so the cockpit shows the attempt + can retry.
+      throw new ServiceUnavailableException(
+        'Accounting-Ops did not return an invoice. The link is recorded; retry ' +
+          'to complete it (the create is idempotent on the same reference).',
+      );
+    }
+
+    // 3) Refresh the link's cached projection + log the relationship activity
+    //    (one tx; RLS-scoped). The activity records the AO invoice number — the
+    //    ledger itself lives in AO.
+    const refreshed = await this.workspaces.runForUser(
+      user,
+      async (tx) => {
+        const updated = await tx.customerInvoiceLink.update({
+          where: { id: link.id },
+          data: this.invoiceCacheUpdate(invoice),
+        });
+        await this.logActivity(tx, updated.workspaceId, customerId, {
+          kind: CustomerActivityKind.INVOICE_CREATED,
+          body:
+            `Invoice ${invoice.invoiceNumber ?? invoice.id} (${invoice.status}) ` +
+            `created in Accounting-Ops · ref ${externalRef}`,
+          actorUcUid: ucUid,
+        });
+        return updated;
+      },
+      requestedWorkspaceId,
+    );
+
+    return {
+      link: this.serializeInvoiceLink(refreshed),
+      invoice,
+    };
+  }
+
+  // ---- invoicing helpers --------------------------------------------------
+
+  /** Build the invoice federation identity (workspace + actor + entitlements). */
+  private async invoiceFederationContext(
+    user: User & Partial<WithWorkspaceClaim>,
+    requestedWorkspaceId?: string | null,
+  ): Promise<InvoiceFederationContext> {
+    const workspaceId = await this.workspaces.resolveAuthorized(user, requestedWorkspaceId);
+    return {
+      workspaceId,
+      ucUid: ucUidOf(user) || null,
+      entitlements: entitlementsOf(user),
+    };
+  }
+
+  /**
+   * Assemble the customer-360 invoice panel: poll AO for each link's live status
+   * (when configured + entitled), refresh the cached projection, and return the
+   * panel shape the cockpit renders. Never throws (federation best-effort).
+   */
+  private async buildInvoicePanel(
+    user: User & Partial<WithWorkspaceClaim>,
+    links: Array<Record<string, any>>,
+    requestedWorkspaceId?: string | null,
+  ) {
+    const configured = this.accountingOps.isConfigured();
+    const fedCtx = configured
+      ? await this.invoiceFederationContext(user, requestedWorkspaceId)
+      : null;
+    const entitled = fedCtx ? this.accountingOps.checkEntitlement(fedCtx).allowed : false;
+
+    let items = links.map((l) => this.serializeInvoiceLink(l));
+
+    // Poll live status only when AO is configured (reads are viewer-level on AO,
+    // so a poll does NOT require the dual SKU — history stays visible). Refresh
+    // the cache best-effort; a failed poll leaves the last-cached status.
+    if (configured && fedCtx && links.length > 0) {
+      const refreshed = await Promise.all(
+        links.map((l) => this.pollAndRefreshLink(user, fedCtx, l, requestedWorkspaceId)),
+      );
+      items = refreshed;
+    }
+
+    return {
+      federated: configured,
+      source: 'accounting-ops',
+      // Render affordances for the cockpit (degrade-clean / entitlement states).
+      configured,
+      entitled,
+      // When AO is configured but the caller lacks the dual SKU, the create
+      // action is hidden; reads still show cached history.
+      canCreate: configured && entitled,
+      items,
+    };
+  }
+
+  /**
+   * Poll one link via AO get_invoice (by AO id if known, else by (source, ref))
+   * and refresh its cached projection. Returns the serialized (refreshed) link.
+   * Best-effort: a poll failure returns the link unchanged (last-cached).
+   */
+  private async pollAndRefreshLink(
+    user: User & Partial<WithWorkspaceClaim>,
+    fedCtx: InvoiceFederationContext,
+    link: Record<string, any>,
+    requestedWorkspaceId?: string | null,
+  ) {
+    let invoice: FederatedInvoice | null = null;
+    try {
+      invoice = link.aoInvoiceId
+        ? await this.accountingOps.getInvoiceById(fedCtx, link.aoInvoiceId)
+        : await this.accountingOps.getInvoiceByRef(fedCtx, link.externalSource, link.externalRef);
+    } catch (err) {
+      this.logger.warn(`AO poll failed for link ${link.id}: ${(err as Error).message}`);
+    }
+    if (!invoice) return this.serializeInvoiceLink(link);
+
+    // Persist the refreshed cache (RLS-scoped). Best-effort — a write failure
+    // must not break rendering.
+    try {
+      const updated = await this.workspaces.runForUser(
+        user,
+        (tx) =>
+          tx.customerInvoiceLink.update({
+            where: { id: link.id },
+            data: this.invoiceCacheUpdate(invoice!),
+          }),
+        requestedWorkspaceId,
+      );
+      return this.serializeInvoiceLink(updated);
+    } catch (err) {
+      this.logger.warn(`AO link cache refresh failed for ${link.id}: ${(err as Error).message}`);
+      // Return the freshly-polled values even if the cache write didn't land.
+      return { ...this.serializeInvoiceLink(link), ...this.invoiceProjection(invoice) };
+    }
+  }
+
+  /** The Prisma update payload that refreshes a link's cached AO projection. */
+  private invoiceCacheUpdate(invoice: FederatedInvoice): Prisma.CustomerInvoiceLinkUpdateInput {
+    return {
+      aoInvoiceId: invoice.id,
+      invoiceNumber: invoice.invoiceNumber ?? undefined,
+      lastStatus: invoice.status,
+      currency: invoice.currency ?? undefined,
+      totalAmount: invoice.total != null ? new Prisma.Decimal(invoice.total) : null,
+      lastBalanceDue: invoice.balanceDue != null ? new Prisma.Decimal(invoice.balanceDue) : null,
+      lastPolledAt: new Date(),
+    };
+  }
+
+  /** The (non-persisted) projection fields from a freshly-polled AO invoice. */
+  private invoiceProjection(invoice: FederatedInvoice) {
+    return {
+      aoInvoiceId: invoice.id,
+      invoiceNumber: invoice.invoiceNumber,
+      status: invoice.status,
+      currency: invoice.currency,
+      total: invoice.total,
+      balanceDue: invoice.balanceDue,
+    };
+  }
+
+  /** Map a CreateInvoiceDto + the idempotency tuple to an AO draft. */
+  private assembleDraft(
+    dto: CreateInvoiceDto,
+    externalSource: string,
+    externalRef: string,
+  ): InvoiceDraft {
+    return {
+      entityId: dto.entityId,
+      externalSource,
+      externalRef,
+      customer: {
+        name: dto.customerName,
+        email: dto.customerEmail ?? null,
+        billingAddress: dto.billingAddress ?? null,
+      },
+      lineItems: dto.lineItems.map((li) => ({
+        description: li.description,
+        quantity: li.quantity ?? '1',
+        unitPrice: li.unitPrice ?? '0',
+        amount: li.amount ?? null,
+        taxCode: li.taxCode ?? null,
+        taxAmount: li.taxAmount ?? null,
+        revenueAccountId: li.revenueAccountId ?? null,
+        sourceRef: li.sourceRef ?? null,
+      })),
+      currency: dto.currency ?? 'USD',
+      issueDate: dto.issueDate ?? null,
+      dueDate: dto.dueDate ?? null,
+      netTerms: dto.netTerms ?? null,
+      discount: dto.discount ?? null,
+      notes: dto.notes ?? null,
+      poNumber: dto.poNumber ?? null,
+      autoSend: dto.autoSend ?? false,
+    };
+  }
+
+  /** Serialize a CustomerInvoiceLink row to the wire shape (Decimal → string). */
+  private serializeInvoiceLink(row: Record<string, any>) {
+    return {
+      id: row.id,
+      customerId: row.customerId,
+      externalSource: row.externalSource,
+      externalRef: row.externalRef,
+      entityId: row.entityId,
+      aoInvoiceId: row.aoInvoiceId ?? null,
+      invoiceNumber: row.invoiceNumber ?? null,
+      status: row.lastStatus ?? null,
+      currency: row.currency ?? 'USD',
+      total:
+        row.totalAmount !== null && row.totalAmount !== undefined
+          ? row.totalAmount.toString()
+          : null,
+      balanceDue:
+        row.lastBalanceDue !== null && row.lastBalanceDue !== undefined
+          ? row.lastBalanceDue.toString()
+          : null,
+      lastPolledAt: row.lastPolledAt ?? null,
+      createdAt: row.createdAt,
     };
   }
 

@@ -3,6 +3,7 @@ import { CustomerActivityKind, RelationshipStage, User } from '@prisma/client';
 import { CustomersService } from './customers.service';
 import { WorkspaceContextService } from '../common/workspace/workspace-context.service';
 import { ContactOpsPort } from '../contact-ops/contact-ops.port';
+import { AccountingOpsPort } from '../accounting-ops/accounting-ops.port';
 
 /**
  * CustomersService is the relationship logic of the cockpit. These tests pin:
@@ -52,6 +53,7 @@ function makeRow(over: Partial<Record<string, any>> = {}) {
  */
 function makeTx(customerRow: any) {
   const activities: any[] = [];
+  const invoiceLinks: any[] = [];
   const tx: any = {
     $queryRaw: jest.fn().mockResolvedValue([{ ws: WS }]),
     customer: {
@@ -69,17 +71,53 @@ function makeTx(customerRow: any) {
       }),
       findMany: jest.fn().mockResolvedValue([]),
     },
+    customerInvoiceLink: {
+      findMany: jest.fn().mockResolvedValue(invoiceLinks),
+      findUnique: jest.fn().mockResolvedValue(null),
+      create: jest.fn(async ({ data }: any) => {
+        const row = {
+          id: `link-${invoiceLinks.length + 1}`,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          ...data,
+        };
+        invoiceLinks.push(row);
+        return row;
+      }),
+      update: jest.fn(async ({ where, data }: any) => {
+        const idx = invoiceLinks.findIndex((l) => l.id === where.id);
+        const merged = { ...(invoiceLinks[idx] ?? { id: where.id }), ...data };
+        if (idx >= 0) invoiceLinks[idx] = merged;
+        return merged;
+      }),
+    },
   };
-  return { tx, activities };
+  return { tx, activities, invoiceLinks };
 }
 
-function makeService(opts?: { contact?: Partial<ContactOpsPort> }) {
+function makeService(opts?: {
+  contact?: Partial<ContactOpsPort>;
+  accounting?: Partial<AccountingOpsPort>;
+}) {
   const contact: ContactOpsPort = {
     getContact: jest.fn().mockResolvedValue(null),
     getContactSummaries: jest.fn().mockResolvedValue(new Map()),
     listContacts: jest.fn().mockResolvedValue({ items: [], count: 0, nextCursor: null }),
     getWorkspaceProjection: jest.fn().mockResolvedValue(null),
     ...(opts?.contact ?? {}),
+  } as any;
+
+  // Default AO port: DORMANT (degrade-clean). The Phase-3 invoice tests pass a
+  // configured + entitled fake to exercise the federated path.
+  const accounting: AccountingOpsPort = {
+    isConfigured: jest.fn().mockReturnValue(false),
+    checkEntitlement: jest
+      .fn()
+      .mockReturnValue({ allowed: false, mode: 'enforce', reason: 'unconfigured' }),
+    createInvoice: jest.fn().mockResolvedValue(null),
+    getInvoiceByRef: jest.fn().mockResolvedValue(null),
+    getInvoiceById: jest.fn().mockResolvedValue(null),
+    ...(opts?.accounting ?? {}),
   } as any;
 
   // WorkspaceContextService faked: runForUser invokes fn(tx) directly (the real
@@ -91,8 +129,8 @@ function makeService(opts?: { contact?: Partial<ContactOpsPort> }) {
     runForUser: jest.fn(async (_user: User, fn: any) => fn(lastTx.current)),
   } as unknown as WorkspaceContextService;
 
-  const svc = new CustomersService(workspaces, contact);
-  return { svc, contact, workspaces, lastTx };
+  const svc = new CustomersService(workspaces, contact, accounting);
+  return { svc, contact, accounting, workspaces, lastTx };
 }
 
 describe('CustomersService — relationship logic', () => {
@@ -265,8 +303,16 @@ describe('CustomersService — Contact-Ops federation (CO mocked)', () => {
     );
     expect(result.contact?.displayName).toBe('Jane Lead');
     expect(result.contactFederation).toMatchObject({ resolved: true, source: 'contact-ops' });
-    // Phase-3 federation slots are present but empty.
-    expect(result.invoices).toMatchObject({ federated: false, source: 'accounting-ops', items: [] });
+    // Phase-3 invoice panel: AO dormant in this test → degrade-clean affordances.
+    expect(result.invoices).toMatchObject({
+      federated: false,
+      source: 'accounting-ops',
+      configured: false,
+      entitled: false,
+      canCreate: false,
+      items: [],
+    });
+    // Later-phase federation slots are present but empty.
     expect(result.meetings).toMatchObject({ federated: false, source: 'meeting-ops' });
     expect(result.email).toMatchObject({ federated: false, source: 'email-ops' });
   });
@@ -328,5 +374,271 @@ describe('CustomersService — Contact-Ops federation (CO mocked)', () => {
     expect(customer.count).toBe(0);
     expect(board.totals.count).toBe(3);
     expect(board.totals.expectedValue).toBe('400.00');
+  });
+});
+
+describe('CustomersService — Accounting-Ops invoicing (Phase 3; AO mocked)', () => {
+  const FED_INVOICE = {
+    id: 'inv-1',
+    invoiceNumber: 'INV-2026-0001',
+    status: 'sent',
+    currency: 'USD',
+    subtotal: '2000.0000',
+    taxTotal: '40.0000',
+    total: '2040.0000',
+    balanceDue: '2040.0000',
+    issueDate: '2026-06-03',
+    dueDate: '2026-07-01',
+    externalSource: 'customer-ops',
+    externalRef: 'cust:cust-1:fixed-key',
+    pdfUrl: '/api/workspaces/ws/invoices/inv-1/pdf',
+    hostedPayUrl: null,
+  };
+
+  const dto = {
+    entityId: 'entity-1',
+    customerName: 'Acme Co',
+    customerEmail: 'ap@acme.test',
+    lineItems: [{ description: 'Consulting', quantity: '10', unitPrice: '150.0000' }],
+    currency: 'USD',
+    dueDate: '2026-07-01',
+    idempotencyKey: 'fixed-key',
+  };
+
+  function entitledAo(over: Partial<AccountingOpsPort> = {}): Partial<AccountingOpsPort> {
+    return {
+      isConfigured: jest.fn().mockReturnValue(true),
+      checkEntitlement: jest
+        .fn()
+        .mockReturnValue({ allowed: true, mode: 'enforce', reason: 'entitled' }),
+      createInvoice: jest.fn().mockResolvedValue(FED_INVOICE),
+      getInvoiceByRef: jest.fn().mockResolvedValue(FED_INVOICE),
+      getInvoiceById: jest.fn().mockResolvedValue(FED_INVOICE),
+      ...over,
+    };
+  }
+
+  describe('createInvoiceForUser', () => {
+    it('gates on dual SKU, assembles a deterministic external_ref, calls AO, writes the link + activity', async () => {
+      const { svc, accounting, lastTx } = makeService({ accounting: entitledAo() });
+      const { tx, activities, invoiceLinks } = makeTx(makeRow({ id: 'cust-1' }));
+      lastTx.current = tx;
+
+      const result = await svc.createInvoiceForUser(aaron, 'cust-1', dto, WS);
+
+      // AO create called once with the assembled draft (deterministic ref).
+      expect(accounting.createInvoice).toHaveBeenCalledTimes(1);
+      const [ctx, draft] = (accounting.createInvoice as jest.Mock).mock.calls[0];
+      expect(ctx).toMatchObject({ workspaceId: WS, ucUid: UC_UID });
+      expect(draft.externalSource).toBe('customer-ops');
+      expect(draft.externalRef).toBe('cust:cust-1:fixed-key'); // deterministic from idempotencyKey
+      expect(draft.entityId).toBe('entity-1');
+      expect(draft.customer).toMatchObject({ name: 'Acme Co', email: 'ap@acme.test' });
+      // Money on the line stays a decimal string.
+      expect(draft.lineItems[0]).toMatchObject({ unitPrice: '150.0000', quantity: '10' });
+
+      // A link row was created (the thin local memory) carrying the tuple.
+      expect(invoiceLinks).toHaveLength(1);
+      expect(invoiceLinks[0]).toMatchObject({
+        workspaceId: WS,
+        customerId: 'cust-1',
+        externalSource: 'customer-ops',
+        externalRef: 'cust:cust-1:fixed-key',
+        entityId: 'entity-1',
+      });
+      // The link's cached projection was refreshed from AO (status/total/aoInvoiceId).
+      expect(invoiceLinks[0]).toMatchObject({ aoInvoiceId: 'inv-1', lastStatus: 'sent' });
+
+      // An INVOICE_CREATED activity was logged.
+      expect(activities.some((a) => a.kind === CustomerActivityKind.INVOICE_CREATED)).toBe(true);
+
+      // The result surfaces the AO invoice + the serialized link.
+      expect(result.invoice).toMatchObject({ id: 'inv-1', total: '2040.0000' });
+      expect(result.link).toMatchObject({ externalRef: 'cust:cust-1:fixed-key', status: 'sent' });
+    });
+
+    it('IDEMPOTENT: the same idempotencyKey reuses the existing link (no second link row)', async () => {
+      const { svc, lastTx } = makeService({ accounting: entitledAo() });
+      const { tx, invoiceLinks } = makeTx(makeRow({ id: 'cust-1' }));
+      // Pre-seed an existing link for the same (ws, source, ref) — findUnique hits it.
+      const existing = {
+        id: 'link-existing',
+        workspaceId: WS,
+        customerId: 'cust-1',
+        externalSource: 'customer-ops',
+        externalRef: 'cust:cust-1:fixed-key',
+        entityId: 'entity-1',
+        currency: 'USD',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      invoiceLinks.push(existing);
+      tx.customerInvoiceLink.findUnique.mockResolvedValue(existing);
+      lastTx.current = tx;
+
+      await svc.createInvoiceForUser(aaron, 'cust-1', dto, WS);
+
+      // No NEW link created — the existing one is reused (idempotent on the tuple).
+      expect(tx.customerInvoiceLink.create).not.toHaveBeenCalled();
+      // The existing link is refreshed in place.
+      expect(tx.customerInvoiceLink.update).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: 'link-existing' } }),
+      );
+    });
+
+    it('DENIES with 403 when the caller lacks the dual SKU — and makes NO AO call', async () => {
+      const denyAo = entitledAo({
+        checkEntitlement: jest
+          .fn()
+          .mockReturnValue({ allowed: false, mode: 'enforce', reason: 'not entitled' }),
+      });
+      const { svc, accounting, lastTx } = makeService({ accounting: denyAo });
+      const { tx } = makeTx(makeRow({ id: 'cust-1' }));
+      lastTx.current = tx;
+
+      await expect(svc.createInvoiceForUser(aaron, 'cust-1', dto, WS)).rejects.toThrow(
+        /not entitled/i,
+      );
+      expect(accounting.createInvoice).not.toHaveBeenCalled();
+      expect(tx.customerInvoiceLink.create).not.toHaveBeenCalled();
+    });
+
+    it('DEGRADE-CLEAN: 400 + no AO call when Accounting-Ops is unconfigured', async () => {
+      const unconfigured = entitledAo({ isConfigured: jest.fn().mockReturnValue(false) });
+      const { svc, accounting, lastTx } = makeService({ accounting: unconfigured });
+      const { tx } = makeTx(makeRow({ id: 'cust-1' }));
+      lastTx.current = tx;
+
+      await expect(svc.createInvoiceForUser(aaron, 'cust-1', dto, WS)).rejects.toThrow(
+        /not connected/i,
+      );
+      expect(accounting.createInvoice).not.toHaveBeenCalled();
+    });
+
+    it('502 when AO is reachable+entitled but returns no invoice — the link still persists', async () => {
+      const failAo = entitledAo({ createInvoice: jest.fn().mockResolvedValue(null) });
+      const { svc, lastTx } = makeService({ accounting: failAo });
+      const { tx, invoiceLinks } = makeTx(makeRow({ id: 'cust-1' }));
+      lastTx.current = tx;
+
+      await expect(svc.createInvoiceForUser(aaron, 'cust-1', dto, WS)).rejects.toThrow(
+        /did not return an invoice/i,
+      );
+      // The link was recorded BEFORE the AO call, so the (source, ref) survives
+      // for an idempotent retry.
+      expect(invoiceLinks).toHaveLength(1);
+      expect(invoiceLinks[0].externalRef).toBe('cust:cust-1:fixed-key');
+    });
+
+    it('404 when the relationship does not exist in the workspace', async () => {
+      const { svc, lastTx } = makeService({ accounting: entitledAo() });
+      const { tx } = makeTx(null);
+      tx.customer.findUnique.mockResolvedValue(null);
+      lastTx.current = tx;
+
+      await expect(svc.createInvoiceForUser(aaron, 'missing', dto, WS)).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+  });
+
+  describe('invoicesForUser / the customer-360 invoice panel', () => {
+    it('polls AO for each link, refreshes the cache, and reports canCreate when entitled', async () => {
+      const ao = entitledAo({
+        getInvoiceById: jest
+          .fn()
+          .mockResolvedValue({ ...FED_INVOICE, status: 'paid', balanceDue: '0.0000' }),
+      });
+      const { svc, accounting, lastTx } = makeService({ accounting: ao });
+      const { tx, invoiceLinks } = makeTx(makeRow({ id: 'cust-1' }));
+      invoiceLinks.push({
+        id: 'link-1',
+        workspaceId: WS,
+        customerId: 'cust-1',
+        externalSource: 'customer-ops',
+        externalRef: 'cust:cust-1:fixed-key',
+        entityId: 'entity-1',
+        aoInvoiceId: 'inv-1',
+        currency: 'USD',
+        lastStatus: 'sent',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      lastTx.current = tx;
+
+      const panel = await svc.invoicesForUser(aaron, 'cust-1', WS);
+
+      expect(panel).toMatchObject({
+        federated: true,
+        source: 'accounting-ops',
+        configured: true,
+        entitled: true,
+        canCreate: true,
+      });
+      // Polled by AO id (the link already resolved it), and the cache refreshed.
+      expect(accounting.getInvoiceById).toHaveBeenCalledWith(
+        expect.objectContaining({ workspaceId: WS }),
+        'inv-1',
+      );
+      // Status reflects the poll; balanceDue is numerically 0 (the cached value
+      // round-trips through Prisma.Decimal, which canonicalizes "0.0000"→"0";
+      // the real NUMERIC(20,4) column preserves scale — proven in the RLS SQL).
+      expect(panel.items[0].status).toBe('paid');
+      expect(Number(panel.items[0].balanceDue)).toBe(0);
+    });
+
+    it('degrade-clean: when AO is unconfigured the panel reports configured:false and polls nothing', async () => {
+      const { svc, accounting, lastTx } = makeService(); // default AO = dormant
+      const { tx, invoiceLinks } = makeTx(makeRow({ id: 'cust-1' }));
+      invoiceLinks.push({
+        id: 'link-1',
+        workspaceId: WS,
+        customerId: 'cust-1',
+        externalSource: 'customer-ops',
+        externalRef: 'cust:cust-1:k',
+        entityId: 'entity-1',
+        currency: 'USD',
+        lastStatus: 'draft',
+        totalAmount: { toString: () => '100.0000' },
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      lastTx.current = tx;
+
+      const panel = await svc.invoicesForUser(aaron, 'cust-1', WS);
+      expect(panel).toMatchObject({ configured: false, entitled: false, canCreate: false });
+      expect(accounting.getInvoiceByRef).not.toHaveBeenCalled();
+      expect(accounting.getInvoiceById).not.toHaveBeenCalled();
+      // The cached link history is still shown (never hidden by an AO outage).
+      expect(panel.items[0]).toMatchObject({ status: 'draft', total: '100.0000' });
+    });
+
+    it('configured but NOT entitled: reads cached history, canCreate:false, still polls (viewer-level)', async () => {
+      const ao = entitledAo({
+        checkEntitlement: jest
+          .fn()
+          .mockReturnValue({ allowed: false, mode: 'enforce', reason: 'not entitled' }),
+      });
+      const { svc, accounting, lastTx } = makeService({ accounting: ao });
+      const { tx, invoiceLinks } = makeTx(makeRow({ id: 'cust-1' }));
+      invoiceLinks.push({
+        id: 'link-1',
+        workspaceId: WS,
+        customerId: 'cust-1',
+        externalSource: 'customer-ops',
+        externalRef: 'cust:cust-1:k',
+        entityId: 'entity-1',
+        aoInvoiceId: 'inv-1',
+        currency: 'USD',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      lastTx.current = tx;
+
+      const panel = await svc.invoicesForUser(aaron, 'cust-1', WS);
+      expect(panel).toMatchObject({ configured: true, entitled: false, canCreate: false });
+      // Reads are viewer-level on AO → still polled even though create is gated.
+      expect(accounting.getInvoiceById).toHaveBeenCalledTimes(1);
+    });
   });
 });

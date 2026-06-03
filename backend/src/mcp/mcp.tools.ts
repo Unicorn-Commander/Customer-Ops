@@ -12,12 +12,19 @@
  * same CustomersService the REST surface uses, so an agent and a human hit one
  * implementation, one set of funnel rules, one RLS path:
  *   - list_customers      — relationships filtered by stage/priority/owner.
- *   - get_customer_360    — relationship + timeline + FEDERATED contact.
+ *   - get_customer_360    — relationship + timeline + FEDERATED contact + invoices.
  *   - pipeline_board      — relationships bucketed by funnel stage.
  *   - transition_customer_stage — move a relationship through the funnel.
  *   - add_customer_note   — append a note to the relationship timeline.
  *
- * Contact details are FEDERATED from Contact-Ops at read time — never copied.
+ * Phase 3 invoicing tools (the AR surface for agents — collections-nudge reads
+ * status here). Same delegation: AO is the ledger SoR, federated over MCP:
+ *   - list_customer_invoices   — this customer's invoices + live AO status (poll).
+ *   - create_customer_invoice  — assemble a draft + create it in Accounting-Ops
+ *                                (idempotent; dual-SKU entitlement-gated).
+ *
+ * Contact details are FEDERATED from Contact-Ops, invoices from Accounting-Ops,
+ * at read time — never copied.
  */
 
 import { User } from '@prisma/client';
@@ -26,6 +33,7 @@ import { MembershipService } from '../common/workspace/membership.service';
 import { listMyWorkspaces, MyWorkspace } from '../common/workspace/list-my-workspaces';
 import { tenancyEnabled } from '../common/workspace/feature-flags';
 import { CustomersService } from '../customers/customers.service';
+import { CreateInvoiceDto } from '../customers/dto/customer.dto';
 
 export class CustomerOpsTools {
   constructor(
@@ -109,6 +117,80 @@ export class CustomerOpsTools {
       user,
       args.customer_id,
       { body: args.body },
+      args.workspace_id ?? null,
+    );
+  }
+
+  // ── Phase 3 invoicing tools (delegate to CustomersService → Accounting-Ops) ──
+
+  /** This customer's invoices + live AO status. Degrade-clean / entitlement
+   *  affordances are in the result (configured/entitled/canCreate). */
+  async listCustomerInvoices(user: User, args: { customer_id: string; workspace_id?: string }) {
+    return this.customers.invoicesForUser(user, args.customer_id, args.workspace_id ?? null);
+  }
+
+  /** Assemble a draft + create the invoice in Accounting-Ops (idempotent on the
+   *  deterministic external_ref; requires customer-ops + accounting-ops). The
+   *  args mirror CreateInvoiceDto so the agent and the REST caller hit one path. */
+  async createCustomerInvoice(
+    user: User,
+    args: {
+      customer_id: string;
+      workspace_id?: string;
+      entity_id: string;
+      customer_name: string;
+      customer_email?: string;
+      billing_address?: string;
+      line_items: Array<{
+        description: string;
+        quantity?: string;
+        unit_price?: string;
+        amount?: string;
+        tax_code?: string;
+        tax_amount?: string;
+        revenue_account_id?: string;
+        source_ref?: string;
+      }>;
+      currency?: string;
+      issue_date?: string;
+      due_date?: string;
+      net_terms?: number;
+      discount?: string;
+      notes?: string;
+      po_number?: string;
+      auto_send?: boolean;
+      idempotency_key?: string;
+    },
+  ) {
+    const dto: CreateInvoiceDto = {
+      entityId: args.entity_id,
+      customerName: args.customer_name,
+      customerEmail: args.customer_email,
+      billingAddress: args.billing_address,
+      lineItems: (args.line_items ?? []).map((li) => ({
+        description: li.description,
+        quantity: li.quantity,
+        unitPrice: li.unit_price,
+        amount: li.amount,
+        taxCode: li.tax_code,
+        taxAmount: li.tax_amount,
+        revenueAccountId: li.revenue_account_id,
+        sourceRef: li.source_ref,
+      })),
+      currency: args.currency,
+      issueDate: args.issue_date,
+      dueDate: args.due_date,
+      netTerms: args.net_terms,
+      discount: args.discount,
+      notes: args.notes,
+      poNumber: args.po_number,
+      autoSend: args.auto_send,
+      idempotencyKey: args.idempotency_key,
+    };
+    return this.customers.createInvoiceForUser(
+      user,
+      args.customer_id,
+      dto,
       args.workspace_id ?? null,
     );
   }

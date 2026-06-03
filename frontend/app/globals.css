@@ -584,3 +584,33 @@ a {
     grid-template-columns: 1fr;
   }
 }
+
+/* ============================================================
+   Phase 3 — the Accounting-Ops invoice panel (customer-360)
+   ============================================================ */
+.co-invoices {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.co-invoices > li {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 13px;
+}
+/* Status-tinted tag variants (federated AO invoice.status). */
+.co-tag--ok {
+  background: rgba(34, 197, 94, 0.15);
+  color: #86efac;
+}
+.co-tag--warn {
+  background: rgba(234, 179, 8, 0.16);
+  color: #fde047;
+}
+.co-tag--muted {
+  background: rgba(148, 163, 184, 0.14);
+  color: #94a3b8;
+}

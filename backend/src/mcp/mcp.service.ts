@@ -48,9 +48,12 @@ export class McpService {
           'Customer-Ops MCP server. Foundation tools check service health and ' +
           'list the caller’s workspaces. Cockpit tools drive the relationship ' +
           'funnel: list relationships by stage, read a customer-360 (the local ' +
-          'relationship + the FEDERATED Contact-Ops contact), view the pipeline ' +
-          'board, move a relationship through the funnel, and add timeline notes. ' +
-          'Contacts are federated from Contact-Ops, never copied.',
+          'relationship + the FEDERATED Contact-Ops contact + Accounting-Ops ' +
+          'invoices), view the pipeline board, move a relationship through the ' +
+          'funnel, and add timeline notes. Invoicing tools federate to ' +
+          'Accounting-Ops (the AR engine / ledger): list a customer’s invoices ' +
+          'with live status, and create an invoice from a draft. Contacts are ' +
+          'federated from Contact-Ops and invoices from Accounting-Ops, never copied.',
       },
     );
 
@@ -113,8 +116,9 @@ export class McpService {
         title: 'Customer 360',
         description:
           'The full relationship view: the local relationship + lifecycle stage ' +
-          '+ activity timeline, plus the FEDERATED Contact-Ops contact detail. ' +
-          'Invoice/meeting/email slots are present but Phase-3 (empty for now).',
+          '+ activity timeline, plus the FEDERATED Contact-Ops contact detail and ' +
+          'the FEDERATED Accounting-Ops invoice panel (live status). Meeting/email ' +
+          'slots are present but later-phase (empty for now).',
         inputSchema: {
           customer_id: z.string(),
           workspace_id: z.string().optional(),
@@ -169,6 +173,72 @@ export class McpService {
         },
       },
       async (args: any) => wrap(await tools.addNote(user, args)),
+    );
+
+    // ── Phase 3 invoicing tools (federate to Accounting-Ops) ──
+
+    server.registerTool(
+      'list_customer_invoices',
+      {
+        title: 'List customer invoices',
+        description:
+          'This customer’s invoices, FEDERATED from Accounting-Ops (the AR engine ' +
+          '/ ledger system-of-record) with live status polled. The result reports ' +
+          'degrade-clean / entitlement affordances (configured, entitled, ' +
+          'canCreate) — Accounting-Ops must be connected and the workspace must ' +
+          'carry both customer-ops and accounting-ops entitlements to create.',
+        inputSchema: {
+          customer_id: z.string(),
+          workspace_id: z.string().optional(),
+        },
+      },
+      async (args: any) => wrap(await tools.listCustomerInvoices(user, args)),
+    );
+
+    server.registerTool(
+      'create_customer_invoice',
+      {
+        title: 'Create customer invoice',
+        description:
+          'Assemble a draft from this customer and create the invoice in ' +
+          'Accounting-Ops (the ledger SoR). Idempotent on a deterministic ' +
+          'external_ref derived from the optional idempotency_key (a retry with ' +
+          'the same key returns the same invoice). Requires BOTH customer-ops and ' +
+          'accounting-ops entitlements. Money fields are decimal STRINGS (never ' +
+          'float). Does NOT post a ledger entry locally — Accounting-Ops does.',
+        inputSchema: {
+          customer_id: z.string(),
+          workspace_id: z.string().optional(),
+          entity_id: z.string(),
+          customer_name: z.string().min(1).max(300),
+          customer_email: z.string().max(320).optional(),
+          billing_address: z.string().max(2000).optional(),
+          line_items: z
+            .array(
+              z.object({
+                description: z.string().min(1).max(1000),
+                quantity: z.string().optional(),
+                unit_price: z.string().optional(),
+                amount: z.string().optional(),
+                tax_code: z.string().max(64).optional(),
+                tax_amount: z.string().optional(),
+                revenue_account_id: z.string().max(64).optional(),
+                source_ref: z.string().max(256).optional(),
+              }),
+            )
+            .min(1),
+          currency: z.string().max(8).optional(),
+          issue_date: z.string().optional(),
+          due_date: z.string().optional(),
+          net_terms: z.number().int().min(0).max(3650).optional(),
+          discount: z.string().optional(),
+          notes: z.string().max(4000).optional(),
+          po_number: z.string().max(128).optional(),
+          auto_send: z.boolean().optional(),
+          idempotency_key: z.string().max(200).optional(),
+        },
+      },
+      async (args: any) => wrap(await tools.createCustomerInvoice(user, args)),
     );
 
     return server;

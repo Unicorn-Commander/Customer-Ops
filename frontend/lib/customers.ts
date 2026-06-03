@@ -70,6 +70,44 @@ export interface TimelineEntry {
   createdAt: string;
 }
 
+/**
+ * A thin invoice link joined with Accounting-Ops's live (polled) status. AO is
+ * the AR engine / ledger system-of-record; Customer-Ops holds only the link +
+ * cached projection. Money fields are decimal STRINGS (never float).
+ */
+export interface InvoiceLink {
+  id: string;
+  customerId: string;
+  externalSource: string;
+  externalRef: string;
+  entityId: string;
+  aoInvoiceId: string | null;
+  invoiceNumber: string | null;
+  status: string | null; // draft|sent|partial|paid|void (AO)
+  currency: string;
+  total: string | null;
+  balanceDue: string | null;
+  lastPolledAt: string | null;
+  createdAt: string;
+}
+
+/**
+ * The customer-360 invoice panel: the federated AO invoice list + the
+ * degrade-clean / entitlement affordances.
+ *   - `configured` false  → AO not connected; show "connect Accounting-Ops".
+ *   - `entitled` false     → caller lacks the customer-ops+accounting-ops SKUs;
+ *                            history is read-only, the create action is hidden.
+ *   - `canCreate`          → configured && entitled.
+ */
+export interface InvoicePanel {
+  federated: boolean;
+  source: string; // 'accounting-ops'
+  configured: boolean;
+  entitled: boolean;
+  canCreate: boolean;
+  items: InvoiceLink[];
+}
+
 export interface Customer360 {
   relationship: CustomerRow;
   contact: {
@@ -85,9 +123,39 @@ export interface Customer360 {
   } | null;
   contactFederation: { contactId: string; resolved: boolean; source: string };
   timeline: TimelineEntry[];
-  invoices: { federated: boolean; source: string; items: unknown[] };
+  invoices: InvoicePanel;
   meetings: { federated: boolean; source: string; items: unknown[] };
   email: { federated: boolean; source: string; items: unknown[] };
+}
+
+/** One invoice line for the create-invoice action. Money = decimal strings. */
+export interface InvoiceLineInput {
+  description: string;
+  quantity?: string;
+  unitPrice?: string;
+  amount?: string;
+  taxCode?: string;
+  taxAmount?: string;
+  revenueAccountId?: string;
+  sourceRef?: string;
+}
+
+/** The create-invoice request body (mirrors the backend CreateInvoiceDto). */
+export interface CreateInvoiceInput {
+  entityId: string;
+  customerName: string;
+  customerEmail?: string;
+  billingAddress?: string;
+  lineItems: InvoiceLineInput[];
+  currency?: string;
+  issueDate?: string;
+  dueDate?: string;
+  netTerms?: number;
+  discount?: string;
+  notes?: string;
+  poNumber?: string;
+  autoSend?: boolean;
+  idempotencyKey?: string;
 }
 
 /** Resolve the caller's active workspace id (default membership, else first). */
@@ -156,6 +224,48 @@ export async function updateCustomer(
   body: Partial<{ priority: Priority; ownerUserKey: string; expectedValue: string; notes: string; nextActionAt: string }>,
 ): Promise<CustomerRow> {
   return apiPatch<CustomerRow>(`${base(ws)}/${encodeURIComponent(id)}`, body);
+}
+
+// ── Phase 3: the Accounting-Ops invoicing surface ──
+// Customer-Ops FEDERATES invoicing to Accounting-Ops; the backend creates the
+// invoice in AO (the ledger SoR) and keeps only a thin link. The UI renders
+// the federated list + live status and offers the create action when entitled.
+
+/** This customer's invoices, federated from Accounting-Ops (live status). */
+export async function listInvoices(ws: string, id: string): Promise<InvoicePanel> {
+  return apiGet<InvoicePanel>(`${base(ws)}/${encodeURIComponent(id)}/invoices`);
+}
+
+/** Assemble a draft + create the invoice in Accounting-Ops (idempotent). */
+export async function createInvoice(
+  ws: string,
+  id: string,
+  body: CreateInvoiceInput,
+): Promise<{ link: InvoiceLink; invoice: unknown }> {
+  return apiPost<{ link: InvoiceLink; invoice: unknown }>(
+    `${base(ws)}/${encodeURIComponent(id)}/invoices`,
+    body,
+  );
+}
+
+/** A human label + tone for an AO invoice status. */
+export function invoiceStatusLabel(status: string | null): { label: string; tone: string } {
+  switch (status) {
+    case 'paid':
+      return { label: 'Paid', tone: 'ok' };
+    case 'partial':
+      return { label: 'Partially paid', tone: 'warn' };
+    case 'sent':
+      return { label: 'Sent', tone: 'info' };
+    case 'void':
+      return { label: 'Void', tone: 'muted' };
+    case 'draft':
+      return { label: 'Draft', tone: 'muted' };
+    case null:
+      return { label: 'Pending', tone: 'muted' };
+    default:
+      return { label: status, tone: 'info' };
+  }
 }
 
 /** A short, human label for a relationship — federated name, else the contactId. */
