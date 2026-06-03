@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { clearSession, getStoredUser, getToken, CustomerOpsUser } from '@/lib/api';
+import { Nav } from '@/components/Nav';
 
 /**
  * Authenticated dashboard shell. Phase 1 is deliberately empty — it proves the
@@ -43,8 +44,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   return (
     <div className="co-shell">
       <header className="co-topbar">
-        <div className="co-brand">
-          Customer<span>-Ops</span>
+        <div className="co-row" style={{ gap: 24 }}>
+          <div className="co-brand">
+            Customer<span>-Ops</span>
+          </div>
+          <Nav />
         </div>
         <div className="co-row">
           {user && <span className="co-muted">{user.email}</span>}
@@ -53,7 +57,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           </button>
         </div>
       </header>
-      <main className="co-content">{children}</main>
+      <main className="co-content co-content--wide">{children}</main>
     </div>
   );
 }

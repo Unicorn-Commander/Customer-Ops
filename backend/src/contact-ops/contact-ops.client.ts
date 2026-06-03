@@ -1,0 +1,368 @@
+/**
+ * The concrete Contact-Ops federation client.
+ *
+ * Speaks the two surfaces Contact-Ops exposes (verified in the CO tree +
+ * handoff-contact-ops.md):
+ *
+ *   1. MCP — JSON-RPC 2.0 over `POST {CONTACT_OPS_BASE_URL}/mcp`
+ *      (contact_ops/mcp/server.py). Tenant comes from the bearer's
+ *      `workspace_id` claim, NEVER a header. Contact-read tools used:
+ *        - get_person(person_id, include[])            -> GetPersonOutput
+ *        - list_people / search_people(filters)        -> {items: PersonSummary[]}
+ *      Tool-call envelope: result.structuredContent (preferred) | result.content[0].text.
+ *      Application errors come back HTTP 200 with result.isError=true OR a
+ *      JSON-RPC `error` object — both handled.
+ *
+ *   2. The signed thin workspace projection — `GET {CONTACT_OPS_BASE_URL}/api/v1/workspaces/{id}`
+ *      (handoff-contact-ops §2.2). Server-to-server auth; returns the 9
+ *      suite-shared fields, never infra columns.
+ *
+ * AUTH: Customer-Ops calls Contact-Ops as a service. The bearer is a federation
+ * token carrying the `workspace_id` claim for the addressed workspace +
+ * `aud=contact-ops`. Minting that token is Brigade's job; until the Brigade
+ * RFC-8693 exchange is wired (Phase 3 seam), this client reads a configured
+ * service token (CONTACT_OPS_SERVICE_TOKEN) and sets the workspace via the
+ * documented precedence. The token-mint seam is isolated in `authHeader()` so
+ * swapping to Brigade is a one-method change.
+ *
+ * DEGRADE-CLEAN: when CONTACT_OPS_BASE_URL is unset (no CO reachable — e.g.
+ * Phase-1/2 dogfood before CO federation is live, or verification), every read
+ * returns empty/null instead of throwing. The cockpit then renders the
+ * relationship rows with "contact unavailable" placeholders. This keeps
+ * Customer-Ops fully functional without a hard CO dependency, per the brief
+ * ("leave the seams"; federation MOCKED in tests).
+ */
+
+import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { ContactOpsPort, FederationContext } from './contact-ops.port';
+import {
+  FederatedContact,
+  FederatedContactPage,
+  FederatedContactSummary,
+  FederatedWorkspaceProjection,
+  ListContactsFilter,
+} from './contact-ops.types';
+
+interface JsonRpcResult {
+  structuredContent?: Record<string, unknown>;
+  content?: Array<{ type: string; text?: string }>;
+  isError?: boolean;
+}
+
+interface JsonRpcResponse {
+  jsonrpc: string;
+  id: string | number | null;
+  result?: JsonRpcResult;
+  error?: { code: number; message: string };
+}
+
+@Injectable()
+export class ContactOpsClient extends ContactOpsPort {
+  private readonly logger = new Logger(ContactOpsClient.name);
+  private rpcId = 0;
+
+  constructor(private readonly config: ConfigService) {
+    super();
+    if (!this.baseUrl) {
+      this.logger.warn(
+        'CONTACT_OPS_BASE_URL unset — Contact-Ops federation is DORMANT; ' +
+          'contact details resolve to placeholders until configured.',
+      );
+    } else {
+      this.logger.log(`Contact-Ops federation target: ${this.baseUrl}`);
+    }
+  }
+
+  // --- configuration seam -------------------------------------------------
+
+  private get baseUrl(): string | null {
+    const raw = this.config.get<string>('CONTACT_OPS_BASE_URL');
+    return raw && raw.trim() ? raw.trim().replace(/\/$/, '') : null;
+  }
+
+  private get timeoutMs(): number {
+    const raw = this.config.get<string>('CONTACT_OPS_TIMEOUT_MS');
+    const n = raw ? Number(raw) : NaN;
+    return Number.isFinite(n) && n > 0 ? n : 8000;
+  }
+
+  /**
+   * Build the auth headers for a federation call to Contact-Ops. This is the
+   * Brigade token-mint seam: today it forwards a configured service token; the
+   * Phase-3 change swaps in a Brigade RFC-8693 exchange that mints a per-request
+   * token with `aud=contact-ops` + the addressed `workspace_id` claim. The
+   * `X-Workspace-Id` header rides along for CO's per-request addressing
+   * (WORKSPACE_PER_REQUEST_ENABLED); CO still re-gates membership server-side,
+   * so the header is a hint, never the authz boundary.
+   */
+  private authHeaders(ctx: FederationContext): Record<string, string> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    const token = this.config.get<string>('CONTACT_OPS_SERVICE_TOKEN');
+    if (token && token.trim()) headers['Authorization'] = `Bearer ${token.trim()}`;
+    // Per-request workspace addressing (handoff §2.3 precedence: path → header →
+    // claim). CO re-checks membership against this before binding the GUC.
+    headers['X-Workspace-Id'] = ctx.workspaceId;
+    if (ctx.ucUid) headers['X-Uc-Uid'] = ctx.ucUid;
+    return headers;
+  }
+
+  // --- MCP JSON-RPC transport --------------------------------------------
+
+  /**
+   * Invoke one Contact-Ops MCP tool via JSON-RPC `tools/call`. Returns the
+   * tool's structuredContent, or null on any transport/application failure
+   * (logged). Never throws — federation is best-effort by design.
+   */
+  private async callTool(
+    ctx: FederationContext,
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown> | null> {
+    const base = this.baseUrl;
+    if (!base) return null;
+
+    const body = {
+      jsonrpc: '2.0',
+      id: ++this.rpcId,
+      method: 'tools/call',
+      params: { name, arguments: args },
+    };
+
+    let res: Response;
+    try {
+      res = await this.fetchWithTimeout(`${base}/mcp`, {
+        method: 'POST',
+        headers: this.authHeaders(ctx),
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      this.logger.warn(`Contact-Ops MCP ${name} transport error: ${(err as Error).message}`);
+      return null;
+    }
+
+    if (!res.ok) {
+      this.logger.warn(`Contact-Ops MCP ${name} HTTP ${res.status}`);
+      return null;
+    }
+
+    let payload: JsonRpcResponse;
+    try {
+      payload = (await res.json()) as JsonRpcResponse;
+    } catch (err) {
+      this.logger.warn(`Contact-Ops MCP ${name} non-JSON response: ${(err as Error).message}`);
+      return null;
+    }
+
+    if (payload.error) {
+      this.logger.warn(`Contact-Ops MCP ${name} JSON-RPC error: ${payload.error.message}`);
+      return null;
+    }
+
+    const result = payload.result;
+    if (!result || result.isError) {
+      const text = result?.content?.[0]?.text;
+      this.logger.warn(`Contact-Ops MCP ${name} tool error: ${text ?? 'unknown'}`);
+      return null;
+    }
+
+    // Prefer the typed structuredContent; fall back to parsing content[0].text.
+    if (result.structuredContent) return result.structuredContent;
+    const text = result.content?.find((c) => c.type === 'text')?.text;
+    if (text) {
+      try {
+        return JSON.parse(text) as Record<string, unknown>;
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  private async fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      return await fetch(url, { ...init, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // --- mapping: CO wire shapes -> Customer-Ops federation projections -----
+
+  private toSummary(raw: Record<string, unknown>): FederatedContactSummary | null {
+    const personId = raw['person_id'];
+    if (typeof personId !== 'string' || !personId) return null;
+    return {
+      contactId: personId,
+      displayName: (raw['display_name'] as string) ?? '(unnamed contact)',
+      primaryEmail: (raw['primary_email'] as string | null) ?? null,
+      currentOrgId: (raw['current_org_id'] as string | null) ?? null,
+      currentOrgName: (raw['current_org_name'] as string | null) ?? null,
+      lastInteractionAt: (raw['last_interaction_at'] as string | null) ?? null,
+      communicationStrength:
+        typeof raw['communication_strength'] === 'number'
+          ? (raw['communication_strength'] as number)
+          : null,
+      tags: Array.isArray(raw['tags']) ? (raw['tags'] as string[]) : [],
+      etag: (raw['etag'] as string | null) ?? null,
+    };
+  }
+
+  // --- ContactOpsPort implementation -------------------------------------
+
+  async getContact(ctx: FederationContext, contactId: string): Promise<FederatedContact | null> {
+    const raw = await this.callTool(ctx, 'get_person', {
+      person_id: contactId,
+      include: ['emails', 'phones'],
+    });
+    if (!raw) return null;
+    const personId = raw['person_id'];
+    if (typeof personId !== 'string' || !personId) return null;
+
+    return {
+      contactId: personId,
+      displayName: (raw['display_name'] as string) ?? '(unnamed contact)',
+      primaryEmail:
+        (raw['primary_email'] as string | null) ?? firstPrimaryEmail(raw['emails']) ?? null,
+      currentOrgId: (raw['current_org_id'] as string | null) ?? null,
+      currentOrgName: (raw['current_org_name'] as string | null) ?? null,
+      lastInteractionAt: (raw['last_interaction_at'] as string | null) ?? null,
+      communicationStrength:
+        typeof raw['communication_strength'] === 'number'
+          ? (raw['communication_strength'] as number)
+          : null,
+      tags: Array.isArray(raw['tags']) ? (raw['tags'] as string[]) : [],
+      etag: (raw['etag'] as string | null) ?? null,
+      vcardUid: (raw['vcard_uid'] as string | null) ?? null,
+      kind: (raw['kind'] as string) ?? 'individual',
+      status: (raw['status'] as string) ?? 'active',
+      emails: Array.isArray(raw['emails']) ? (raw['emails'] as FederatedContact['emails']) : [],
+      phones: Array.isArray(raw['phones']) ? (raw['phones'] as FederatedContact['phones']) : [],
+      recentEvents: Array.isArray(raw['recent_events'])
+        ? (raw['recent_events'] as Array<Record<string, unknown>>)
+        : [],
+    };
+  }
+
+  async getContactSummaries(
+    ctx: FederationContext,
+    contactIds: string[],
+  ): Promise<Map<string, FederatedContactSummary>> {
+    const out = new Map<string, FederatedContactSummary>();
+    if (contactIds.length === 0 || !this.baseUrl) return out;
+
+    // Contact-Ops has no batch "get_people by ids" tool; get_person is the
+    // typed by-id read. Resolve concurrently (bounded by the caller's page
+    // size). A future CO bulk-read tool drops straight in here.
+    const unique = [...new Set(contactIds)];
+    const results = await Promise.all(
+      unique.map(async (id) => {
+        const full = await this.getContact(ctx, id);
+        return full
+          ? ({
+              contactId: full.contactId,
+              displayName: full.displayName,
+              primaryEmail: full.primaryEmail,
+              currentOrgId: full.currentOrgId,
+              currentOrgName: full.currentOrgName,
+              lastInteractionAt: full.lastInteractionAt,
+              communicationStrength: full.communicationStrength,
+              tags: full.tags,
+              etag: full.etag,
+            } as FederatedContactSummary)
+          : null;
+      }),
+    );
+    for (const s of results) if (s) out.set(s.contactId, s);
+    return out;
+  }
+
+  async listContacts(
+    ctx: FederationContext,
+    filter: ListContactsFilter,
+  ): Promise<FederatedContactPage> {
+    const empty: FederatedContactPage = { items: [], count: 0, nextCursor: null };
+    if (!this.baseUrl) return empty;
+
+    // search_people when a free-text query is present (CO does lexical/hybrid),
+    // else list_people for structured filtering.
+    const useSearch = !!filter.query && filter.query.trim().length > 0;
+    const args: Record<string, unknown> = {
+      limit: filter.limit ?? 25,
+    };
+    if (filter.cursor) args['cursor'] = filter.cursor;
+    if (filter.tagsAny && filter.tagsAny.length) args['tags_any'] = filter.tagsAny;
+    if (typeof filter.hasEmail === 'boolean') args['has_email'] = filter.hasEmail;
+    if (useSearch) args['query'] = filter.query!.trim();
+
+    const raw = await this.callTool(ctx, useSearch ? 'search_people' : 'list_people', args);
+    if (!raw) return empty;
+
+    const items: FederatedContactSummary[] = [];
+    const rawItems = Array.isArray(raw['items']) ? (raw['items'] as Record<string, unknown>[]) : [];
+    for (const it of rawItems) {
+      const s = this.toSummary(it);
+      if (s) items.push(s);
+    }
+    return {
+      items,
+      count: typeof raw['count'] === 'number' ? (raw['count'] as number) : items.length,
+      nextCursor: (raw['next_cursor'] as string | null) ?? null,
+    };
+  }
+
+  async getWorkspaceProjection(
+    ctx: FederationContext,
+  ): Promise<FederatedWorkspaceProjection | null> {
+    const base = this.baseUrl;
+    if (!base) return null;
+
+    let res: Response;
+    try {
+      res = await this.fetchWithTimeout(
+        `${base}/api/v1/workspaces/${encodeURIComponent(ctx.workspaceId)}`,
+        { method: 'GET', headers: this.authHeaders(ctx) },
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Contact-Ops workspace projection transport error: ${(err as Error).message}`,
+      );
+      return null;
+    }
+    if (!res.ok) {
+      // 404 == CO doesn't mirror this workspace; 401/403 == auth. Either way
+      // there is no projection to surface.
+      this.logger.debug?.(`Contact-Ops workspace projection HTTP ${res.status}`);
+      return null;
+    }
+    let raw: Record<string, unknown>;
+    try {
+      raw = (await res.json()) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+    const wid = (raw['workspace_id'] as string) ?? ctx.workspaceId;
+    return {
+      workspaceId: wid,
+      slug: (raw['slug'] as string) ?? '',
+      displayName: (raw['display_name'] as string) ?? '',
+      isolationMode: (raw['isolation_mode'] as string) ?? 'standard',
+      isolationTier: (raw['isolation_tier'] as string) ?? 'shared',
+      hipaaMode: !!raw['hipaa_mode'],
+      gdprMode: !!raw['gdpr_mode'],
+      dataResidency: (raw['data_residency'] as string | null) ?? null,
+      status: (raw['status'] as string) ?? 'active',
+    };
+  }
+}
+
+/** Pull the primary (or first) email address out of CO's get_person emails[]. */
+function firstPrimaryEmail(emails: unknown): string | null {
+  if (!Array.isArray(emails) || emails.length === 0) return null;
+  const list = emails as Array<Record<string, unknown>>;
+  const primary = list.find((e) => e['is_primary'] === true) ?? list[0];
+  const addr = primary?.['address'];
+  return typeof addr === 'string' ? addr : null;
+}

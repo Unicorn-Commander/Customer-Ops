@@ -58,6 +58,42 @@ export async function apiGet<T = unknown>(path: string, token?: string): Promise
   return (await res.json()) as T;
 }
 
+/** Authenticated POST/PATCH against the backend. Throws on non-2xx. */
+async function apiSend<T = unknown>(
+  method: 'POST' | 'PATCH',
+  path: string,
+  body?: unknown,
+): Promise<T> {
+  const bearer = getToken();
+  const res = await fetch(`${API_BASE}${path}`, {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
+    },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    let detail = '';
+    try {
+      const j = await res.json();
+      detail = j?.message ? ` — ${Array.isArray(j.message) ? j.message.join(', ') : j.message}` : '';
+    } catch {
+      /* ignore */
+    }
+    throw new Error(`${method} ${path} failed: ${res.status}${detail}`);
+  }
+  return (await res.json()) as T;
+}
+
+export function apiPost<T = unknown>(path: string, body?: unknown): Promise<T> {
+  return apiSend<T>('POST', path, body);
+}
+
+export function apiPatch<T = unknown>(path: string, body?: unknown): Promise<T> {
+  return apiSend<T>('PATCH', path, body);
+}
+
 export interface CustomerOpsUser {
   id: string;
   email: string;

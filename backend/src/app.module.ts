@@ -8,6 +8,8 @@ import { WorkspaceModule } from './common/workspace/workspace.module';
 import { AuthModule } from './auth/auth.module';
 import { HealthModule } from './health/health.module';
 import { McpModule } from './mcp/mcp.module';
+import { ContactOpsModule } from './contact-ops/contact-ops.module';
+import { CustomersModule } from './customers/customers.module';
 
 @Module({
   imports: [
@@ -28,6 +30,10 @@ import { McpModule } from './mcp/mcp.module';
     WorkspaceModule,
     AuthModule,
     HealthModule,
+    // Phase 2 — the relationship cockpit + the Contact-Ops federation seam.
+    ContactOpsModule,
+    CustomersModule,
+    // MCP last so it can consume the cockpit tools.
     McpModule,
   ],
   providers: [

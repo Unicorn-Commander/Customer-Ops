@@ -11,10 +11,17 @@ datasource db {
 // Customer-Ops — the relationship / funnel cockpit of the
 // Unicorn Commander suite.
 //
-// PHASE 1 = the tenancy FOUNDATION only (the Workspace+Membership
-// tenancy boundary, SSO identity, the thin relationship projection,
-// RLS, and the MCP skeleton). The CRM cockpit (Contact-Ops / AO /
-// Outreach / Meeting-Ops federation surfaces) is Phase 2+.
+// PHASE 1 = the tenancy FOUNDATION (Workspace+Membership tenancy
+// boundary, SSO identity, the thin relationship projection, RLS, the
+// MCP skeleton).
+//
+// PHASE 2 (this layer) = the relationship cockpit + the Contact-Ops
+// federation seam: pipeline fields on the Customer relationship, a
+// tenant-scoped CustomerActivity log (stage-transition + note audit
+// trail), and the read surfaces (list/filter by stage, pipeline board,
+// customer-360). The contact details on a 360 are FEDERATED from
+// Contact-Ops at read time — never copied. AO/Outreach/Email-Ops/
+// Meeting-Ops remain Phase 3+ seams (the 360 leaves slots for them).
 //
 // Customer-Ops is a SURFACE, not an engine: it OWNS the relationship
 // (the lifecycle stage + pipeline keyed on workspace_id + contactId)
@@ -57,6 +64,32 @@ enum RelationshipStage {
   CUSTOMER
 }
 
+// ── Pipeline priority (Customer-Ops OWNS this) ──
+//
+// A relationship-owned lever for the cockpit's "needs attention" sort /
+// kanban swimlane weighting. NOT contact data — it is how the operator
+// prioritizes working THIS relationship.
+enum RelationshipPriority {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+// ── Relationship activity kind (Customer-Ops OWNS this) ──
+//
+// The append-only audit trail of what the cockpit did TO the relationship:
+// stage transitions, lost/reopened, owner reassignment, and freeform notes.
+// This is relationship provenance — it never holds contact PII (that stays
+// federated in Contact-Ops); it references the relationship by customerId.
+enum CustomerActivityKind {
+  STAGE_CHANGE
+  NOTE
+  CREATED
+  REOPENED
+  MARKED_LOST
+  OWNER_CHANGED
+}
+
 // ============================================================
 // SUITE TENANCY (SUITE-IDENTITY.md §2 — VERBATIM)
 // ============================================================
@@ -84,8 +117,9 @@ model Workspace {
   syncedAt          DateTime     @default(now())
   createdAt         DateTime     @default(now())
   updatedAt         DateTime     @updatedAt
-  memberships       Membership[]
-  customers         Customer[]
+  memberships        Membership[]
+  customers          Customer[]
+  customerActivities CustomerActivity[]
 
   @@index([slug])
   @@index([status])
@@ -152,27 +186,99 @@ model Customer {
   workspaceId String
   // Federated Contact-Ops contact id. NOT a foreign key — Contact-Ops is the
   // canonical phonebook; this is a reference, resolved over the federation
-  // seam (Phase 2). Never copy the contact record here.
+  // seam (the ContactOps port). Never copy the contact record here.
   contactId   String
   stage       RelationshipStage @default(LEAD)
   // Source provenance + consent live on the projection so Outreach stays
-  // CAN-SPAM / GDPR-clean (README golden rule). Thin in Phase 1; the cockpit
-  // enriches these in Phase 2.
+  // CAN-SPAM / GDPR-clean (README golden rule).
   source      String?
   notes       String?
+
+  // ── Pipeline fields (Phase 2; Customer-Ops OWNS these) ──
+  // All relationship/pipeline data, NOT contact data. A contact's name, email,
+  // org, etc. are NEVER stored here — they are federated from Contact-Ops at
+  // read time (the customer-360). These columns describe how the operator
+  // WORKS the relationship.
+  priority        RelationshipPriority @default(MEDIUM)
+  // Assigned rep — the userKey (uchub sub) of the member who owns this
+  // relationship. Nullable: an unassigned lead sits in the pool.
+  ownerUserKey    String?
+  // Open pipeline value for this relationship. Money is a decimal; Customer-Ops
+  // is NOT the AR engine (Accounting-Ops owns invoices), this is the cockpit's
+  // forecast value only. NUMERIC(20,4) matches the suite money shape.
+  expectedValue   Decimal?             @db.Decimal(20, 4)
+  currency        String?              @default("USD")
+  // The next thing to do on this relationship (drives the "needs attention"
+  // surface). Relationship-owned, not a Meeting-Ops/calendar event.
+  nextActionAt    DateTime?
+  // Lost / closed-lost marker. The stage enum stays LEAD/PROSPECT/CUSTOMER
+  // (the three load-bearing stages); "lost" is an orthogonal flag so a lost
+  // lead and a lost prospect both stay queryable by their last stage.
+  isLost          Boolean              @default(false)
+  lostReason      String?
+  closedLostAt    DateTime?
+  // When the stage last changed — powers stage-age / stalled-deal reporting
+  // without scanning the activity log.
+  lastStageChangeAt DateTime           @default(now())
+
   createdAt   DateTime          @default(now())
   updatedAt   DateTime          @updatedAt
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace  Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  activities CustomerActivity[]
 
   // A contact holds exactly one lifecycle position per workspace.
   @@unique([workspaceId, contactId])
   @@index([workspaceId])
   @@index([workspaceId, stage])
+  // Hot paths for the cockpit: the pipeline board (stage + lost filter), the
+  // "my pipeline" view (owner), and the "needs attention" sort.
+  @@index([workspaceId, stage, isLost])
+  @@index([workspaceId, ownerUserKey])
   @@map("customers")
 }
 
-// NOTE: The Workspace↔Customer relation is declared here to satisfy Prisma's
-// relation requirement. It does NOT make Workspace a tenant-scoped table —
-// Workspace is the tenancy CONTROL table (not RLS-fenced); Customer is the
-// scoped projection (RLS-fenced by the migration).
+// ============================================================
+// RELATIONSHIP ACTIVITY LOG (Customer-Ops OWNS this — tenant-scoped)
+// ============================================================
+//
+// The append-only provenance trail for a relationship: every stage transition,
+// lost/reopen, owner reassignment, and freeform note. This is the cockpit's
+// audit surface + the raw material for the customer-360 timeline.
+//
+// It is relationship provenance, NOT contact data: it references the
+// relationship by customerId and stores only what Customer-Ops did (the
+// from/to stage, an actor sub, a free-text body). It NEVER holds the contact's
+// PII — that always resolves federated from Contact-Ops.
+//
+// RLS-fenced on workspaceId exactly like `customers` (the workspaceId is
+// denormalized onto the row so the policy predicate is a simple column compare
+// and a no-GUC read returns zero rows — fail-closed, same as the Customer).
+model CustomerActivity {
+  id          String               @id @default(uuid())
+  workspaceId String
+  customerId  String
+  kind        CustomerActivityKind
+  // Stage transition endpoints (null for non-stage activities like NOTE).
+  fromStage   RelationshipStage?
+  toStage     RelationshipStage?
+  // Freeform body (the note text, or a human summary of the change).
+  body        String?
+  // The acting user's uchub sub (app.uc_uid), captured for attribution.
+  actorUcUid  String?
+  createdAt   DateTime             @default(now())
+
+  customer  Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  // The 360 timeline reads a customer's activities newest-first.
+  @@index([workspaceId, customerId, createdAt])
+  @@map("customer_activities")
+}
+
+// NOTE: The Workspace↔Customer / Workspace↔CustomerActivity relations are
+// declared here to satisfy Prisma's relation requirement. They do NOT make
+// Workspace a tenant-scoped table — Workspace is the tenancy CONTROL table
+// (not RLS-fenced); Customer + CustomerActivity are the scoped projections
+// (RLS-fenced by the migration).

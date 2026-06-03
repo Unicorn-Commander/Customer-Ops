@@ -1,13 +1,14 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { apiGet, MyWorkspace } from '@/lib/api';
 
 /**
- * Empty authenticated dashboard shell (Phase 1). It exercises the tenancy
- * wiring end-to-end by listing the caller's workspaces from the backend
- * (`GET /auth/me/workspaces`, membership-derived), and reserves the space the
- * Phase 2 funnel cockpit fills.
+ * Dashboard overview. Lists the caller's membership-derived workspaces (proving
+ * the tenancy wiring end-to-end) and points into the Phase 2 cockpit — the
+ * relationship list, the pipeline board, and (via a relationship) the
+ * customer-360.
  */
 export default function DashboardHome() {
   const [workspaces, setWorkspaces] = useState<MyWorkspace[] | null>(null);
@@ -26,11 +27,23 @@ export default function DashboardHome() {
           Welcome to Customer-Ops
         </h2>
         <p className="co-muted" style={{ marginTop: 8, lineHeight: 1.6 }}>
-          This is the Phase 1 foundation shell. The relationship cockpit — contact
-          360, lead → prospect → customer pipeline, the invoicing and outreach
-          surfaces — lands in Phase 2. Tenancy, SSO, and the agent MCP server are
-          already wired underneath.
+          The relationship / funnel cockpit. Work the lifecycle — lead → prospect
+          → customer — in one place. Contacts are federated from Contact-Ops; the
+          relationship and its lifecycle stage live here. Invoicing, meetings, and
+          email surfaces fold in next.
         </p>
+        <div className="co-row" style={{ gap: 8, marginTop: 16 }}>
+          <Link className="co-btn co-btn--sm" href="/dashboard/customers" style={{ textDecoration: 'none' }}>
+            Relationships
+          </Link>
+          <Link
+            className="co-btn co-btn--sm co-btn--ghost"
+            href="/dashboard/pipeline"
+            style={{ textDecoration: 'none' }}
+          >
+            Pipeline board
+          </Link>
+        </div>
       </div>
 
       <div className="co-panel">
