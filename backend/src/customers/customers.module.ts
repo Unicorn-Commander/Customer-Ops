@@ -5,6 +5,7 @@ import { ContactOpsModule } from '../contact-ops/contact-ops.module';
 import { AccountingOpsModule } from '../accounting-ops/accounting-ops.module';
 import { OutreachOpsModule } from '../outreach-ops/outreach-ops.module';
 import { EmailOpsModule } from '../email-ops/email-ops.module';
+import { MeetingOpsModule } from '../meeting-ops/meeting-ops.module';
 import { CustomersService } from './customers.service';
 import { CustomersController } from './customers.controller';
 
@@ -23,10 +24,13 @@ import { CustomersController } from './customers.controller';
  *     the Outreach app; only a thin local link is kept).
  *   - EmailOpsModule — the Email-Ops app federation port (mailbox threads + send
  *     in the Email-Ops app; only a thin local link is kept).
+ *   - MeetingOpsModule — the Phase-5 Meeting-Ops federation port (conversation
+ *     signal: meetings/summaries/action-items federated at read time to fill the
+ *     customer-360 meeting slot; never copied, no local table).
  *
- * The service is exported so the MCP cockpit tools (mcp.tools) reuse the exact
- * same relationship logic an HTTP caller hits — one implementation, two
- * surfaces.
+ * The service is exported so the MCP cockpit tools (mcp.tools) + the Phase-5
+ * relationship agents reuse the exact same relationship logic an HTTP caller hits
+ * — one implementation, several surfaces.
  */
 @Module({
   imports: [
@@ -36,6 +40,7 @@ import { CustomersController } from './customers.controller';
     AccountingOpsModule,
     OutreachOpsModule,
     EmailOpsModule,
+    MeetingOpsModule,
   ],
   providers: [CustomersService],
   controllers: [CustomersController],

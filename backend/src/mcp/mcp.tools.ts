@@ -46,11 +46,17 @@ import { listMyWorkspaces, MyWorkspace } from '../common/workspace/list-my-works
 import { tenancyEnabled } from '../common/workspace/feature-flags';
 import { CustomersService } from '../customers/customers.service';
 import { CreateInvoiceDto, EngagementKind } from '../customers/dto/customer.dto';
+import { LeadTriageAgent } from '../agents/lead-triage.agent';
+import { FollowUpDrafterAgent } from '../agents/follow-up-drafter.agent';
+import { CollectionsNudgeAgent } from '../agents/collections-nudge.agent';
 
 export class CustomerOpsTools {
   constructor(
     private readonly membership: MembershipService,
     private readonly customers: CustomersService,
+    private readonly leadTriage: LeadTriageAgent,
+    private readonly followUp: FollowUpDrafterAgent,
+    private readonly collections: CollectionsNudgeAgent,
   ) {}
 
   /** Health/info — safe for any authenticated caller. */
@@ -305,5 +311,51 @@ export class CustomerOpsTools {
       },
       args.workspace_id ?? null,
     );
+  }
+
+  // ── Phase 5 meeting signal tool (delegate to CustomersService → Meeting-Ops) ──
+
+  /** This customer's meetings + summaries + action items, FEDERATED from
+   *  Meeting-Ops at read time (never copied). Degrade-clean affordance in result. */
+  async listCustomerMeetings(user: User, args: { customer_id: string; workspace_id?: string }) {
+    return this.customers.meetingsForUser(user, args.customer_id, args.workspace_id ?? null);
+  }
+
+  // ── Phase 5 relationship AGENT tools (DRAFT-ONLY; delegate to the agents) ──
+
+  /** Run the lead-triage agent: score/prioritize the lead from federated stage +
+   *  engagement + meeting signal. Read-only — returns a ranked assessment, takes
+   *  no action. Entitlement/metering-gated (4-lane inference). */
+  async triageCustomer(user: User, args: { customer_id: string; workspace_id?: string }) {
+    return this.leadTriage.triage(user, args.customer_id, args.workspace_id ?? null);
+  }
+
+  /** Run the follow-up drafter: draft a follow-up email from contact +
+   *  relationship + last touch/meeting. Returns a DRAFT — never auto-sends. When
+   *  stage_draft=true it stages the draft into the Email-Ops agent inbox
+   *  (mode=draft) for human approval (still NOT a send). */
+  async draftFollowup(
+    user: User,
+    args: {
+      customer_id: string;
+      workspace_id?: string;
+      goal?: string;
+      stage_draft?: boolean;
+      idempotency_key?: string;
+    },
+  ) {
+    return this.followUp.draftFollowUp(
+      user,
+      args.customer_id,
+      { goal: args.goal, stageDraft: args.stage_draft, idempotencyKey: args.idempotency_key },
+      args.workspace_id ?? null,
+    );
+  }
+
+  /** Run the collections-nudge agent: gather the customer's overdue invoices
+   *  (Accounting-Ops, live status) and draft a polite payment reminder. Returns a
+   *  DRAFT — never sends, never charges, never posts a ledger entry. */
+  async draftCollectionsNudge(user: User, args: { customer_id: string; workspace_id?: string }) {
+    return this.collections.draftNudge(user, args.customer_id, args.workspace_id ?? null);
   }
 }

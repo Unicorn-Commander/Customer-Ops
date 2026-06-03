@@ -273,6 +273,26 @@ export class CustomersController {
     return this.customers.sendEmailForUser(user, id, dto, workspaceId);
   }
 
+  // ── Phase 5: the Meeting-Ops signal surface (conversation intelligence) ──
+  // Customer-Ops FEDERATES meetings/summaries/action-items from Meeting-Ops at
+  // read time (never copied; no local table). Degrade-clean when Meeting-Ops is
+  // unconfigured. Reads are viewer-level (no dual-SKU).
+
+  @Get(':id/meetings')
+  @ApiOperation({
+    summary:
+      "This customer's meetings + summaries + action items, federated from Meeting-Ops " +
+      '(the conversation-intelligence app). Read-only; reports connect affordance when ' +
+      'Meeting-Ops is unconfigured.',
+  })
+  async listMeetings(
+    @CurrentUser() user: AuthedUser,
+    @Param('workspaceId') workspaceId: string,
+    @Param('id') id: string,
+  ) {
+    return this.customers.meetingsForUser(user, id, workspaceId);
+  }
+
   // ── Phase 4: the engagement → funnel-stage hook ──
   // An inbound engagement signal (reply/click from Outreach/Email-Ops; a bounce)
   // advances the customer's funnel stage when positive, with activity logging.

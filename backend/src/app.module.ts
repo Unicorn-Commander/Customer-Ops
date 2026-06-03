@@ -12,6 +12,9 @@ import { ContactOpsModule } from './contact-ops/contact-ops.module';
 import { AccountingOpsModule } from './accounting-ops/accounting-ops.module';
 import { OutreachOpsModule } from './outreach-ops/outreach-ops.module';
 import { EmailOpsModule } from './email-ops/email-ops.module';
+import { MeetingOpsModule } from './meeting-ops/meeting-ops.module';
+import { AgentInferenceModule } from './agents/inference/agent-inference.module';
+import { AgentsModule } from './agents/agents.module';
 import { CustomersModule } from './customers/customers.module';
 
 @Module({
@@ -40,8 +43,13 @@ import { CustomersModule } from './customers/customers.module';
     // Phase 4 — the Outreach + Email surfaces (the Outreach + Email-Ops app seams).
     OutreachOpsModule,
     EmailOpsModule,
+    // Phase 5 — the Meeting-Ops signal seam + the 4-lane inference port.
+    MeetingOpsModule,
+    AgentInferenceModule,
     CustomersModule,
-    // MCP last so it can consume the cockpit tools.
+    // Phase 5 — the relationship agents (compose the federation ports + inference).
+    AgentsModule,
+    // MCP last so it can consume the cockpit tools + the agents.
     McpModule,
   ],
   providers: [

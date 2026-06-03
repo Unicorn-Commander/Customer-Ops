@@ -212,6 +212,57 @@ export interface EmailPanel {
   sent: EmailLink[];
 }
 
+/** A federated Meeting-Ops meeting (header only; no transcript). */
+export interface MeetingItem {
+  id: string;
+  title: string | null;
+  startedAt: string | null;
+  endedAt: string | null;
+  durationSeconds: number | null;
+  status: string;
+  hasSummary: boolean;
+  actionItemCount: number;
+  participants: Array<{ contactId: string | null; displayName: string; email: string | null }>;
+}
+
+/** A federated Meeting-Ops summary (the model recap, not the transcript). */
+export interface MeetingSummary {
+  id: string;
+  meetingId: string;
+  headline: string | null;
+  body: string | null;
+  keyPoints: string[];
+  createdAt: string | null;
+}
+
+/** A federated Meeting-Ops action item. `projectOpsTaskId` is surfaced (a "→ task"
+ *  indicator); Customer-Ops never writes it — Meeting-Ops' bridge does. */
+export interface MeetingActionItem {
+  id: string;
+  meetingId: string;
+  text: string;
+  status: string;
+  assigneeContactId: string | null;
+  assigneeLabel: string | null;
+  dueAt: string | null;
+  projectOpsTaskId: string | null;
+  createdAt: string | null;
+}
+
+/**
+ * The customer-360 meeting panel: meetings + summaries + action items, FEDERATED
+ * from Meeting-Ops (read-only conversation signal; never copied). Reads are
+ * viewer-level, so the only affordance is `configured` (connect Meeting-Ops).
+ */
+export interface MeetingPanel {
+  federated: boolean;
+  source: string; // 'meeting-ops'
+  configured: boolean;
+  meetings: MeetingItem[];
+  summaries: MeetingSummary[];
+  actionItems: MeetingActionItem[];
+}
+
 export interface Customer360 {
   relationship: CustomerRow;
   contact: {
@@ -230,7 +281,71 @@ export interface Customer360 {
   invoices: InvoicePanel;
   outreach: OutreachPanel;
   email: EmailPanel;
-  meetings: { federated: boolean; source: string; items: unknown[] };
+  meetings: MeetingPanel;
+}
+
+// ── Phase 5: the relationship AGENT results (DRAFT-ONLY; human-in-the-loop) ──
+// Each agent composes the federation seams + the 4-lane inference and returns a
+// structured result for human approval. None auto-acts. `draftOnly` is always
+// true (the no-side-effect guarantee). Inference may be unconfigured / not
+// entitled — the UI renders the affordance and the (still-useful) context.
+
+/** The inference provenance echoed on every agent result (audit + metering). */
+export interface AgentInferenceEcho {
+  lane: number | null;
+  model: string | null;
+  metered: boolean;
+  promptTokens: number | null;
+  completionTokens: number | null;
+}
+
+interface AgentResultBase {
+  customerId: string;
+  contactId: string;
+  agent: string;
+  inferenceConfigured: boolean;
+  entitled: boolean;
+  tierUsed: 'bundled' | 'metered' | null;
+  inference: AgentInferenceEcho | null;
+  draftOnly: true;
+  note: string;
+}
+
+/** Lead-triage agent result — a ranked assessment (no side effects). */
+export interface TriageResult extends AgentResultBase {
+  agent: 'lead-triage';
+  score: number | null;
+  recommendedPriority: 'low' | 'medium' | 'high' | null;
+  rationale: string | null;
+  suggestedNextAction: string | null;
+  signals: Record<string, unknown>;
+}
+
+/** Follow-up drafter result — a draft email (never auto-sent). */
+export interface FollowUpResult extends AgentResultBase {
+  agent: 'follow-up-draft';
+  subject: string | null;
+  body: string | null;
+  toAddress: string | null;
+  stagedDraft: { messageId: string; threadId: string | null; status: string } | null;
+}
+
+/** Collections-nudge result — a draft payment reminder (draft only). */
+export interface CollectionsNudgeResult extends AgentResultBase {
+  agent: 'collections-nudge';
+  subject: string | null;
+  body: string | null;
+  toAddress: string | null;
+  overdueInvoices: Array<{
+    externalRef: string;
+    invoiceNumber: string | null;
+    status: string | null;
+    balanceDue: string | null;
+    currency: string;
+    dueDate: string | null;
+  }>;
+  totalOverdue: string | null;
+  accountingConfigured: boolean;
 }
 
 /** One invoice line for the create-invoice action. Money = decimal strings. */
@@ -413,6 +528,66 @@ export async function sendEmail(
     `${base(ws)}/${encodeURIComponent(id)}/email`,
     body,
   );
+}
+
+// ── Phase 5: the Meeting-Ops signal surface (conversation intelligence) ──
+// Customer-Ops FEDERATES meetings/summaries/action-items from Meeting-Ops at read
+// time (never copied; no local store). The UI renders them read-only.
+
+/** This customer's meetings, federated from Meeting-Ops. */
+export async function listMeetings(ws: string, id: string): Promise<MeetingPanel> {
+  return apiGet<MeetingPanel>(`${base(ws)}/${encodeURIComponent(id)}/meetings`);
+}
+
+// ── Phase 5: the relationship AGENTS (DRAFT-ONLY; human-in-the-loop) ──
+// Each agent composes the federation seams + the 4-lane inference and returns a
+// structured result for human approval. The UI renders the output for review; it
+// NEVER auto-acts. The follow-up drafter can OPTIONALLY stage its draft into the
+// Email-Ops agent inbox (mode=draft) — still NOT a send.
+
+/** Run the lead-triage agent (ranked assessment; no side effects). */
+export async function runTriage(ws: string, id: string): Promise<TriageResult> {
+  return apiPost<TriageResult>(`${base(ws)}/${encodeURIComponent(id)}/agents/triage`, {});
+}
+
+/** Run the follow-up drafter (draft email; optionally stage as an Email-Ops draft). */
+export async function draftFollowUp(
+  ws: string,
+  id: string,
+  body: { goal?: string; stageDraft?: boolean; idempotencyKey?: string } = {},
+): Promise<FollowUpResult> {
+  return apiPost<FollowUpResult>(`${base(ws)}/${encodeURIComponent(id)}/agents/follow-up`, body);
+}
+
+/** Run the collections-nudge agent (draft polite payment reminder; draft only). */
+export async function draftCollectionsNudge(
+  ws: string,
+  id: string,
+): Promise<CollectionsNudgeResult> {
+  return apiPost<CollectionsNudgeResult>(
+    `${base(ws)}/${encodeURIComponent(id)}/agents/collections-nudge`,
+    {},
+  );
+}
+
+/** A human label + tone for a Meeting-Ops meeting status. */
+export function meetingStatusLabel(status: string | null): { label: string; tone: string } {
+  switch (status) {
+    case 'summarized':
+      return { label: 'Summarized', tone: 'ok' };
+    case 'transcribed':
+      return { label: 'Transcribed', tone: 'info' };
+    case 'processing':
+      return { label: 'Processing', tone: 'muted' };
+    case 'recording':
+      return { label: 'Recording', tone: 'info' };
+    case 'failed':
+      return { label: 'Failed', tone: 'warn' };
+    case null:
+      return { label: 'Pending', tone: 'muted' };
+    default:
+      return { label: status, tone: 'info' };
+  }
 }
 
 /** A human label + tone for an outreach touch / enrollment status. */

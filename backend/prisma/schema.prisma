@@ -29,7 +29,7 @@ datasource db {
 // list "this customer's invoices" and poll their live status; it NEVER posts
 // a ledger entry or stores invoice line detail.
 //
-// PHASE 4 (this layer) = the Outreach + Email surfaces: the Outreach and
+// PHASE 4 = the Outreach + Email surfaces: the Outreach and
 // Email-Ops APP federation seams. Customer-Ops calls the (future) Outreach app
 // (over Listmonk campaigns + Postiz social) to list campaigns/touches for a
 // contact and trigger a campaign/sequence enrollment or a social touch, and the
@@ -41,7 +41,21 @@ datasource db {
 // list, no message body, and runs no campaign engine or mail server. It also
 // advances the funnel stage on an inbound engagement signal (reply/click), with
 // activity logging. Both links are RLS-fenced exactly like the other scoped
-// tables. Meeting-Ops remains a later-phase seam.
+// tables.
+//
+// PHASE 5 (this layer) = the Meeting-Ops signal seam + the relationship agents.
+// Customer-Ops federates Meeting-Ops (the conversation-intelligence app that owns
+// meetings/transcripts/summaries/action-items) PURELY at read time to fill the
+// customer-360 meeting slot — there is NO local Meeting-Ops table; the signal is
+// federated, never copied (the cleanest "federate, don't fork" surface). The
+// three relationship agents (lead-triage, follow-up drafter, collections nudge)
+// COMPOSE the existing federation ports + the local relationship, call the 4-lane
+// inference seam (ops-center routing/metering), and return a STRUCTURED result for
+// human approval. The agents are DRAFT-ONLY + human-in-the-loop: they never
+// auto-send mail, post an invoice, or move a stage. Each agent logs ONE
+// CustomerActivity of kind AGENT_RUN into the existing RLS-fenced
+// `customer_activities` table — so Phase 5 adds NO new scoped table and NO new
+// RLS policy (the only DB change is the additive AGENT_RUN enum value).
 //
 // Customer-Ops is a SURFACE, not an engine: it OWNS the relationship
 // (the lifecycle stage + pipeline keyed on workspace_id + contactId)
@@ -126,6 +140,14 @@ enum CustomerActivityKind {
   // changes still ALSO log a STAGE_CHANGE row (with from/to) in the same tx —
   // this kind tags WHY the advance happened (the engagement provenance).
   ENGAGEMENT_ADVANCED
+  // Phase 5: a relationship AGENT ran (lead-triage / follow-up drafter /
+  // collections nudge). The agent is DRAFT-ONLY + human-in-the-loop: it composes
+  // federated context, calls the 4-lane inference seam, and returns a structured
+  // result for human approval — it NEVER auto-sends mail, posts an invoice, or
+  // moves a stage. This row is the audit trail that an agent ran (the body
+  // records which agent + a one-line outcome + the inference lane); the agent's
+  // full output is returned to the caller, not persisted as customer PII.
+  AGENT_RUN
 }
 
 // ============================================================

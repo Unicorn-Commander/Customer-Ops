@@ -1,0 +1,39 @@
+-- ============================================================================
+-- Customer-Ops — Phase 5: the Meeting-Ops signal seam + the relationship agents
+-- ============================================================================
+--
+-- Normative contract: SUITE-ARCHITECTURE-MAP §2/§7/§8 (Meeting-Ops owns
+-- meetings/transcripts/summaries/action-items + is the relationship-signal source;
+-- the 4-lane inference is routed/metered through ops-center) + README "Meeting-Ops"
+-- federation seam + "the relationship agents (lead-triage, follow-up drafter,
+-- collections nudge) on the 4-lane inference via ops-center".
+--
+-- Customer-Ops FEDERATES Meeting-Ops PURELY at read time (meetings/summaries/
+-- action-items for a customer's contact, filling the customer-360 meeting slot) —
+-- it adds NO local Meeting-Ops table; the signal is federated, never copied (the
+-- cleanest "federate, don't fork" surface in the suite). The three relationship
+-- AGENTS COMPOSE the existing federation ports + the local relationship, call the
+-- 4-lane inference seam, and return a STRUCTURED result for human approval. They
+-- are DRAFT-ONLY + human-in-the-loop: they never auto-send mail, post an invoice,
+-- or move a stage.
+--
+-- THE ONLY SCHEMA CHANGE: one additive enum value — `AGENT_RUN` — appended to
+-- CustomerActivityKind. Each agent run logs ONE CustomerActivity of this kind into
+-- the EXISTING, already-RLS-fenced `customer_activities` table (proven in Phase 2;
+-- ENABLE + FORCE + the workspace_isolation policy). Phase 5 therefore adds NO new
+-- scoped table and NO new RLS policy — there is nothing new to re-prove. The agent
+-- audit row is tenant-isolated by the existing `customer_activities` fence exactly
+-- like every other activity kind.
+--
+-- ROLLOUT POSTURE (identical to Phase 1-4 — ADDITIVE / INERT for the running app):
+--   * One enum value is appended (additive; existing rows unaffected). ADD VALUE
+--     is the only safe enum mutation and must run outside an explicit txn block on
+--     older PGs; Prisma runs each statement autocommit, so IF NOT EXISTS keeps it
+--     idempotent.
+--   * No table is created, altered, or dropped. No grant or policy change. The
+--     existing `customer_activities` RLS fence already covers AGENT_RUN rows.
+
+-- ----------------------------------------------------------------------------
+-- 1. ENUM — append the Phase-5 activity kind (additive; idempotent).
+-- ----------------------------------------------------------------------------
+ALTER TYPE "CustomerActivityKind" ADD VALUE IF NOT EXISTS 'AGENT_RUN';

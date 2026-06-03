@@ -13,6 +13,9 @@ import { User } from '@prisma/client';
 import { z } from 'zod';
 import { MembershipService } from '../common/workspace/membership.service';
 import { CustomersService } from '../customers/customers.service';
+import { LeadTriageAgent } from '../agents/lead-triage.agent';
+import { FollowUpDrafterAgent } from '../agents/follow-up-drafter.agent';
+import { CollectionsNudgeAgent } from '../agents/collections-nudge.agent';
 import { CustomerOpsTools } from './mcp.tools';
 
 // The funnel stages, as a zod enum for tool input validation.
@@ -28,6 +31,9 @@ export class McpService {
   constructor(
     private readonly membership: MembershipService,
     private readonly customers: CustomersService,
+    private readonly leadTriage: LeadTriageAgent,
+    private readonly followUp: FollowUpDrafterAgent,
+    private readonly collections: CollectionsNudgeAgent,
   ) {}
 
   /**
@@ -43,7 +49,7 @@ export class McpService {
     const server = new McpServer(
       {
         name: 'customer-ops',
-        version: '0.3.0',
+        version: '0.5.0',
       },
       {
         capabilities: { tools: {} },
@@ -52,19 +58,31 @@ export class McpService {
           'list the caller’s workspaces. Cockpit tools drive the relationship ' +
           'funnel: list relationships by stage, read a customer-360 (the local ' +
           'relationship + the FEDERATED Contact-Ops contact + Accounting-Ops ' +
-          'invoices + Outreach campaigns/touches + Email-Ops threads), view the ' +
-          'pipeline board, move a relationship through the funnel, and add ' +
-          'timeline notes. Invoicing tools federate to Accounting-Ops (the AR ' +
-          'engine / ledger). Outreach tools federate to the Outreach app ' +
-          '(Listmonk + Postiz): list campaigns/touches, start a campaign. Email ' +
-          'tools federate to the Email-Ops app (Stalwart): list mailbox threads, ' +
-          'send/draft an email. The engagement tool advances the funnel stage on ' +
-          'an inbound reply/click. Everything (contacts, invoices, campaigns, ' +
-          'mail) is federated from its owning app at read time, never copied.',
+          'invoices + Outreach campaigns/touches + Email-Ops threads + Meeting-Ops ' +
+          'conversation signal), view the pipeline board, move a relationship ' +
+          'through the funnel, and add timeline notes. Invoicing tools federate to ' +
+          'Accounting-Ops (the AR engine / ledger). Outreach tools federate to the ' +
+          'Outreach app (Listmonk + Postiz). Email tools federate to the Email-Ops ' +
+          'app (Stalwart): list mailbox threads, send/draft an email. The meeting ' +
+          'tool federates to Meeting-Ops (meetings/summaries/action-items). The ' +
+          'engagement tool advances the funnel stage on an inbound reply/click. ' +
+          'The relationship AGENTS (triage_customer, draft_followup, ' +
+          'draft_collections_nudge) compose the federation seams + the 4-lane ' +
+          'inference (ops-center routed/metered) and are DRAFT-ONLY + ' +
+          'human-in-the-loop: they return an assessment or a draft for approval and ' +
+          'NEVER auto-send, post an invoice, or move a stage. Everything (contacts, ' +
+          'invoices, campaigns, mail, meetings) is federated from its owning app at ' +
+          'read time, never copied.',
       },
     );
 
-    const tools = new CustomerOpsTools(this.membership, this.customers);
+    const tools = new CustomerOpsTools(
+      this.membership,
+      this.customers,
+      this.leadTriage,
+      this.followUp,
+      this.collections,
+    );
 
     // ── Foundation tools ──
 
@@ -360,6 +378,90 @@ export class McpService {
         },
       },
       async (args: any) => wrap(await tools.recordCustomerEngagement(user, args)),
+    );
+
+    // ── Phase 5 meeting signal tool (federate to the Meeting-Ops app) ──
+
+    server.registerTool(
+      'list_customer_meetings',
+      {
+        title: 'List customer meetings',
+        description:
+          'This customer’s meetings, summaries, and action items, FEDERATED from ' +
+          'Meeting-Ops (the conversation-intelligence app that owns meetings/' +
+          'transcripts/summaries/action-items) at read time — never copied, no local ' +
+          'store. Each action item shows whether Meeting-Ops’ bridge already turned ' +
+          'it into a Project-Ops task. Reports a connect affordance when Meeting-Ops ' +
+          'is unconfigured. Read-only / viewer-level.',
+        inputSchema: {
+          customer_id: z.string(),
+          workspace_id: z.string().optional(),
+        },
+      },
+      async (args: any) => wrap(await tools.listCustomerMeetings(user, args)),
+    );
+
+    // ── Phase 5 relationship AGENT tools (DRAFT-ONLY; human-in-the-loop) ──
+
+    server.registerTool(
+      'triage_customer',
+      {
+        title: 'Triage customer (lead-triage agent)',
+        description:
+          'Run the lead-triage agent: it gathers the relationship stage + recent ' +
+          'engagement + the FEDERATED Meeting-Ops signal, then scores/prioritizes the ' +
+          'lead and returns a RANKED ASSESSMENT (score 0-100, recommended priority, ' +
+          'rationale, suggested next action). READ-ONLY — it takes NO action (never ' +
+          'moves the stage or sets the priority; it only recommends). The 4-lane ' +
+          'inference is entitlement/metering-gated; degrade-clean (returns the signal ' +
+          'snapshot) when inference is unconfigured or the caller is not entitled.',
+        inputSchema: {
+          customer_id: z.string(),
+          workspace_id: z.string().optional(),
+        },
+      },
+      async (args: any) => wrap(await tools.triageCustomer(user, args)),
+    );
+
+    server.registerTool(
+      'draft_followup',
+      {
+        title: 'Draft follow-up (follow-up drafter agent)',
+        description:
+          'Run the follow-up drafter: it gathers the contact + relationship + last ' +
+          'touch/meeting signal, then drafts a follow-up email and returns the DRAFT ' +
+          '(subject + body + the resolved recipient). It NEVER auto-sends. With ' +
+          'stage_draft=true it ALSO stages the draft into the Email-Ops AGENT INBOX ' +
+          '(mode=draft) for a human to approve — still NOT a send. Entitlement/' +
+          'metering-gated; degrade-clean when inference is unconfigured.',
+        inputSchema: {
+          customer_id: z.string(),
+          workspace_id: z.string().optional(),
+          goal: z.string().max(1000).optional(),
+          stage_draft: z.boolean().optional(),
+          idempotency_key: z.string().max(200).optional(),
+        },
+      },
+      async (args: any) => wrap(await tools.draftFollowup(user, args)),
+    );
+
+    server.registerTool(
+      'draft_collections_nudge',
+      {
+        title: 'Draft collections nudge (collections-nudge agent)',
+        description:
+          'Run the collections-nudge agent: it reads the customer’s OVERDUE invoices ' +
+          'from Accounting-Ops (live status; sent/partial, past due, balance > 0) and ' +
+          'drafts a POLITE payment reminder, returning the DRAFT (subject + body) plus ' +
+          'the overdue-invoice snapshot. DRAFT-ONLY — it never sends, never charges, ' +
+          'and never posts a ledger entry (Accounting-Ops stays the AR system-of-' +
+          'record). Degrade-clean when Accounting-Ops or inference is unconfigured.',
+        inputSchema: {
+          customer_id: z.string(),
+          workspace_id: z.string().optional(),
+        },
+      },
+      async (args: any) => wrap(await tools.draftCollectionsNudge(user, args)),
     );
 
     return server;

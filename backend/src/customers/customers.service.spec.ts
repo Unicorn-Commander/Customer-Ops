@@ -6,6 +6,7 @@ import { ContactOpsPort } from '../contact-ops/contact-ops.port';
 import { AccountingOpsPort } from '../accounting-ops/accounting-ops.port';
 import { OutreachPort } from '../outreach-ops/outreach-ops.port';
 import { EmailOpsPort } from '../email-ops/email-ops.port';
+import { MeetingOpsPort } from '../meeting-ops/meeting-ops.port';
 
 /**
  * CustomersService is the relationship logic of the cockpit. These tests pin:
@@ -144,6 +145,7 @@ function makeService(opts?: {
   accounting?: Partial<AccountingOpsPort>;
   outreach?: Partial<OutreachPort>;
   email?: Partial<EmailOpsPort>;
+  meeting?: Partial<MeetingOpsPort>;
 }) {
   const contact: ContactOpsPort = {
     getContact: jest.fn().mockResolvedValue(null),
@@ -192,6 +194,23 @@ function makeService(opts?: {
     ...(opts?.email ?? {}),
   } as any;
 
+  // Default Meeting-Ops port: DORMANT (degrade-clean). The Phase-5 meeting test
+  // passes a configured fake to exercise the federated meeting panel.
+  const meeting: MeetingOpsPort = {
+    isConfigured: jest.fn().mockReturnValue(false),
+    listMeetingsForContact: jest.fn().mockResolvedValue({ items: [], count: 0, nextCursor: null }),
+    listSummariesForContact: jest.fn().mockResolvedValue([]),
+    listActionItemsForContact: jest.fn().mockResolvedValue([]),
+    getMeetingSignal: jest.fn().mockResolvedValue({
+      meetingCount: 0,
+      lastMeetingAt: null,
+      lastMeetingTitle: null,
+      openActionItemCount: 0,
+      latestSummaryHeadline: null,
+    }),
+    ...(opts?.meeting ?? {}),
+  } as any;
+
   // WorkspaceContextService faked: runForUser invokes fn(tx) directly (the real
   // GUC/RLS is proven in the SQL acceptance, not re-mocked here); resolveAuthorized
   // returns the bootstrap workspace.
@@ -201,8 +220,8 @@ function makeService(opts?: {
     runForUser: jest.fn(async (_user: User, fn: any) => fn(lastTx.current)),
   } as unknown as WorkspaceContextService;
 
-  const svc = new CustomersService(workspaces, contact, accounting, outreach, email);
-  return { svc, contact, accounting, outreach, email, workspaces, lastTx };
+  const svc = new CustomersService(workspaces, contact, accounting, outreach, email, meeting);
+  return { svc, contact, accounting, outreach, email, meeting, workspaces, lastTx };
 }
 
 describe('CustomersService — relationship logic', () => {
@@ -404,8 +423,16 @@ describe('CustomersService — Contact-Ops federation (CO mocked)', () => {
       threads: [],
       sent: [],
     });
-    // Meeting-Ops remains a later-phase slot (present but empty).
-    expect(result.meetings).toMatchObject({ federated: false, source: 'meeting-ops' });
+    // Phase-5 Meeting-Ops panel: dormant in this test → degrade-clean (configured
+    // false, empty lists), federated, never copied.
+    expect(result.meetings).toMatchObject({
+      federated: false,
+      source: 'meeting-ops',
+      configured: false,
+      meetings: [],
+      summaries: [],
+      actionItems: [],
+    });
   });
 
   it('customer-360 degrades cleanly when Contact-Ops returns nothing (dormant)', async () => {
@@ -1087,6 +1114,85 @@ describe('CustomersService — Email-Ops federation (Phase 4; Email-Ops app mock
       await expect(svc.sendEmailForUser(aaron, 'cust-1', sendDto, WS)).rejects.toThrow(/not connected/i);
       expect(email.composeEmail).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('CustomersService — Meeting-Ops federation (Phase 5; Meeting-Ops app mocked)', () => {
+  const MEETINGS = {
+    items: [
+      {
+        id: 'mtg-1',
+        title: 'Discovery call',
+        startedAt: '2026-06-01T15:00:00Z',
+        endedAt: '2026-06-01T15:45:00Z',
+        durationSeconds: 2700,
+        status: 'summarized',
+        hasSummary: true,
+        actionItemCount: 2,
+        participants: [{ contactId: 'contact-42', displayName: 'Jane Lead', email: 'jane@x.com' }],
+      },
+    ],
+    count: 1,
+    nextCursor: null,
+  };
+  const SUMMARIES = [
+    { id: 'sum-1', meetingId: 'mtg-1', headline: 'Wants enterprise', body: 'recap…', keyPoints: ['enterprise'], createdAt: '2026-06-01T16:00:00Z' },
+  ];
+  const ACTION_ITEMS = [
+    { id: 'ai-1', meetingId: 'mtg-1', text: 'Send quote', status: 'open', assigneeContactId: null, assigneeLabel: 'Aaron', dueAt: '2026-06-05', projectOpsTaskId: 'task-789', createdAt: '2026-06-01T16:00:00Z' },
+  ];
+
+  function configuredMeeting(over: Partial<MeetingOpsPort> = {}): Partial<MeetingOpsPort> {
+    return {
+      isConfigured: jest.fn().mockReturnValue(true),
+      listMeetingsForContact: jest.fn().mockResolvedValue(MEETINGS),
+      listSummariesForContact: jest.fn().mockResolvedValue(SUMMARIES),
+      listActionItemsForContact: jest.fn().mockResolvedValue(ACTION_ITEMS),
+      getMeetingSignal: jest.fn().mockResolvedValue({
+        meetingCount: 1, lastMeetingAt: '2026-06-01T15:00:00Z', lastMeetingTitle: 'Discovery call',
+        openActionItemCount: 1, latestSummaryHeadline: 'Wants enterprise',
+      }),
+      ...over,
+    };
+  }
+
+  it('meetingsForUser federates meetings + summaries + action items (never copied), surfacing the bridge task id', async () => {
+    const { svc, meeting, lastTx } = makeService({ meeting: configuredMeeting() });
+    const { tx } = makeTx(makeRow({ id: 'cust-1', contactId: 'contact-42' }));
+    lastTx.current = tx;
+
+    const panel = await svc.meetingsForUser(aaron, 'cust-1', WS);
+
+    expect(panel).toMatchObject({ federated: true, source: 'meeting-ops', configured: true });
+    expect(meeting.listMeetingsForContact).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: WS }),
+      'contact-42',
+      expect.any(Object),
+    );
+    expect(panel.meetings[0]).toMatchObject({ id: 'mtg-1', hasSummary: true });
+    expect(panel.summaries[0]).toMatchObject({ id: 'sum-1', headline: 'Wants enterprise' });
+    // The action item SURFACES the Project-Ops bridge task id (we never write it).
+    expect(panel.actionItems[0]).toMatchObject({ id: 'ai-1', projectOpsTaskId: 'task-789' });
+  });
+
+  it('degrade-clean: Meeting-Ops dormant → configured:false, federates nothing', async () => {
+    const { svc, meeting, lastTx } = makeService(); // default meeting = dormant
+    const { tx } = makeTx(makeRow({ id: 'cust-1', contactId: 'contact-42' }));
+    lastTx.current = tx;
+
+    const panel = await svc.meetingsForUser(aaron, 'cust-1', WS);
+    expect(panel).toMatchObject({ federated: false, configured: false, meetings: [], summaries: [], actionItems: [] });
+    expect(meeting.listMeetingsForContact).not.toHaveBeenCalled();
+  });
+
+  it('the customer-360 meeting slot is now FEDERATED (filled from Meeting-Ops)', async () => {
+    const { svc, lastTx } = makeService({ meeting: configuredMeeting() });
+    const { tx } = makeTx(makeRow({ id: 'cust-1', contactId: 'contact-42' }));
+    lastTx.current = tx;
+
+    const result = await svc.customer360ForUser(aaron, 'cust-1', WS);
+    expect(result.meetings).toMatchObject({ federated: true, configured: true });
+    expect(result.meetings.meetings[0]).toMatchObject({ id: 'mtg-1' });
   });
 });
 

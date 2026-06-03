@@ -6,19 +6,26 @@ import { useParams } from 'next/navigation';
 import { useWorkspace } from '@/lib/useWorkspace';
 import {
   addNote,
+  CollectionsNudgeResult,
   createInvoice,
   CreateInvoiceInput,
   Customer360,
+  draftCollectionsNudge,
+  draftFollowUp,
   EmailPanel,
   emailStatusLabel,
+  FollowUpResult,
   getCustomer360,
   InvoicePanel,
   invoiceStatusLabel,
   markLost,
+  MeetingPanel,
+  meetingStatusLabel,
   money,
   OutreachPanel,
   outreachStatusLabel,
   reopen,
+  runTriage,
   sendEmail,
   SendEmailInput,
   Stage,
@@ -27,6 +34,7 @@ import {
   STAGES,
   STAGE_LABEL,
   transitionStage,
+  TriageResult,
 } from '@/lib/customers';
 import { PriorityTag, StageBadge } from '@/components/Badges';
 
@@ -37,10 +45,15 @@ import { PriorityTag, StageBadge } from '@/components/Badges';
  *     resolved by the backend at read time, NEVER copied; a placeholder when CO
  *     is dormant,
  *   - the activity timeline (stage changes / notes),
- *   - the Phase-3 Accounting-Ops invoice panel (federated), and
+ *   - the Phase-3 Accounting-Ops invoice panel (federated),
  *   - the Phase-4 Outreach + Email-Ops panels (federated; campaigns/touches +
  *     start-campaign, mailbox threads + send/draft), with degrade-clean +
- *     entitlement affordances. Meeting-Ops remains the one empty seam.
+ *     entitlement affordances,
+ *   - the Phase-5 Meeting-Ops panel (federated meetings/summaries/action items),
+ *     and
+ *   - the Phase-5 relationship AGENTS affordance (run triage / draft follow-up /
+ *     draft nudge) — each shows the agent's output for HUMAN APPROVAL and NEVER
+ *     auto-acts.
  */
 export default function Customer360Page() {
   const params = useParams<{ id: string }>();
@@ -126,8 +139,16 @@ export default function Customer360Page() {
   if (error && !data) return <p className="co-error">{error}</p>;
   if (!data) return null;
 
-  const { relationship: rel, contact, contactFederation, timeline, invoices, outreach, email } =
-    data;
+  const {
+    relationship: rel,
+    contact,
+    contactFederation,
+    timeline,
+    invoices,
+    outreach,
+    email,
+    meetings,
+  } = data;
 
   return (
     <>
@@ -296,6 +317,11 @@ export default function Customer360Page() {
             </dl>
           </div>
 
+          {/* Phase 5: the relationship AGENTS — run triage / draft follow-up /
+              draft nudge. Every result is shown for HUMAN APPROVAL; the agents
+              NEVER auto-send, post, or move a stage. */}
+          <AgentsPanel workspaceId={workspaceId} customerId={id} onChanged={load} />
+
           {/* Phase 3: the federated Accounting-Ops invoice panel */}
           <InvoicesPanel
             workspaceId={workspaceId}
@@ -324,18 +350,8 @@ export default function Customer360Page() {
             onChanged={load}
           />
 
-          {/* The one remaining federation seam (later phase) */}
-          <div className="co-panel">
-            <h3 style={{ marginTop: 0, fontSize: 15 }}>Connected (next phase)</h3>
-            <p className="co-muted" style={{ marginTop: 0, marginBottom: 14, fontSize: 13 }}>
-              This surface federates from its own engine. The seam is wired; the
-              data plane lands in a later phase.
-            </p>
-            <div className="co-slot">
-              <span>Meetings &amp; action items</span>
-              <span className="co-tag">meeting-ops</span>
-            </div>
-          </div>
+          {/* Phase 5: the federated Meeting-Ops conversation-signal panel */}
+          <MeetingsPanelView meetings={meetings} />
         </div>
       </div>
     </>
@@ -940,5 +956,300 @@ function CampaignForm(props: {
         </button>
       </div>
     </div>
+  );
+}
+
+/**
+ * The Meeting-Ops panel of the customer-360 (Phase 5). Renders the FEDERATED
+ * meetings + summaries + action items for the contact (resolved read-time by the
+ * backend; never copied). Read-only / viewer-level — the only affordance is the
+ * connect state. Each action item shows whether Meeting-Ops' own bridge already
+ * turned it into a Project-Ops task (a "→ task" tag) — Customer-Ops never creates
+ * the task.
+ */
+function MeetingsPanelView(props: { meetings: MeetingPanel }) {
+  const { meetings } = props;
+  return (
+    <div className="co-panel">
+      <div className="co-row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+        <h3 style={{ margin: 0, fontSize: 15 }}>Meetings &amp; action items</h3>
+        <span className="co-tag">
+          {meetings.configured ? 'federated · meeting-ops' : 'meeting-ops · not connected'}
+        </span>
+      </div>
+
+      {!meetings.configured ? (
+        <p className="co-muted" style={{ marginTop: 12 }}>
+          Connect Meeting-Ops to see this contact’s meetings, summaries, and action
+          items. Conversation signal is federated from Meeting-Ops — Customer-Ops
+          never stores a transcript or summary.
+        </p>
+      ) : meetings.meetings.length === 0 &&
+        meetings.summaries.length === 0 &&
+        meetings.actionItems.length === 0 ? (
+        <p className="co-muted" style={{ marginTop: 12, marginBottom: 8 }}>
+          No meetings with this contact yet.
+        </p>
+      ) : (
+        <>
+          {meetings.meetings.length > 0 && (
+            <ul className="co-invoices" style={{ marginTop: 12, marginBottom: 8 }}>
+              {meetings.meetings.map((m) => {
+                const s = meetingStatusLabel(m.status);
+                return (
+                  <li
+                    key={m.id}
+                    className="co-row"
+                    style={{ justifyContent: 'space-between', alignItems: 'center', gap: 8 }}
+                  >
+                    <span>
+                      <strong>{m.title ?? '(untitled meeting)'}</strong>
+                      <span className="co-muted" style={{ marginLeft: 8 }}>
+                        {m.startedAt ? new Date(m.startedAt).toLocaleDateString() : '—'}
+                        {m.actionItemCount > 0 ? ` · ${m.actionItemCount} action item${m.actionItemCount === 1 ? '' : 's'}` : ''}
+                      </span>
+                    </span>
+                    <span className={toneClass(s.tone)}>{s.label}</span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+
+          {meetings.summaries.length > 0 && (
+            <>
+              <h4 style={{ margin: '12px 0 6px', fontSize: 13 }}>Latest summary</h4>
+              <p className="co-muted" style={{ marginTop: 0, fontSize: 13 }}>
+                {meetings.summaries[0].headline ?? meetings.summaries[0].body ?? '—'}
+              </p>
+            </>
+          )}
+
+          {meetings.actionItems.length > 0 && (
+            <>
+              <h4 style={{ margin: '12px 0 6px', fontSize: 13 }}>Action items</h4>
+              <ul className="co-invoices" style={{ marginTop: 0, marginBottom: 4 }}>
+                {meetings.actionItems.map((a) => (
+                  <li
+                    key={a.id}
+                    className="co-row"
+                    style={{ justifyContent: 'space-between', alignItems: 'center', gap: 8 }}
+                  >
+                    <span>
+                      <strong style={{ fontWeight: 500 }}>{a.text}</strong>
+                      <span className="co-muted" style={{ marginLeft: 8 }}>
+                        {a.assigneeLabel ? `${a.assigneeLabel} · ` : ''}
+                        {a.status}
+                      </span>
+                    </span>
+                    {a.projectOpsTaskId ? (
+                      <span className="co-tag co-tag--ok" title="Meeting-Ops linked this to a Project-Ops task">
+                        → task
+                      </span>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The relationship AGENTS affordance of the customer-360 (Phase 5). Lets the
+ * operator RUN an agent (lead-triage / follow-up drafter / collections nudge) and
+ * shows the agent's structured output INLINE for HUMAN APPROVAL. The agents are
+ * DRAFT-ONLY + human-in-the-loop: nothing here auto-sends, posts, or moves a
+ * stage. The follow-up drafter can optionally stage its draft into the Email-Ops
+ * agent inbox (mode=draft) — still a human approves before anything leaves. When
+ * inference is unconfigured / the caller is not entitled the result reports it and
+ * still shows the assembled context, so the affordance degrades clean.
+ */
+function AgentsPanel(props: {
+  workspaceId: string | null;
+  customerId: string;
+  onChanged: () => void | Promise<void>;
+}) {
+  const { workspaceId, customerId } = props;
+  const [busy, setBusy] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [triage, setTriage] = useState<TriageResult | null>(null);
+  const [followUp, setFollowUp] = useState<FollowUpResult | null>(null);
+  const [nudge, setNudge] = useState<CollectionsNudgeResult | null>(null);
+
+  const run = async (
+    which: 'triage' | 'follow-up' | 'nudge',
+    fn: () => Promise<unknown>,
+  ) => {
+    if (!workspaceId) return;
+    setBusy(which);
+    setErr(null);
+    try {
+      const result = await fn();
+      if (which === 'triage') setTriage(result as TriageResult);
+      if (which === 'follow-up') setFollowUp(result as FollowUpResult);
+      if (which === 'nudge') setNudge(result as CollectionsNudgeResult);
+      // The agent logged an AGENT_RUN activity — refresh the timeline.
+      await props.onChanged();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="co-panel">
+      <div className="co-row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+        <h3 style={{ margin: 0, fontSize: 15 }}>Agents</h3>
+        <span className="co-tag co-tag--muted">draft-only · you approve</span>
+      </div>
+      <p className="co-muted" style={{ marginTop: 8, marginBottom: 12, fontSize: 13 }}>
+        Agents compose the federated signal and the 4-lane inference. They return a
+        draft or an assessment for you to review — they never send, post, or move a
+        stage on their own.
+      </p>
+
+      {err && <p className="co-error">{err}</p>}
+
+      <div className="co-row" style={{ gap: 8, flexWrap: 'wrap' }}>
+        <button
+          className="co-btn co-btn--sm"
+          disabled={busy !== null}
+          onClick={() => run('triage', () => runTriage(workspaceId!, customerId))}
+        >
+          {busy === 'triage' ? 'Triaging…' : 'Triage lead'}
+        </button>
+        <button
+          className="co-btn co-btn--sm"
+          disabled={busy !== null}
+          onClick={() => run('follow-up', () => draftFollowUp(workspaceId!, customerId))}
+        >
+          {busy === 'follow-up' ? 'Drafting…' : 'Draft follow-up'}
+        </button>
+        <button
+          className="co-btn co-btn--sm"
+          disabled={busy !== null}
+          onClick={() => run('nudge', () => draftCollectionsNudge(workspaceId!, customerId))}
+        >
+          {busy === 'nudge' ? 'Drafting…' : 'Draft payment nudge'}
+        </button>
+      </div>
+
+      {/* Lead-triage assessment (read-only; a recommendation, never applied). */}
+      {triage && (
+        <div className="co-field" style={{ marginTop: 14 }}>
+          <div className="co-row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+            <strong style={{ fontSize: 13 }}>Lead triage</strong>
+            <AgentMeta result={triage} />
+          </div>
+          {triage.score !== null ? (
+            <p style={{ margin: '8px 0 4px', fontSize: 13 }}>
+              Score <strong>{triage.score}/100</strong>
+              {triage.recommendedPriority ? (
+                <span className="co-tag" style={{ marginLeft: 8 }}>
+                  recommend {triage.recommendedPriority} priority
+                </span>
+              ) : null}
+            </p>
+          ) : null}
+          {triage.rationale && (
+            <p className="co-muted" style={{ margin: '4px 0', fontSize: 13 }}>{triage.rationale}</p>
+          )}
+          {triage.suggestedNextAction && (
+            <p style={{ margin: '4px 0', fontSize: 13 }}>
+              <em>Next:</em> {triage.suggestedNextAction}
+            </p>
+          )}
+          {triage.score === null && (
+            <p className="co-muted" style={{ margin: '6px 0', fontSize: 13 }}>{triage.note}</p>
+          )}
+        </div>
+      )}
+
+      {/* Follow-up draft (NOT sent — a draft for you to approve). */}
+      {followUp && (
+        <div className="co-field" style={{ marginTop: 14 }}>
+          <div className="co-row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+            <strong style={{ fontSize: 13 }}>Follow-up draft</strong>
+            <AgentMeta result={followUp} />
+          </div>
+          {followUp.subject ? (
+            <>
+              <p style={{ margin: '8px 0 2px', fontSize: 13 }}>
+                <strong>Subject:</strong> {followUp.subject}
+              </p>
+              {followUp.toAddress && (
+                <p className="co-muted" style={{ margin: '0 0 6px', fontSize: 12 }}>
+                  To {followUp.toAddress}
+                </p>
+              )}
+              <textarea className="co-input" rows={6} readOnly value={followUp.body ?? ''} />
+              {followUp.stagedDraft ? (
+                <p className="co-tag co-tag--warn" style={{ marginTop: 8 }}>
+                  Staged as an Email-Ops draft (awaiting your approval — not sent)
+                </p>
+              ) : (
+                <p className="co-muted" style={{ marginTop: 6, fontSize: 12 }}>
+                  This is a draft. Copy it, or use the Email panel’s “Save as draft”
+                  to stage it for approval — it is never auto-sent.
+                </p>
+              )}
+            </>
+          ) : (
+            <p className="co-muted" style={{ margin: '6px 0', fontSize: 13 }}>{followUp.note}</p>
+          )}
+        </div>
+      )}
+
+      {/* Collections nudge draft (draft only — never sent or charged). */}
+      {nudge && (
+        <div className="co-field" style={{ marginTop: 14 }}>
+          <div className="co-row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+            <strong style={{ fontSize: 13 }}>Payment nudge draft</strong>
+            <AgentMeta result={nudge} />
+          </div>
+          {nudge.overdueInvoices.length > 0 && (
+            <p className="co-muted" style={{ margin: '6px 0', fontSize: 12 }}>
+              {nudge.overdueInvoices.length} overdue ·{' '}
+              {money(nudge.totalOverdue, nudge.overdueInvoices[0]?.currency ?? 'USD')} due
+            </p>
+          )}
+          {nudge.subject ? (
+            <>
+              <p style={{ margin: '8px 0 2px', fontSize: 13 }}>
+                <strong>Subject:</strong> {nudge.subject}
+              </p>
+              <textarea className="co-input" rows={6} readOnly value={nudge.body ?? ''} />
+              <p className="co-muted" style={{ marginTop: 6, fontSize: 12 }}>
+                Draft only — review, then send it yourself. The agent never charges
+                or sends.
+              </p>
+            </>
+          ) : (
+            <p className="co-muted" style={{ margin: '6px 0', fontSize: 13 }}>{nudge.note}</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** A tiny inference-provenance tag (lane/metered) shown on each agent result. */
+function AgentMeta(props: {
+  result: { inferenceConfigured: boolean; entitled: boolean; tierUsed: string | null; inference: { lane: number | null } | null };
+}) {
+  const { result } = props;
+  if (!result.inferenceConfigured) return <span className="co-tag co-tag--muted">inference off</span>;
+  if (!result.entitled) return <span className="co-tag co-tag--warn">not entitled</span>;
+  const lane = result.inference?.lane;
+  return (
+    <span className="co-tag co-tag--muted">
+      {result.tierUsed ?? 'bundled'}
+      {lane != null ? ` · lane ${lane}` : ''}
+    </span>
   );
 }

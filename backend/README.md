@@ -24,6 +24,20 @@ federation seams are Phase 2+.
 | Keycloak JWT (resolve by sub/keycloakId; aud=customer-ops) | `src/auth/strategies/jwt.strategy.ts` |
 | SSO access list (JIT gate, §D5) | `src/auth/access-list.ts` |
 | MCP server skeleton | `src/mcp/*` |
+| Federation seams (mockable ports; degrade-clean) — contacts / AR / outreach / mail | `src/contact-ops/`, `src/accounting-ops/`, `src/outreach-ops/`, `src/email-ops/` |
+| **Phase 5** Meeting-Ops signal seam (federated meetings/summaries/action-items; read-only, no local table) | `src/meeting-ops/` |
+| **Phase 5** 4-lane agent-inference port (ops-center routing/metering; entitlement-gated; mockable; degrade-clean) | `src/agents/inference/` |
+| **Phase 5** relationship agents (lead-triage / follow-up drafter / collections nudge) — DRAFT-ONLY, compose the federation ports + inference, log `AGENT_RUN` | `src/agents/` |
+
+**Phase 5 scope (this layer):** the Meeting-Ops signal seam (federated, never
+copied — fills the customer-360 meeting slot) + the three relationship agents on
+the 4-lane inference. The agents are DRAFT-ONLY + human-in-the-loop: they return an
+assessment or a draft for approval and NEVER auto-send, post an invoice, or move a
+stage. Exposed as MCP tools (`triage_customer`, `draft_followup`,
+`draft_collections_nudge`, `list_customer_meetings`) + cockpit actions. Phase 5
+adds NO new scoped table — the only DB change is the additive `AGENT_RUN`
+`CustomerActivityKind` (agent runs log into the already-RLS-fenced
+`customer_activities`).
 
 ## Rollout posture
 

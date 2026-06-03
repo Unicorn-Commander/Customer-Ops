@@ -56,6 +56,15 @@ import {
   FederationContext as EmailFederationContext,
 } from '../email-ops/email-ops.port';
 import { EmailComposeResult } from '../email-ops/email-ops.types';
+import {
+  MeetingOpsPort,
+  FederationContext as MeetingFederationContext,
+} from '../meeting-ops/meeting-ops.port';
+import {
+  FederatedActionItem,
+  FederatedMeeting,
+  FederatedMeetingSummary,
+} from '../meeting-ops/meeting-ops.types';
 import { checkTransition, engagementAdvance, STAGE_ORDER } from './funnel';
 import {
   AddNoteDto,
@@ -123,6 +132,17 @@ export interface EmailThreadView {
   participants: Array<{ address: string; name: string | null }>;
 }
 
+/** The federated Meeting-Ops panel the customer-360 renders (Phase 5). Read-time
+ *  only — Meeting-Ops owns these; Customer-Ops holds nothing locally. */
+export interface MeetingPanelView {
+  federated: boolean;
+  source: 'meeting-ops';
+  configured: boolean;
+  meetings: FederatedMeeting[];
+  summaries: FederatedMeetingSummary[];
+  actionItems: FederatedActionItem[];
+}
+
 @Injectable()
 export class CustomersService {
   private readonly logger = new Logger(CustomersService.name);
@@ -133,6 +153,7 @@ export class CustomersService {
     private readonly accountingOps: AccountingOpsPort,
     private readonly outreach: OutreachPort,
     private readonly emailOps: EmailOpsPort,
+    private readonly meetingOps: MeetingOpsPort,
   ) {}
 
   // ========================================================================
@@ -244,6 +265,16 @@ export class CustomersService {
       requestedWorkspaceId,
     );
 
+    // ── Phase-5 federation panel (replaces the formerly-inert meeting slot):
+    // the customer's meetings + summaries + action items, FEDERATED from
+    // Meeting-Ops at read time (never copied; no local Meeting-Ops table).
+    // Best-effort + degrade-clean — outside the DB tx, never holding one open.
+    const meetingPanel = await this.buildMeetingPanel(
+      user,
+      relationship.contactId,
+      requestedWorkspaceId,
+    );
+
     return {
       relationship: this.serialize(relationship),
       // The FEDERATED contact half — resolved from Contact-Ops, not stored here.
@@ -267,9 +298,8 @@ export class CustomersService {
       // ── Phase-4: the Outreach + Email-Ops panels (federated, live) ──
       outreach: outreachPanel,
       email: emailPanel,
-      // ── Later-phase federation slot (intentionally empty; seam only) ──
-      // Meeting-Ops: meetings/action-items.
-      meetings: { federated: false, source: 'meeting-ops', items: [] as unknown[] },
+      // ── Phase-5: the Meeting-Ops panel (federated conversation signal) ──
+      meetings: meetingPanel,
     };
   }
 
@@ -1240,6 +1270,85 @@ export class CustomersService {
       toStage: decision.toStage,
       reason: decision.reason,
     };
+  }
+
+  // ========================================================================
+  // PHASE 5 — MEETING SIGNAL (the Meeting-Ops app federation seam).
+  //
+  // Customer-Ops FEDERATES conversation signal: Meeting-Ops is the
+  // system-of-record for every meeting/transcript/summary/action item. This
+  // entry point reads the customer's meetings + summaries + action items for the
+  // federated contact, PURELY at read time — there is NO local Meeting-Ops table
+  // and no write path. It fills the customer-360 meeting slot (federated, never
+  // copied) and is what the relationship agents consume as signal. Reads are
+  // viewer-level (no dual-SKU); the metered lane in this phase is agent inference.
+  // ========================================================================
+
+  /**
+   * The customer's meeting panel: meetings + summaries + action items federated
+   * from Meeting-Ops. Degrade-clean: when Meeting-Ops is unconfigured the panel
+   * reports `configured:false` ("connect Meeting-Ops") and no call is made.
+   */
+  async meetingsForUser(
+    user: User & Partial<WithWorkspaceClaim>,
+    customerId: string,
+    requestedWorkspaceId?: string | null,
+  ) {
+    const contactId = await this.workspaces.runForUser(
+      user,
+      async (tx) => (await this.getInTx(tx, customerId)).contactId,
+      requestedWorkspaceId,
+    );
+    return this.buildMeetingPanel(user, contactId, requestedWorkspaceId);
+  }
+
+  /** Build the Meeting-Ops federation identity (workspace + actor; no entitlements
+   *  — meeting reads are viewer-level conversation signal). */
+  private async meetingFederationContext(
+    user: User & Partial<WithWorkspaceClaim>,
+    requestedWorkspaceId?: string | null,
+  ): Promise<MeetingFederationContext> {
+    const workspaceId = await this.workspaces.resolveAuthorized(user, requestedWorkspaceId);
+    return { workspaceId, ucUid: ucUidOf(user) || null };
+  }
+
+  /**
+   * Assemble the customer-360 meeting panel: the contact's meetings + summaries +
+   * action items, federated from Meeting-Ops. Never throws (best-effort);
+   * degrade-clean when Meeting-Ops is unconfigured. Reads are viewer-level, so
+   * there is no entitlement affordance — just `configured`. Federated, never
+   * copied; Customer-Ops persists nothing here.
+   */
+  private async buildMeetingPanel(
+    user: User & Partial<WithWorkspaceClaim>,
+    contactId: string,
+    requestedWorkspaceId?: string | null,
+  ): Promise<MeetingPanelView> {
+    const configured = this.meetingOps.isConfigured();
+    const base: MeetingPanelView = {
+      federated: configured,
+      source: 'meeting-ops',
+      configured,
+      meetings: [],
+      summaries: [],
+      actionItems: [],
+    };
+    if (!configured) return base;
+
+    const fedCtx = await this.meetingFederationContext(user, requestedWorkspaceId);
+    try {
+      const [page, summaries, actionItems] = await Promise.all([
+        this.meetingOps.listMeetingsForContact(fedCtx, contactId, { limit: 25 }),
+        this.meetingOps.listSummariesForContact(fedCtx, contactId, { limit: 10 }),
+        this.meetingOps.listActionItemsForContact(fedCtx, contactId, { limit: 50 }),
+      ]);
+      base.meetings = page.items;
+      base.summaries = summaries;
+      base.actionItems = actionItems;
+    } catch (err) {
+      this.logger.warn(`Meeting panel federation failed: ${(err as Error).message}`);
+    }
+    return base;
   }
 
   // ---- Phase-4 federation helpers ----------------------------------------
