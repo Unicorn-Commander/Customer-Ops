@@ -23,8 +23,20 @@
  *   - create_customer_invoice  — assemble a draft + create it in Accounting-Ops
  *                                (idempotent; dual-SKU entitlement-gated).
  *
+ * Phase 4 outreach + email tools (the comms surface for agents — the follow-up
+ * drafter + lead-triage live here). Federate the Outreach + Email-Ops APPS:
+ *   - list_customer_outreach   — live campaigns + touches + local enrollments.
+ *   - start_customer_campaign  — enroll the contact in a campaign (idempotent;
+ *                                customer-ops + outreach gated).
+ *   - list_customer_email      — live mailbox threads + local outbound links.
+ *   - send_customer_email      — send/draft an outbound email (idempotent;
+ *                                customer-ops + email-ops gated).
+ *   - record_customer_engagement — record a reply/click/bounce + advance the
+ *                                funnel stage on positive intent (with logging).
+ *
  * Contact details are FEDERATED from Contact-Ops, invoices from Accounting-Ops,
- * at read time — never copied.
+ * outreach from the Outreach app, mail from the Email-Ops app, at read time —
+ * never copied.
  */
 
 import { User } from '@prisma/client';
@@ -33,7 +45,7 @@ import { MembershipService } from '../common/workspace/membership.service';
 import { listMyWorkspaces, MyWorkspace } from '../common/workspace/list-my-workspaces';
 import { tenancyEnabled } from '../common/workspace/feature-flags';
 import { CustomersService } from '../customers/customers.service';
-import { CreateInvoiceDto } from '../customers/dto/customer.dto';
+import { CreateInvoiceDto, EngagementKind } from '../customers/dto/customer.dto';
 
 export class CustomerOpsTools {
   constructor(
@@ -191,6 +203,106 @@ export class CustomerOpsTools {
       user,
       args.customer_id,
       dto,
+      args.workspace_id ?? null,
+    );
+  }
+
+  // ── Phase 4 outreach tools (delegate to CustomersService → Outreach app) ──
+
+  /** This customer's outreach: live campaigns + touches + local enrollments.
+   *  Degrade-clean / entitlement affordances are in the result. */
+  async listCustomerOutreach(user: User, args: { customer_id: string; workspace_id?: string }) {
+    return this.customers.outreachForUser(user, args.customer_id, args.workspace_id ?? null);
+  }
+
+  /** Enroll the customer's contact into an Outreach campaign/sequence (idempotent
+   *  on the deterministic external_ref; requires customer-ops + outreach). */
+  async startCustomerCampaign(
+    user: User,
+    args: {
+      customer_id: string;
+      workspace_id?: string;
+      campaign_id: string;
+      contact_email?: string;
+      merge_fields?: Record<string, string>;
+      idempotency_key?: string;
+    },
+  ) {
+    return this.customers.startCampaignForUser(
+      user,
+      args.customer_id,
+      {
+        campaignId: args.campaign_id,
+        contactEmail: args.contact_email,
+        mergeFields: args.merge_fields,
+        idempotencyKey: args.idempotency_key,
+      },
+      args.workspace_id ?? null,
+    );
+  }
+
+  // ── Phase 4 email tools (delegate to CustomersService → Email-Ops app) ──
+
+  /** This customer's email: live mailbox threads + local outbound links. */
+  async listCustomerEmail(user: User, args: { customer_id: string; workspace_id?: string }) {
+    return this.customers.emailForUser(user, args.customer_id, args.workspace_id ?? null);
+  }
+
+  /** Send or draft an outbound email to the customer's contact via Email-Ops
+   *  (idempotent; requires customer-ops + email-ops). mode=draft stages the
+   *  agent-inbox approval surface — the safe default for an agent. */
+  async sendCustomerEmail(
+    user: User,
+    args: {
+      customer_id: string;
+      workspace_id?: string;
+      to_address?: string;
+      subject: string;
+      body: string;
+      in_reply_to_thread_id?: string;
+      mode?: 'send' | 'draft';
+      idempotency_key?: string;
+    },
+  ) {
+    return this.customers.sendEmailForUser(
+      user,
+      args.customer_id,
+      {
+        toAddress: args.to_address,
+        subject: args.subject,
+        body: args.body,
+        inReplyToThreadId: args.in_reply_to_thread_id,
+        mode: args.mode,
+        idempotencyKey: args.idempotency_key,
+      },
+      args.workspace_id ?? null,
+    );
+  }
+
+  // ── Phase 4 engagement → stage hook (delegate to CustomersService) ──
+
+  /** Record an inbound engagement + advance the funnel stage on positive intent
+   *  (reply/click). Logs the stage change + provenance in one transaction. */
+  async recordCustomerEngagement(
+    user: User,
+    args: {
+      customer_id: string;
+      workspace_id?: string;
+      kind: EngagementKind;
+      source?: 'outreach' | 'email-ops';
+      external_ref?: string;
+      detail?: string;
+    },
+  ) {
+    return this.customers.recordEngagementForUser(
+      user,
+      args.customer_id,
+      {
+        kind: args.kind,
+        source: args.source,
+        externalRef: args.external_ref,
+        detail: args.detail,
+      },
       args.workspace_id ?? null,
     );
   }

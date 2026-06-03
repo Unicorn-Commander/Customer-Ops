@@ -43,13 +43,30 @@ import {
   FederationContext as InvoiceFederationContext,
 } from '../accounting-ops/accounting-ops.port';
 import { FederatedInvoice, InvoiceDraft } from '../accounting-ops/accounting-ops.types';
-import { checkTransition, STAGE_ORDER } from './funnel';
+import {
+  OutreachPort,
+  FederationContext as OutreachFederationContext,
+} from '../outreach-ops/outreach-ops.port';
+import {
+  OutreachEnrollmentResult,
+  OutreachEngagementKind,
+} from '../outreach-ops/outreach-ops.types';
+import {
+  EmailOpsPort,
+  FederationContext as EmailFederationContext,
+} from '../email-ops/email-ops.port';
+import { EmailComposeResult } from '../email-ops/email-ops.types';
+import { checkTransition, engagementAdvance, STAGE_ORDER } from './funnel';
 import {
   AddNoteDto,
   CreateCustomerDto,
   CreateInvoiceDto,
   ListCustomersQueryDto,
   MarkLostDto,
+  RecordEngagementDto,
+  ScheduleSocialTouchDto,
+  SendEmailDto,
+  StartCampaignDto,
   TransitionStageDto,
   UpdateCustomerDto,
 } from './dto/customer.dto';
@@ -81,6 +98,31 @@ export interface CustomerWithContact {
   } | null;
 }
 
+/** A federated Outreach touch as the customer-360 renders it (Phase 4). */
+export interface OutreachTouchView {
+  id: string;
+  channel: string;
+  campaignId: string | null;
+  campaignName: string | null;
+  status: string;
+  subject: string | null;
+  scheduledAt: string | null;
+  sentAt: string | null;
+  lastEngagementKind: OutreachEngagementKind | null;
+  lastEngagementAt: string | null;
+}
+
+/** A federated Email-Ops thread as the customer-360 renders it (Phase 4). */
+export interface EmailThreadView {
+  id: string;
+  subject: string | null;
+  messageCount: number;
+  unread: boolean;
+  lastMessageAt: string | null;
+  lastSnippet: string | null;
+  participants: Array<{ address: string; name: string | null }>;
+}
+
 @Injectable()
 export class CustomersService {
   private readonly logger = new Logger(CustomersService.name);
@@ -89,6 +131,8 @@ export class CustomersService {
     private readonly workspaces: WorkspaceContextService,
     private readonly contactOps: ContactOpsPort,
     private readonly accountingOps: AccountingOpsPort,
+    private readonly outreach: OutreachPort,
+    private readonly emailOps: EmailOpsPort,
   ) {}
 
   // ========================================================================
@@ -139,26 +183,41 @@ export class CustomersService {
     requestedWorkspaceId?: string | null,
   ) {
     const fedCtx = await this.federationContext(user, requestedWorkspaceId);
-    const { relationship, activities, invoiceLinks } = await this.workspaces.runForUser(
-      user,
-      async (tx) => {
-        const relationship = await this.getInTx(tx, id);
-        const activities = await tx.customerActivity.findMany({
-          where: { customerId: id },
-          orderBy: { createdAt: 'desc' },
-          take: 50,
-        });
-        // The thin local invoice links for this customer (RLS-scoped). AO is the
-        // ledger SoR; these are just the (source, ref) memory + cached status.
-        const invoiceLinks = await tx.customerInvoiceLink.findMany({
-          where: { customerId: id },
-          orderBy: { createdAt: 'desc' },
-          take: 100,
-        });
-        return { relationship, activities, invoiceLinks };
-      },
-      requestedWorkspaceId,
-    );
+    const { relationship, activities, invoiceLinks, outreachLinks, emailLinks } =
+      await this.workspaces.runForUser(
+        user,
+        async (tx) => {
+          const relationship = await this.getInTx(tx, id);
+          const activities = await tx.customerActivity.findMany({
+            where: { customerId: id },
+            orderBy: { createdAt: 'desc' },
+            take: 50,
+          });
+          // The thin local invoice links for this customer (RLS-scoped). AO is the
+          // ledger SoR; these are just the (source, ref) memory + cached status.
+          const invoiceLinks = await tx.customerInvoiceLink.findMany({
+            where: { customerId: id },
+            orderBy: { createdAt: 'desc' },
+            take: 100,
+          });
+          // Phase-4 thin links: the outreach enrollments + outbound emails THIS
+          // app initiated (RLS-scoped). The live campaign/thread history is
+          // FEDERATED from the apps at read time; these are only the de-dupe
+          // memory + cached status.
+          const outreachLinks = await tx.customerOutreachLink.findMany({
+            where: { customerId: id },
+            orderBy: { createdAt: 'desc' },
+            take: 100,
+          });
+          const emailLinks = await tx.customerEmailLink.findMany({
+            where: { customerId: id },
+            orderBy: { createdAt: 'desc' },
+            take: 100,
+          });
+          return { relationship, activities, invoiceLinks, outreachLinks, emailLinks };
+        },
+        requestedWorkspaceId,
+      );
 
     // Federate the contact detail (read-time; never persisted).
     const contact = await this.contactOps.getContact(fedCtx, relationship.contactId);
@@ -167,6 +226,23 @@ export class CustomersService {
     // (best-effort; degrade-clean). Outside the DB tx — federation must not hold
     // a transaction open. Refreshes the cached projection on the link rows.
     const invoices = await this.buildInvoicePanel(user, invoiceLinks, requestedWorkspaceId);
+
+    // ── Phase-4 federation panels (replace the formerly-inert email/campaign
+    // slots): live outreach campaigns/touches + the local enrollment links, and
+    // live mailbox threads + the local outbound links. Federation is best-effort
+    // + degrade-clean — outside the DB tx, never holding a transaction open.
+    const outreachPanel = await this.buildOutreachPanel(
+      user,
+      relationship.contactId,
+      outreachLinks,
+      requestedWorkspaceId,
+    );
+    const emailPanel = await this.buildEmailPanel(
+      user,
+      relationship.contactId,
+      emailLinks,
+      requestedWorkspaceId,
+    );
 
     return {
       relationship: this.serialize(relationship),
@@ -188,11 +264,12 @@ export class CustomersService {
       })),
       // ── Phase-3: the Accounting-Ops invoice panel (federated, live status) ──
       invoices,
-      // ── Later-phase federation slots (intentionally empty; seams only) ──
-      // Meeting-Ops: meetings/action-items. Email-Ops: Stalwart threads.
-      // Outreach: campaign membership.
+      // ── Phase-4: the Outreach + Email-Ops panels (federated, live) ──
+      outreach: outreachPanel,
+      email: emailPanel,
+      // ── Later-phase federation slot (intentionally empty; seam only) ──
+      // Meeting-Ops: meetings/action-items.
       meetings: { federated: false, source: 'meeting-ops', items: [] as unknown[] },
-      email: { federated: false, source: 'email-ops', items: [] as unknown[] },
     };
   }
 
@@ -660,6 +737,745 @@ export class CustomersService {
           : null,
       lastPolledAt: row.lastPolledAt ?? null,
       createdAt: row.createdAt,
+    };
+  }
+
+  // ========================================================================
+  // PHASE 4 — OUTREACH SURFACE (the Outreach app federation seam).
+  //
+  // Customer-Ops FEDERATES outreach: the (future) Outreach app is the campaign
+  // engine-surface (Listmonk + Postiz) + the system-of-record for every
+  // campaign/send/touch. These entry points (a) read the live campaigns/touches
+  // for the contact + the local enrollment links, and (b) TRIGGER a campaign
+  // enrollment / social touch (idempotent on (workspace, source, ref)), keeping
+  // only a thin local CustomerOutreachLink. They NEVER send a campaign or store
+  // a recipient list. Triggers are dual-SKU gated (customer-ops + outreach);
+  // reads are viewer-level.
+  // ========================================================================
+
+  /**
+   * The customer's outreach panel: the live campaigns/touches federated from the
+   * Outreach app joined with the local enrollment links. Degrade-clean +
+   * entitlement affordances, identical shape/contract to the invoice panel.
+   */
+  async outreachForUser(
+    user: User & Partial<WithWorkspaceClaim>,
+    customerId: string,
+    requestedWorkspaceId?: string | null,
+  ) {
+    const { contactId, links } = await this.workspaces.runForUser(
+      user,
+      async (tx) => {
+        const rel = await this.getInTx(tx, customerId);
+        const links = await tx.customerOutreachLink.findMany({
+          where: { customerId },
+          orderBy: { createdAt: 'desc' },
+          take: 100,
+        });
+        return { contactId: rel.contactId, links };
+      },
+      requestedWorkspaceId,
+    );
+    return this.buildOutreachPanel(user, contactId, links, requestedWorkspaceId);
+  }
+
+  /**
+   * Start a campaign/sequence for this customer: enroll the federated contact in
+   * the Outreach app + record a thin local link. Gated on BOTH customer-ops AND
+   * outreach (UC_ENTITLEMENT_MODE=open bypasses with a WARN); 403 when not
+   * entitled, 400 when Outreach is unconfigured (degrade-clean), 502 when
+   * reachable but the call fails. Idempotent on the deterministic external_ref.
+   */
+  async startCampaignForUser(
+    user: User & Partial<WithWorkspaceClaim>,
+    customerId: string,
+    dto: StartCampaignDto,
+    requestedWorkspaceId?: string | null,
+  ) {
+    const ucUid = ucUidOf(user);
+    const fedCtx = await this.outreachFederationContext(user, requestedWorkspaceId);
+
+    if (!this.outreach.isConfigured()) {
+      throw new BadRequestException(
+        'Outreach is not connected for this deployment. Set OUTREACH_BASE_URL to ' +
+          'enable campaigns. (Customer-Ops federates outreach to the Outreach app; ' +
+          'it is not a campaign engine.)',
+      );
+    }
+    const gate = this.outreach.checkEntitlement(fedCtx);
+    if (!gate.allowed) {
+      this.logger.warn(
+        `Campaign start denied for ${ucUid} (ws=${fedCtx.workspaceId}): ${gate.reason}`,
+      );
+      throw new ForbiddenException(gate.reason);
+    }
+
+    const idemKey = dto.idempotencyKey?.trim() || randomUUID();
+    const externalSource = 'customer-ops';
+    const externalRef = `cust:${customerId}:enroll:${idemKey}`;
+
+    // 1) Resolve the relationship + record/locate the link FIRST so the (source,
+    //    ref) survives even if the Outreach call fails mid-flight (idempotent retry).
+    const { link, contactId } = await this.workspaces.runForUser(
+      user,
+      async (tx) => {
+        const rel = await this.getInTx(tx, customerId);
+        const workspaceId = await this.boundWorkspaceId(tx);
+        const existing = await tx.customerOutreachLink.findUnique({
+          where: {
+            workspaceId_externalSource_externalRef: { workspaceId, externalSource, externalRef },
+          },
+        });
+        if (existing) return { link: existing, contactId: rel.contactId };
+        const created = await tx.customerOutreachLink.create({
+          data: {
+            workspaceId,
+            customerId,
+            contactId: rel.contactId,
+            channel: 'email',
+            externalSource,
+            externalRef,
+            campaignId: dto.campaignId,
+            createdByUcUid: ucUid || null,
+          },
+        });
+        return { link: created, contactId: rel.contactId };
+      },
+      requestedWorkspaceId,
+    );
+
+    // 2) Call the Outreach app (idempotent on the tuple). Outside the DB tx.
+    const result = await this.outreach.enrollContact(fedCtx, {
+      campaignId: dto.campaignId,
+      contactId,
+      contactEmail: dto.contactEmail ?? null,
+      externalSource,
+      externalRef,
+      mergeFields: dto.mergeFields ?? null,
+    });
+    if (!result) {
+      throw new ServiceUnavailableException(
+        'Outreach did not return an enrollment. The link is recorded; retry to ' +
+          'complete it (the enrollment is idempotent on the same reference).',
+      );
+    }
+
+    // 3) Refresh the link's cached projection + log the relationship activity.
+    const refreshed = await this.workspaces.runForUser(
+      user,
+      async (tx) => {
+        const updated = await tx.customerOutreachLink.update({
+          where: { id: link.id },
+          data: this.outreachCacheUpdate(result),
+        });
+        await this.logActivity(tx, updated.workspaceId, customerId, {
+          kind: CustomerActivityKind.CAMPAIGN_STARTED,
+          body:
+            `Enrolled in Outreach campaign ${result.campaignName ?? result.campaignId ?? dto.campaignId} ` +
+            `(${result.status}) · ref ${externalRef}`,
+          actorUcUid: ucUid,
+        });
+        return updated;
+      },
+      requestedWorkspaceId,
+    );
+
+    return { link: this.serializeOutreachLink(refreshed), enrollment: result };
+  }
+
+  /**
+   * Schedule a single social touch (Postiz) for this customer's contact + record
+   * a thin link. Same gating/idempotency/degrade-clean as startCampaign.
+   */
+  async scheduleSocialTouchForUser(
+    user: User & Partial<WithWorkspaceClaim>,
+    customerId: string,
+    dto: ScheduleSocialTouchDto,
+    requestedWorkspaceId?: string | null,
+  ) {
+    const ucUid = ucUidOf(user);
+    const fedCtx = await this.outreachFederationContext(user, requestedWorkspaceId);
+
+    if (!this.outreach.isConfigured()) {
+      throw new BadRequestException(
+        'Outreach is not connected for this deployment. Set OUTREACH_BASE_URL to ' +
+          'enable social touches.',
+      );
+    }
+    const gate = this.outreach.checkEntitlement(fedCtx);
+    if (!gate.allowed) {
+      this.logger.warn(
+        `Social touch denied for ${ucUid} (ws=${fedCtx.workspaceId}): ${gate.reason}`,
+      );
+      throw new ForbiddenException(gate.reason);
+    }
+
+    const idemKey = dto.idempotencyKey?.trim() || randomUUID();
+    const externalSource = 'customer-ops';
+    const externalRef = `cust:${customerId}:social:${idemKey}`;
+
+    const { link, contactId } = await this.workspaces.runForUser(
+      user,
+      async (tx) => {
+        const rel = await this.getInTx(tx, customerId);
+        const workspaceId = await this.boundWorkspaceId(tx);
+        const existing = await tx.customerOutreachLink.findUnique({
+          where: {
+            workspaceId_externalSource_externalRef: { workspaceId, externalSource, externalRef },
+          },
+        });
+        if (existing) return { link: existing, contactId: rel.contactId };
+        const created = await tx.customerOutreachLink.create({
+          data: {
+            workspaceId,
+            customerId,
+            contactId: rel.contactId,
+            channel: 'social',
+            externalSource,
+            externalRef,
+            campaignId: dto.channelId,
+            createdByUcUid: ucUid || null,
+          },
+        });
+        return { link: created, contactId: rel.contactId };
+      },
+      requestedWorkspaceId,
+    );
+
+    const result = await this.outreach.scheduleSocialTouch(fedCtx, {
+      channelId: dto.channelId,
+      contactId,
+      body: dto.body,
+      scheduledAt: dto.scheduledAt ?? null,
+      externalSource,
+      externalRef,
+    });
+    if (!result) {
+      throw new ServiceUnavailableException(
+        'Outreach did not return a scheduled touch. The link is recorded; retry ' +
+          'to complete it (idempotent on the same reference).',
+      );
+    }
+
+    const refreshed = await this.workspaces.runForUser(
+      user,
+      async (tx) => {
+        const updated = await tx.customerOutreachLink.update({
+          where: { id: link.id },
+          data: this.outreachCacheUpdate(result),
+        });
+        await this.logActivity(tx, updated.workspaceId, customerId, {
+          kind: CustomerActivityKind.CAMPAIGN_STARTED,
+          body: `Scheduled a social touch (${result.status}) · ref ${externalRef}`,
+          actorUcUid: ucUid,
+        });
+        return updated;
+      },
+      requestedWorkspaceId,
+    );
+
+    return { link: this.serializeOutreachLink(refreshed), enrollment: result };
+  }
+
+  // ========================================================================
+  // PHASE 4 — EMAIL SURFACE (the Email-Ops app federation seam).
+  //
+  // Customer-Ops FEDERATES mailboxes: the (future) Email-Ops app is the mailbox
+  // surface (Stalwart) + the system-of-record for every thread/message. These
+  // entry points (a) read the live threads with the contact + the local outbound
+  // links, and (b) SEND/DRAFT one outbound email (idempotent), keeping only a
+  // thin local CustomerEmailLink. They NEVER store a message body. Sends/drafts
+  // are dual-SKU gated (customer-ops + email-ops); reads are viewer-level.
+  // ========================================================================
+
+  /**
+   * The customer's email panel: the live mailbox threads federated from the
+   * Email-Ops app joined with the local outbound links. Degrade-clean +
+   * entitlement affordances, identical shape/contract to the invoice panel.
+   */
+  async emailForUser(
+    user: User & Partial<WithWorkspaceClaim>,
+    customerId: string,
+    requestedWorkspaceId?: string | null,
+  ) {
+    const { contactId, links } = await this.workspaces.runForUser(
+      user,
+      async (tx) => {
+        const rel = await this.getInTx(tx, customerId);
+        const links = await tx.customerEmailLink.findMany({
+          where: { customerId },
+          orderBy: { createdAt: 'desc' },
+          take: 100,
+        });
+        return { contactId: rel.contactId, links };
+      },
+      requestedWorkspaceId,
+    );
+    return this.buildEmailPanel(user, contactId, links, requestedWorkspaceId);
+  }
+
+  /**
+   * Send or draft an outbound email to this customer's contact via the Email-Ops
+   * app + record a thin local link. Gated on BOTH customer-ops AND email-ops
+   * (open bypasses with a WARN); 403 not entitled, 400 unconfigured
+   * (degrade-clean), 502 when reachable but the call fails. Idempotent on the
+   * deterministic external_ref. `mode:'send'` queues delivery; `mode:'draft'`
+   * stages the agent-inbox approval surface.
+   */
+  async sendEmailForUser(
+    user: User & Partial<WithWorkspaceClaim>,
+    customerId: string,
+    dto: SendEmailDto,
+    requestedWorkspaceId?: string | null,
+  ) {
+    const ucUid = ucUidOf(user);
+    const fedCtx = await this.emailFederationContext(user, requestedWorkspaceId);
+    const mode = dto.mode ?? 'send';
+
+    if (!this.emailOps.isConfigured()) {
+      throw new BadRequestException(
+        'Email-Ops is not connected for this deployment. Set EMAIL_OPS_BASE_URL to ' +
+          'enable email. (Customer-Ops federates mailboxes to the Email-Ops app; it ' +
+          'is not a mail server.)',
+      );
+    }
+    const gate = this.emailOps.checkEntitlement(fedCtx);
+    if (!gate.allowed) {
+      this.logger.warn(
+        `Email ${mode} denied for ${ucUid} (ws=${fedCtx.workspaceId}): ${gate.reason}`,
+      );
+      throw new ForbiddenException(gate.reason);
+    }
+
+    // Resolve the recipient: the explicit override, else the federated contact's
+    // primary email (federate, don't store). 400 when neither is available.
+    let toAddress = dto.toAddress?.trim() || null;
+    let contactId: string | null = null;
+    if (!toAddress) {
+      // Pre-read the relationship's contactId (RLS-scoped), then federate the
+      // address from Contact-Ops (best-effort).
+      contactId = await this.workspaces.runForUser(
+        user,
+        async (tx) => (await this.getInTx(tx, customerId)).contactId,
+        requestedWorkspaceId,
+      );
+      const contactCtx = await this.federationContext(user, requestedWorkspaceId);
+      const contact = await this.contactOps.getContact(contactCtx, contactId);
+      toAddress = contact?.primaryEmail ?? null;
+    }
+    if (!toAddress) {
+      throw new BadRequestException(
+        'No recipient address: pass toAddress, or ensure the federated contact has ' +
+          'a primary email (Contact-Ops). Customer-Ops does not store the address.',
+      );
+    }
+
+    const idemKey = dto.idempotencyKey?.trim() || randomUUID();
+    const externalSource = 'customer-ops';
+    const externalRef = `cust:${customerId}:email:${idemKey}`;
+
+    const { link, resolvedContactId } = await this.workspaces.runForUser(
+      user,
+      async (tx) => {
+        const rel = await this.getInTx(tx, customerId);
+        const workspaceId = await this.boundWorkspaceId(tx);
+        const existing = await tx.customerEmailLink.findUnique({
+          where: {
+            workspaceId_externalSource_externalRef: { workspaceId, externalSource, externalRef },
+          },
+        });
+        if (existing) return { link: existing, resolvedContactId: rel.contactId };
+        const created = await tx.customerEmailLink.create({
+          data: {
+            workspaceId,
+            customerId,
+            contactId: rel.contactId,
+            mode,
+            externalSource,
+            externalRef,
+            threadId: dto.inReplyToThreadId ?? null,
+            subject: dto.subject,
+            createdByUcUid: ucUid || null,
+          },
+        });
+        return { link: created, resolvedContactId: rel.contactId };
+      },
+      requestedWorkspaceId,
+    );
+
+    const result = await this.emailOps.composeEmail(fedCtx, {
+      contactId: resolvedContactId,
+      toAddress,
+      subject: dto.subject,
+      body: dto.body,
+      inReplyToThreadId: dto.inReplyToThreadId ?? null,
+      mode,
+      externalSource,
+      externalRef,
+    });
+    if (!result) {
+      throw new ServiceUnavailableException(
+        'Email-Ops did not return a message. The link is recorded; retry to ' +
+          'complete it (idempotent on the same reference).',
+      );
+    }
+
+    const refreshed = await this.workspaces.runForUser(
+      user,
+      async (tx) => {
+        const updated = await tx.customerEmailLink.update({
+          where: { id: link.id },
+          data: this.emailCacheUpdate(result),
+        });
+        await this.logActivity(tx, updated.workspaceId, customerId, {
+          kind: CustomerActivityKind.EMAIL_SENT,
+          body:
+            `Email "${dto.subject}" ${mode === 'draft' ? 'drafted for approval' : 'sent'} ` +
+            `via Email-Ops (${result.status}) · ref ${externalRef}`,
+          actorUcUid: ucUid,
+        });
+        return updated;
+      },
+      requestedWorkspaceId,
+    );
+
+    return { link: this.serializeEmailLink(refreshed), message: result };
+  }
+
+  // ========================================================================
+  // PHASE 4 — the ENGAGEMENT → FUNNEL-STAGE hook.
+  //
+  // An inbound engagement signal (a reply/click from Outreach or Email-Ops; a
+  // bounce) advances the customer's funnel stage when positive, in ONE RLS tx,
+  // with an append-only activity row recording WHY. This is the reply/bounce →
+  // stage-change hook the brief requires: an endpoint/service method that drives
+  // the funnel on engagement, with activity logging. It NEVER skips qualification
+  // (it advances exactly one funnel step, the same guardrail as a manual
+  // transition) and never advances a lost/converted/end-of-funnel relationship.
+  // ========================================================================
+
+  /**
+   * Record an engagement on a customer and advance the funnel stage if the signal
+   * warrants it. Returns the (possibly unchanged) relationship + whether an
+   * advance happened + the reason. Positive signals (replied/clicked) advance one
+   * step; opened is logged but does not advance by default; bounced/unsubscribed
+   * never advance (they are recorded as engagement provenance only).
+   */
+  async recordEngagementForUser(
+    user: User & Partial<WithWorkspaceClaim>,
+    customerId: string,
+    dto: RecordEngagementDto,
+    requestedWorkspaceId?: string | null,
+  ) {
+    const ucUid = ucUidOf(user);
+    return this.workspaces.runForUser(
+      user,
+      (tx) => this.recordEngagementInTx(tx, customerId, dto, ucUid),
+      requestedWorkspaceId,
+    );
+  }
+
+  /**
+   * The engagement→stage logic (tx-scoped; unit-testable with a fake tx). Decides
+   * whether the signal advances the funnel (pure policy in `engagementAdvance`),
+   * applies the stage change + stamps lastStageChangeAt, and writes BOTH the
+   * canonical STAGE_CHANGE activity (with from/to) AND an ENGAGEMENT_ADVANCED row
+   * tagging the provenance — all in the SAME tx so the timeline never drifts.
+   * When the signal does not advance (opened / bounced / already at the top /
+   * lost), it still records the engagement as an activity (no stage write).
+   */
+  async recordEngagementInTx(
+    tx: WorkspaceTxClient,
+    customerId: string,
+    dto: RecordEngagementDto,
+    ucUid: string,
+  ) {
+    const current = await this.getInTx(tx, customerId);
+    const sourceLabel = dto.source ?? 'outreach';
+    const detail = dto.detail ? ` — ${dto.detail}` : '';
+    const decision = engagementAdvance(current.stage, dto.kind, current.isLost);
+
+    if (!decision.advance || !decision.toStage) {
+      // No advance: record the engagement as provenance only (a NOTE-grade row
+      // tagged ENGAGEMENT_ADVANCED with advance=false in the body for clarity).
+      await this.logActivity(tx, current.workspaceId, customerId, {
+        kind: CustomerActivityKind.ENGAGEMENT_ADVANCED,
+        body: `Engagement '${dto.kind}' from ${sourceLabel}${detail} — ${decision.reason}`,
+        actorUcUid: ucUid,
+      });
+      return {
+        relationship: this.serialize(current),
+        advanced: false,
+        reason: decision.reason,
+      };
+    }
+
+    // Advance exactly one funnel step (the funnel guardrail still applies).
+    const updated = await tx.customer.update({
+      where: { id: customerId },
+      data: { stage: decision.toStage, lastStageChangeAt: new Date() },
+    });
+
+    // Canonical stage-change row (from/to) so reporting/age logic is uniform…
+    await this.logActivity(tx, updated.workspaceId, customerId, {
+      kind: CustomerActivityKind.STAGE_CHANGE,
+      fromStage: current.stage,
+      toStage: decision.toStage,
+      body: `Advanced ${current.stage}→${decision.toStage} on '${dto.kind}' engagement (${sourceLabel})`,
+      actorUcUid: ucUid,
+    });
+    // …plus the engagement provenance row tagging WHY it advanced.
+    await this.logActivity(tx, updated.workspaceId, customerId, {
+      kind: CustomerActivityKind.ENGAGEMENT_ADVANCED,
+      fromStage: current.stage,
+      toStage: decision.toStage,
+      body: `Engagement '${dto.kind}' from ${sourceLabel}${detail} advanced the funnel`,
+      actorUcUid: ucUid,
+    });
+
+    return {
+      relationship: this.serialize(updated),
+      advanced: true,
+      fromStage: current.stage,
+      toStage: decision.toStage,
+      reason: decision.reason,
+    };
+  }
+
+  // ---- Phase-4 federation helpers ----------------------------------------
+
+  /** Build the Outreach federation identity (workspace + actor + entitlements). */
+  private async outreachFederationContext(
+    user: User & Partial<WithWorkspaceClaim>,
+    requestedWorkspaceId?: string | null,
+  ): Promise<OutreachFederationContext> {
+    const workspaceId = await this.workspaces.resolveAuthorized(user, requestedWorkspaceId);
+    return { workspaceId, ucUid: ucUidOf(user) || null, entitlements: entitlementsOf(user) };
+  }
+
+  /** Build the Email-Ops federation identity (workspace + actor + entitlements). */
+  private async emailFederationContext(
+    user: User & Partial<WithWorkspaceClaim>,
+    requestedWorkspaceId?: string | null,
+  ): Promise<EmailFederationContext> {
+    const workspaceId = await this.workspaces.resolveAuthorized(user, requestedWorkspaceId);
+    return { workspaceId, ucUid: ucUidOf(user) || null, entitlements: entitlementsOf(user) };
+  }
+
+  /**
+   * Assemble the customer-360 outreach panel: list the live campaigns (the
+   * "start" picker) + the live touches for the contact (history), federated from
+   * the Outreach app, alongside the local enrollment links. Never throws
+   * (best-effort); degrade-clean + entitlement affordances mirror the invoice
+   * panel. Reads are viewer-level (no dual SKU); only the trigger action is gated.
+   */
+  private async buildOutreachPanel(
+    user: User & Partial<WithWorkspaceClaim>,
+    contactId: string,
+    links: Array<Record<string, any>>,
+    requestedWorkspaceId?: string | null,
+  ) {
+    const configured = this.outreach.isConfigured();
+    const fedCtx = configured
+      ? await this.outreachFederationContext(user, requestedWorkspaceId)
+      : null;
+    const entitled = fedCtx ? this.outreach.checkEntitlement(fedCtx).allowed : false;
+
+    let campaigns: ReturnType<typeof this.serializeCampaign>[] = [];
+    let touches: OutreachTouchView[] = [];
+    if (configured && fedCtx) {
+      try {
+        const [rawCampaigns, rawTouches] = await Promise.all([
+          this.outreach.listCampaigns(fedCtx),
+          this.outreach.listTouchesForContact(fedCtx, contactId),
+        ]);
+        campaigns = rawCampaigns.map((c) => this.serializeCampaign(c));
+        touches = rawTouches.map((t) => this.serializeTouch(t));
+      } catch (err) {
+        this.logger.warn(`Outreach panel federation failed: ${(err as Error).message}`);
+      }
+    }
+
+    return {
+      federated: configured,
+      source: 'outreach',
+      configured,
+      entitled,
+      // Triggering a campaign/touch requires the dual SKU; reads do not.
+      canStart: configured && entitled,
+      // The live campaigns to enroll into + the live touch history for the contact.
+      campaigns,
+      touches,
+      // The local enrollment links THIS app initiated (de-dupe memory + cache).
+      enrollments: links.map((l) => this.serializeOutreachLink(l)),
+    };
+  }
+
+  /**
+   * Assemble the customer-360 email panel: list the live mailbox threads with the
+   * contact (history), federated from the Email-Ops app, alongside the local
+   * outbound links. Never throws (best-effort); degrade-clean + entitlement
+   * affordances mirror the invoice panel. Reads are viewer-level (no dual SKU);
+   * only the send/draft action is gated.
+   */
+  private async buildEmailPanel(
+    user: User & Partial<WithWorkspaceClaim>,
+    contactId: string,
+    links: Array<Record<string, any>>,
+    requestedWorkspaceId?: string | null,
+  ) {
+    const configured = this.emailOps.isConfigured();
+    const fedCtx = configured
+      ? await this.emailFederationContext(user, requestedWorkspaceId)
+      : null;
+    const entitled = fedCtx ? this.emailOps.checkEntitlement(fedCtx).allowed : false;
+
+    let threads: EmailThreadView[] = [];
+    if (configured && fedCtx) {
+      try {
+        const raw = await this.emailOps.listThreadsWithContact(fedCtx, contactId);
+        threads = raw.map((t) => this.serializeThread(t));
+      } catch (err) {
+        this.logger.warn(`Email panel federation failed: ${(err as Error).message}`);
+      }
+    }
+
+    return {
+      federated: configured,
+      source: 'email-ops',
+      configured,
+      entitled,
+      // Sending/drafting requires the dual SKU; reading threads does not.
+      canSend: configured && entitled,
+      // The live mailbox threads with the contact (federated; never stored).
+      threads,
+      // The local outbound links THIS app initiated (de-dupe memory + cache).
+      sent: links.map((l) => this.serializeEmailLink(l)),
+    };
+  }
+
+  /** The Prisma update payload refreshing an outreach link's cached projection. */
+  private outreachCacheUpdate(r: OutreachEnrollmentResult): Prisma.CustomerOutreachLinkUpdateInput {
+    return {
+      outreachId: r.id,
+      campaignId: r.campaignId ?? undefined,
+      campaignName: r.campaignName ?? undefined,
+      lastStatus: r.status,
+      lastPolledAt: new Date(),
+    };
+  }
+
+  /** The Prisma update payload refreshing an email link's cached projection. */
+  private emailCacheUpdate(r: EmailComposeResult): Prisma.CustomerEmailLinkUpdateInput {
+    return {
+      messageId: r.id,
+      threadId: r.threadId ?? undefined,
+      lastStatus: r.status,
+      lastPolledAt: new Date(),
+    };
+  }
+
+  /** Serialize a CustomerOutreachLink row to the wire shape. */
+  private serializeOutreachLink(row: Record<string, any>) {
+    return {
+      id: row.id,
+      customerId: row.customerId,
+      contactId: row.contactId,
+      channel: row.channel ?? 'email',
+      externalSource: row.externalSource,
+      externalRef: row.externalRef,
+      campaignId: row.campaignId ?? null,
+      outreachId: row.outreachId ?? null,
+      campaignName: row.campaignName ?? null,
+      status: row.lastStatus ?? null,
+      lastPolledAt: row.lastPolledAt ?? null,
+      createdAt: row.createdAt,
+    };
+  }
+
+  /** Serialize a CustomerEmailLink row to the wire shape. */
+  private serializeEmailLink(row: Record<string, any>) {
+    return {
+      id: row.id,
+      customerId: row.customerId,
+      contactId: row.contactId,
+      mode: row.mode ?? 'send',
+      externalSource: row.externalSource,
+      externalRef: row.externalRef,
+      threadId: row.threadId ?? null,
+      messageId: row.messageId ?? null,
+      subject: row.subject ?? null,
+      status: row.lastStatus ?? null,
+      lastPolledAt: row.lastPolledAt ?? null,
+      createdAt: row.createdAt,
+    };
+  }
+
+  /** Serialize a federated Outreach campaign to the cockpit wire shape. */
+  private serializeCampaign(c: {
+    id: string;
+    name: string;
+    channel: string;
+    status: string;
+    isSequence: boolean;
+    listId: string | null;
+    createdAt: string | null;
+  }) {
+    return {
+      id: c.id,
+      name: c.name,
+      channel: c.channel,
+      status: c.status,
+      isSequence: c.isSequence,
+      createdAt: c.createdAt,
+    };
+  }
+
+  /** Serialize a federated Outreach touch to the cockpit wire shape. */
+  private serializeTouch(t: {
+    id: string;
+    channel: string;
+    campaignId: string | null;
+    campaignName: string | null;
+    status: string;
+    subject: string | null;
+    scheduledAt: string | null;
+    sentAt: string | null;
+    lastEngagementKind: OutreachEngagementKind | null;
+    lastEngagementAt: string | null;
+  }): OutreachTouchView {
+    return {
+      id: t.id,
+      channel: t.channel,
+      campaignId: t.campaignId,
+      campaignName: t.campaignName,
+      status: t.status,
+      subject: t.subject,
+      scheduledAt: t.scheduledAt,
+      sentAt: t.sentAt,
+      lastEngagementKind: t.lastEngagementKind,
+      lastEngagementAt: t.lastEngagementAt,
+    };
+  }
+
+  /** Serialize a federated Email-Ops thread to the cockpit wire shape. */
+  private serializeThread(t: {
+    id: string;
+    subject: string | null;
+    messageCount: number;
+    unread: boolean;
+    lastMessageAt: string | null;
+    lastSnippet: string | null;
+    participants: Array<{ address: string; name: string | null }>;
+  }): EmailThreadView {
+    return {
+      id: t.id,
+      subject: t.subject,
+      messageCount: t.messageCount,
+      unread: t.unread,
+      lastMessageAt: t.lastMessageAt,
+      lastSnippet: t.lastSnippet,
+      participants: t.participants,
     };
   }
 

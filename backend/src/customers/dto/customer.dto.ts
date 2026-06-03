@@ -312,3 +312,167 @@ export class CreateInvoiceDto {
   })
   idempotencyKey?: string;
 }
+
+// ============================================================
+// PHASE 4 — Outreach surface (the Outreach app: Listmonk + Postiz)
+// ============================================================
+//
+// Customer-Ops FEDERATES outreach to the (future) Outreach app and keeps only a
+// thin local link. "Start a campaign for this customer" enrolls the customer's
+// contact into a campaign/sequence; "schedule a social touch" stages a Postiz
+// post. Both are idempotent on a deterministic external_ref (from the optional
+// idempotencyKey) and require BOTH customer-ops + outreach entitlements.
+
+/** Enroll this customer's contact into an Outreach campaign/sequence. */
+export class StartCampaignDto {
+  /** The Outreach campaign/sequence id to enroll into (the app's). */
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(200)
+  campaignId!: string;
+
+  /** Optional recipient email override (else the federated contact's primary).
+   *  Passed to Outreach for audience binding; Customer-Ops does not store it. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(320)
+  contactEmail?: string;
+
+  /** Optional per-enrollment merge fields the app templates into the campaign. */
+  @IsOptional()
+  mergeFields?: Record<string, string>;
+
+  /** Deterministic idempotency key → external_ref; a retry never double-enrolls. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  @Matches(/^[A-Za-z0-9._:-]+$/, {
+    message: 'idempotencyKey may contain only letters, digits, and . _ : -',
+  })
+  idempotencyKey?: string;
+}
+
+/** Schedule a single Postiz social touch attributed to this customer's contact. */
+export class ScheduleSocialTouchDto {
+  /** The Postiz channel/account id (the app's; which account posts). */
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(200)
+  channelId!: string;
+
+  /** The post body / caption. */
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(4000)
+  body!: string;
+
+  /** ISO-8601 when to publish; omit for the app's default (e.g. now). */
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  scheduledAt?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  @Matches(/^[A-Za-z0-9._:-]+$/, {
+    message: 'idempotencyKey may contain only letters, digits, and . _ : -',
+  })
+  idempotencyKey?: string;
+}
+
+// ============================================================
+// PHASE 4 — Email surface (the Email-Ops app: Stalwart)
+// ============================================================
+//
+// Customer-Ops FEDERATES mailboxes to the (future) Email-Ops app and keeps only
+// a thin local link. "Send an email" queues delivery now; "draft" stages the
+// agent-inbox approval surface. Both are idempotent on a deterministic
+// external_ref and require BOTH customer-ops + email-ops entitlements.
+
+/** Compose an outbound email to this customer's contact (send or draft). */
+export class SendEmailDto {
+  /** Recipient address (else the federated contact's primary email). Passed to
+   *  Email-Ops for addressing; Customer-Ops does not store it. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(320)
+  toAddress?: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(500)
+  subject!: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(50000)
+  body!: string;
+
+  /** Reply within an existing Email-Ops thread (threads the reply correctly). */
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  inReplyToThreadId?: string;
+
+  /** 'send' = deliver now; 'draft' = stage for agent-inbox approval (default send). */
+  @IsOptional()
+  @IsEnum(['send', 'draft'] as const, { message: "mode must be 'send' or 'draft'" })
+  mode?: 'send' | 'draft';
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  @Matches(/^[A-Za-z0-9._:-]+$/, {
+    message: 'idempotencyKey may contain only letters, digits, and . _ : -',
+  })
+  idempotencyKey?: string;
+}
+
+// ============================================================
+// PHASE 4 — the engagement → funnel-stage hook
+// ============================================================
+//
+// An inbound engagement signal (a reply/click/open from Outreach or Email-Ops,
+// or a bounce) advances the customer's funnel stage when it is a positive
+// signal, with an append-only activity row recording WHY. This DTO is the
+// service/endpoint contract the Outreach/Email-Ops webhooks (or an agent) call.
+
+/** The normalized engagement signal kinds (mirrors OutreachEngagementKind). */
+export const ENGAGEMENT_KINDS = [
+  'opened',
+  'clicked',
+  'replied',
+  'bounced',
+  'unsubscribed',
+] as const;
+export type EngagementKind = (typeof ENGAGEMENT_KINDS)[number];
+
+export class RecordEngagementDto {
+  /** Which engagement happened. 'replied'/'clicked' can advance the funnel;
+   *  'opened' is recorded but (by default) does not advance; 'bounced'/
+   *  'unsubscribed' never advance (data-quality / suppression signals). */
+  @IsEnum(ENGAGEMENT_KINDS, {
+    message: `kind must be one of: ${ENGAGEMENT_KINDS.join(', ')}`,
+  })
+  kind!: EngagementKind;
+
+  /** Where the signal came from (for the activity body + provenance). */
+  @IsOptional()
+  @IsEnum(['outreach', 'email-ops'] as const, {
+    message: "source must be 'outreach' or 'email-ops'",
+  })
+  source?: 'outreach' | 'email-ops';
+
+  /** The Outreach touch / Email-Ops message/thread id the signal is about. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  externalRef?: string;
+
+  /** A short human detail for the timeline (e.g. "clicked the proposal link"). */
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  detail?: string;
+}

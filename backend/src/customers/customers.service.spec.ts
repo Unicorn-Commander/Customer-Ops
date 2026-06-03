@@ -4,6 +4,8 @@ import { CustomersService } from './customers.service';
 import { WorkspaceContextService } from '../common/workspace/workspace-context.service';
 import { ContactOpsPort } from '../contact-ops/contact-ops.port';
 import { AccountingOpsPort } from '../accounting-ops/accounting-ops.port';
+import { OutreachPort } from '../outreach-ops/outreach-ops.port';
+import { EmailOpsPort } from '../email-ops/email-ops.port';
 
 /**
  * CustomersService is the relationship logic of the cockpit. These tests pin:
@@ -54,6 +56,8 @@ function makeRow(over: Partial<Record<string, any>> = {}) {
 function makeTx(customerRow: any) {
   const activities: any[] = [];
   const invoiceLinks: any[] = [];
+  const outreachLinks: any[] = [];
+  const emailLinks: any[] = [];
   const tx: any = {
     $queryRaw: jest.fn().mockResolvedValue([{ ws: WS }]),
     customer: {
@@ -91,13 +95,55 @@ function makeTx(customerRow: any) {
         return merged;
       }),
     },
+    customerOutreachLink: {
+      findMany: jest.fn().mockResolvedValue(outreachLinks),
+      findUnique: jest.fn().mockResolvedValue(null),
+      create: jest.fn(async ({ data }: any) => {
+        const row = {
+          id: `orl-${outreachLinks.length + 1}`,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          ...data,
+        };
+        outreachLinks.push(row);
+        return row;
+      }),
+      update: jest.fn(async ({ where, data }: any) => {
+        const idx = outreachLinks.findIndex((l) => l.id === where.id);
+        const merged = { ...(outreachLinks[idx] ?? { id: where.id }), ...data };
+        if (idx >= 0) outreachLinks[idx] = merged;
+        return merged;
+      }),
+    },
+    customerEmailLink: {
+      findMany: jest.fn().mockResolvedValue(emailLinks),
+      findUnique: jest.fn().mockResolvedValue(null),
+      create: jest.fn(async ({ data }: any) => {
+        const row = {
+          id: `eml-${emailLinks.length + 1}`,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          ...data,
+        };
+        emailLinks.push(row);
+        return row;
+      }),
+      update: jest.fn(async ({ where, data }: any) => {
+        const idx = emailLinks.findIndex((l) => l.id === where.id);
+        const merged = { ...(emailLinks[idx] ?? { id: where.id }), ...data };
+        if (idx >= 0) emailLinks[idx] = merged;
+        return merged;
+      }),
+    },
   };
-  return { tx, activities, invoiceLinks };
+  return { tx, activities, invoiceLinks, outreachLinks, emailLinks };
 }
 
 function makeService(opts?: {
   contact?: Partial<ContactOpsPort>;
   accounting?: Partial<AccountingOpsPort>;
+  outreach?: Partial<OutreachPort>;
+  email?: Partial<EmailOpsPort>;
 }) {
   const contact: ContactOpsPort = {
     getContact: jest.fn().mockResolvedValue(null),
@@ -120,6 +166,32 @@ function makeService(opts?: {
     ...(opts?.accounting ?? {}),
   } as any;
 
+  // Default Outreach port: DORMANT (degrade-clean). The Phase-4 outreach tests
+  // pass a configured + entitled fake to exercise the federated path.
+  const outreach: OutreachPort = {
+    isConfigured: jest.fn().mockReturnValue(false),
+    checkEntitlement: jest
+      .fn()
+      .mockReturnValue({ allowed: false, mode: 'enforce', reason: 'unconfigured' }),
+    listCampaigns: jest.fn().mockResolvedValue([]),
+    listTouchesForContact: jest.fn().mockResolvedValue([]),
+    enrollContact: jest.fn().mockResolvedValue(null),
+    scheduleSocialTouch: jest.fn().mockResolvedValue(null),
+    ...(opts?.outreach ?? {}),
+  } as any;
+
+  // Default Email-Ops port: DORMANT (degrade-clean).
+  const email: EmailOpsPort = {
+    isConfigured: jest.fn().mockReturnValue(false),
+    checkEntitlement: jest
+      .fn()
+      .mockReturnValue({ allowed: false, mode: 'enforce', reason: 'unconfigured' }),
+    listThreadsWithContact: jest.fn().mockResolvedValue([]),
+    listThreadMessages: jest.fn().mockResolvedValue([]),
+    composeEmail: jest.fn().mockResolvedValue(null),
+    ...(opts?.email ?? {}),
+  } as any;
+
   // WorkspaceContextService faked: runForUser invokes fn(tx) directly (the real
   // GUC/RLS is proven in the SQL acceptance, not re-mocked here); resolveAuthorized
   // returns the bootstrap workspace.
@@ -129,8 +201,8 @@ function makeService(opts?: {
     runForUser: jest.fn(async (_user: User, fn: any) => fn(lastTx.current)),
   } as unknown as WorkspaceContextService;
 
-  const svc = new CustomersService(workspaces, contact, accounting);
-  return { svc, contact, accounting, workspaces, lastTx };
+  const svc = new CustomersService(workspaces, contact, accounting, outreach, email);
+  return { svc, contact, accounting, outreach, email, workspaces, lastTx };
 }
 
 describe('CustomersService — relationship logic', () => {
@@ -312,9 +384,28 @@ describe('CustomersService — Contact-Ops federation (CO mocked)', () => {
       canCreate: false,
       items: [],
     });
-    // Later-phase federation slots are present but empty.
+    // Phase-4 outreach + email panels: dormant → degrade-clean affordances.
+    expect(result.outreach).toMatchObject({
+      federated: false,
+      source: 'outreach',
+      configured: false,
+      entitled: false,
+      canStart: false,
+      campaigns: [],
+      touches: [],
+      enrollments: [],
+    });
+    expect(result.email).toMatchObject({
+      federated: false,
+      source: 'email-ops',
+      configured: false,
+      entitled: false,
+      canSend: false,
+      threads: [],
+      sent: [],
+    });
+    // Meeting-Ops remains a later-phase slot (present but empty).
     expect(result.meetings).toMatchObject({ federated: false, source: 'meeting-ops' });
-    expect(result.email).toMatchObject({ federated: false, source: 'email-ops' });
   });
 
   it('customer-360 degrades cleanly when Contact-Ops returns nothing (dormant)', async () => {
@@ -640,5 +731,446 @@ describe('CustomersService — Accounting-Ops invoicing (Phase 3; AO mocked)', (
       // Reads are viewer-level on AO → still polled even though create is gated.
       expect(accounting.getInvoiceById).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+describe('CustomersService — Outreach federation (Phase 4; Outreach app mocked)', () => {
+  const ENROLLMENT_RESULT = {
+    id: 'enr-1',
+    channel: 'email',
+    campaignId: 'camp-1',
+    campaignName: 'June Nurture',
+    status: 'queued',
+    externalSource: 'customer-ops',
+    externalRef: 'cust:cust-1:enroll:fixed-key',
+    createdAt: '2026-06-03T00:00:00Z',
+  };
+  const CAMPAIGNS = [
+    { id: 'camp-1', name: 'June Nurture', channel: 'email', status: 'running', isSequence: true, listId: 'lm-7', createdAt: null },
+  ];
+  const TOUCHES = [
+    {
+      id: 'touch-1',
+      channel: 'email',
+      campaignId: 'camp-1',
+      campaignName: 'June Nurture',
+      status: 'clicked',
+      subject: 'Welcome',
+      scheduledAt: null,
+      sentAt: '2026-06-02T10:00:00Z',
+      lastEngagementKind: 'clicked' as const,
+      lastEngagementAt: '2026-06-02T11:00:00Z',
+    },
+  ];
+
+  function entitledOutreach(over: Partial<OutreachPort> = {}): Partial<OutreachPort> {
+    return {
+      isConfigured: jest.fn().mockReturnValue(true),
+      checkEntitlement: jest.fn().mockReturnValue({ allowed: true, mode: 'enforce', reason: 'entitled' }),
+      listCampaigns: jest.fn().mockResolvedValue(CAMPAIGNS),
+      listTouchesForContact: jest.fn().mockResolvedValue(TOUCHES),
+      enrollContact: jest.fn().mockResolvedValue(ENROLLMENT_RESULT),
+      scheduleSocialTouch: jest.fn().mockResolvedValue({ ...ENROLLMENT_RESULT, id: 'enr-2', channel: 'social', campaignId: null }),
+      ...over,
+    };
+  }
+
+  const startDto = { campaignId: 'camp-1', contactEmail: 'jane@acme.test', idempotencyKey: 'fixed-key' };
+
+  describe('outreachForUser (the 360 outreach panel)', () => {
+    it('federates live campaigns + touches and reports canStart when entitled', async () => {
+      const { svc, outreach, lastTx } = makeService({ outreach: entitledOutreach() });
+      const { tx, outreachLinks } = makeTx(makeRow({ id: 'cust-1', contactId: 'contact-42' }));
+      outreachLinks.push({
+        id: 'orl-1', workspaceId: WS, customerId: 'cust-1', contactId: 'contact-42',
+        channel: 'email', externalSource: 'customer-ops', externalRef: 'cust:cust-1:enroll:k',
+        outreachId: 'enr-1', lastStatus: 'queued', createdAt: new Date(), updatedAt: new Date(),
+      });
+      lastTx.current = tx;
+
+      const panel = await svc.outreachForUser(aaron, 'cust-1', WS);
+      expect(panel).toMatchObject({ federated: true, source: 'outreach', configured: true, entitled: true, canStart: true });
+      // Reads are federated from the Outreach app (never copied).
+      expect(outreach.listCampaigns).toHaveBeenCalledTimes(1);
+      expect(outreach.listTouchesForContact).toHaveBeenCalledWith(
+        expect.objectContaining({ workspaceId: WS }),
+        'contact-42',
+      );
+      expect(panel.campaigns[0]).toMatchObject({ id: 'camp-1', isSequence: true });
+      expect(panel.touches[0]).toMatchObject({ id: 'touch-1', lastEngagementKind: 'clicked' });
+      // The local enrollment link memory is shown.
+      expect(panel.enrollments[0]).toMatchObject({ externalRef: 'cust:cust-1:enroll:k', status: 'queued' });
+    });
+
+    it('degrade-clean: Outreach dormant → configured:false, polls nothing, still shows local links', async () => {
+      const { svc, outreach, lastTx } = makeService(); // default outreach = dormant
+      const { tx, outreachLinks } = makeTx(makeRow({ id: 'cust-1', contactId: 'contact-42' }));
+      outreachLinks.push({
+        id: 'orl-1', workspaceId: WS, customerId: 'cust-1', contactId: 'contact-42',
+        channel: 'email', externalSource: 'customer-ops', externalRef: 'cust:cust-1:enroll:k',
+        lastStatus: 'queued', createdAt: new Date(), updatedAt: new Date(),
+      });
+      lastTx.current = tx;
+
+      const panel = await svc.outreachForUser(aaron, 'cust-1', WS);
+      expect(panel).toMatchObject({ configured: false, entitled: false, canStart: false });
+      expect(outreach.listCampaigns).not.toHaveBeenCalled();
+      expect(outreach.listTouchesForContact).not.toHaveBeenCalled();
+      expect(panel.enrollments[0]).toMatchObject({ status: 'queued' });
+    });
+
+    it('configured but NOT entitled: reads campaigns/touches (viewer-level), canStart:false', async () => {
+      const outreachPort = entitledOutreach({
+        checkEntitlement: jest.fn().mockReturnValue({ allowed: false, mode: 'enforce', reason: 'not entitled' }),
+      });
+      const { svc, outreach, lastTx } = makeService({ outreach: outreachPort });
+      const { tx } = makeTx(makeRow({ id: 'cust-1', contactId: 'contact-42' }));
+      lastTx.current = tx;
+
+      const panel = await svc.outreachForUser(aaron, 'cust-1', WS);
+      expect(panel).toMatchObject({ configured: true, entitled: false, canStart: false });
+      // Reads still happen (viewer-level) even though start is gated.
+      expect(outreach.listCampaigns).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('startCampaignForUser', () => {
+    it('gates on dual SKU, deterministic external_ref, calls Outreach, writes link + activity', async () => {
+      const { svc, outreach, lastTx } = makeService({ outreach: entitledOutreach() });
+      const { tx, activities, outreachLinks } = makeTx(makeRow({ id: 'cust-1', contactId: 'contact-42' }));
+      lastTx.current = tx;
+
+      const result = await svc.startCampaignForUser(aaron, 'cust-1', startDto, WS);
+
+      expect(outreach.enrollContact).toHaveBeenCalledTimes(1);
+      const [ctx, enrollment] = (outreach.enrollContact as jest.Mock).mock.calls[0];
+      expect(ctx).toMatchObject({ workspaceId: WS, ucUid: UC_UID, entitlements: expect.any(Array) });
+      expect(enrollment.externalSource).toBe('customer-ops');
+      expect(enrollment.externalRef).toBe('cust:cust-1:enroll:fixed-key');
+      // contactId travels as a thin reference (never a copy).
+      expect(enrollment.contactId).toBe('contact-42');
+
+      // A link row was created carrying the tuple, refreshed from the app.
+      expect(outreachLinks).toHaveLength(1);
+      expect(outreachLinks[0]).toMatchObject({
+        workspaceId: WS, customerId: 'cust-1', contactId: 'contact-42',
+        channel: 'email', externalRef: 'cust:cust-1:enroll:fixed-key', outreachId: 'enr-1', lastStatus: 'queued',
+      });
+      // A CAMPAIGN_STARTED activity was logged.
+      expect(activities.some((a) => a.kind === CustomerActivityKind.CAMPAIGN_STARTED)).toBe(true);
+      expect(result.enrollment).toMatchObject({ id: 'enr-1', status: 'queued' });
+      expect(result.link).toMatchObject({ externalRef: 'cust:cust-1:enroll:fixed-key', status: 'queued' });
+    });
+
+    it('IDEMPOTENT: the same idempotencyKey reuses the existing link (no second link row)', async () => {
+      const { svc, lastTx } = makeService({ outreach: entitledOutreach() });
+      const { tx, outreachLinks } = makeTx(makeRow({ id: 'cust-1', contactId: 'contact-42' }));
+      const existing = {
+        id: 'orl-existing', workspaceId: WS, customerId: 'cust-1', contactId: 'contact-42',
+        channel: 'email', externalSource: 'customer-ops', externalRef: 'cust:cust-1:enroll:fixed-key',
+        createdAt: new Date(), updatedAt: new Date(),
+      };
+      outreachLinks.push(existing);
+      tx.customerOutreachLink.findUnique.mockResolvedValue(existing);
+      lastTx.current = tx;
+
+      await svc.startCampaignForUser(aaron, 'cust-1', startDto, WS);
+      expect(tx.customerOutreachLink.create).not.toHaveBeenCalled();
+      expect(tx.customerOutreachLink.update).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: 'orl-existing' } }),
+      );
+    });
+
+    it('DENIES with 403 when the caller lacks the dual SKU — and makes NO Outreach call', async () => {
+      const denyOutreach = entitledOutreach({
+        checkEntitlement: jest.fn().mockReturnValue({ allowed: false, mode: 'enforce', reason: 'not entitled' }),
+      });
+      const { svc, outreach, lastTx } = makeService({ outreach: denyOutreach });
+      const { tx } = makeTx(makeRow({ id: 'cust-1' }));
+      lastTx.current = tx;
+
+      await expect(svc.startCampaignForUser(aaron, 'cust-1', startDto, WS)).rejects.toThrow(/not entitled/i);
+      expect(outreach.enrollContact).not.toHaveBeenCalled();
+      expect(tx.customerOutreachLink.create).not.toHaveBeenCalled();
+    });
+
+    it('DEGRADE-CLEAN: 400 + no Outreach call when unconfigured', async () => {
+      const unconfigured = entitledOutreach({ isConfigured: jest.fn().mockReturnValue(false) });
+      const { svc, outreach, lastTx } = makeService({ outreach: unconfigured });
+      const { tx } = makeTx(makeRow({ id: 'cust-1' }));
+      lastTx.current = tx;
+
+      await expect(svc.startCampaignForUser(aaron, 'cust-1', startDto, WS)).rejects.toThrow(/not connected/i);
+      expect(outreach.enrollContact).not.toHaveBeenCalled();
+    });
+
+    it('502 when Outreach is reachable+entitled but returns nothing — the link still persists', async () => {
+      const failOutreach = entitledOutreach({ enrollContact: jest.fn().mockResolvedValue(null) });
+      const { svc, lastTx } = makeService({ outreach: failOutreach });
+      const { tx, outreachLinks } = makeTx(makeRow({ id: 'cust-1', contactId: 'contact-42' }));
+      lastTx.current = tx;
+
+      await expect(svc.startCampaignForUser(aaron, 'cust-1', startDto, WS)).rejects.toThrow(/did not return an enrollment/i);
+      expect(outreachLinks).toHaveLength(1);
+      expect(outreachLinks[0].externalRef).toBe('cust:cust-1:enroll:fixed-key');
+    });
+
+    it('scheduleSocialTouchForUser enrolls a Postiz touch with a social external_ref', async () => {
+      const { svc, outreach, lastTx } = makeService({ outreach: entitledOutreach() });
+      const { tx, outreachLinks } = makeTx(makeRow({ id: 'cust-1', contactId: 'contact-42' }));
+      lastTx.current = tx;
+
+      const result = await svc.scheduleSocialTouchForUser(
+        aaron, 'cust-1', { channelId: 'postiz-li-1', body: 'Hi Jane', idempotencyKey: 'soc-1' }, WS,
+      );
+      const [, req] = (outreach.scheduleSocialTouch as jest.Mock).mock.calls[0];
+      expect(req.externalRef).toBe('cust:cust-1:social:soc-1');
+      expect(req.channelId).toBe('postiz-li-1');
+      expect(outreachLinks[0]).toMatchObject({ channel: 'social', externalRef: 'cust:cust-1:social:soc-1' });
+      expect(result.enrollment).toMatchObject({ id: 'enr-2', channel: 'social' });
+    });
+  });
+});
+
+describe('CustomersService — Email-Ops federation (Phase 4; Email-Ops app mocked)', () => {
+  const COMPOSE_RESULT = {
+    id: 'msg-1', threadId: 'thread-1', status: 'queued', mode: 'send',
+    externalSource: 'customer-ops', externalRef: 'cust:cust-1:email:fixed-key', createdAt: '2026-06-03T00:00:00Z',
+  };
+  const THREADS = [
+    {
+      id: 'thread-1', subject: 'Proposal', messageCount: 3, unread: true,
+      lastMessageAt: '2026-06-02T10:00:00Z', lastSnippet: 'Looks good…',
+      participants: [{ address: 'jane@acme.test', name: 'Jane Lead' }],
+    },
+  ];
+
+  function entitledEmail(over: Partial<EmailOpsPort> = {}): Partial<EmailOpsPort> {
+    return {
+      isConfigured: jest.fn().mockReturnValue(true),
+      checkEntitlement: jest.fn().mockReturnValue({ allowed: true, mode: 'enforce', reason: 'entitled' }),
+      listThreadsWithContact: jest.fn().mockResolvedValue(THREADS),
+      listThreadMessages: jest.fn().mockResolvedValue([]),
+      composeEmail: jest.fn().mockResolvedValue(COMPOSE_RESULT),
+      ...over,
+    };
+  }
+
+  const sendDto = { toAddress: 'jane@acme.test', subject: 'Following up', body: 'Hi Jane', idempotencyKey: 'fixed-key' };
+
+  describe('emailForUser (the 360 email panel)', () => {
+    it('federates live mailbox threads and reports canSend when entitled', async () => {
+      const { svc, email, lastTx } = makeService({ email: entitledEmail() });
+      const { tx, emailLinks } = makeTx(makeRow({ id: 'cust-1', contactId: 'contact-42' }));
+      emailLinks.push({
+        id: 'eml-1', workspaceId: WS, customerId: 'cust-1', contactId: 'contact-42', mode: 'send',
+        externalSource: 'customer-ops', externalRef: 'cust:cust-1:email:k', messageId: 'msg-1',
+        subject: 'Hi', lastStatus: 'sent', createdAt: new Date(), updatedAt: new Date(),
+      });
+      lastTx.current = tx;
+
+      const panel = await svc.emailForUser(aaron, 'cust-1', WS);
+      expect(panel).toMatchObject({ federated: true, source: 'email-ops', configured: true, entitled: true, canSend: true });
+      expect(email.listThreadsWithContact).toHaveBeenCalledWith(
+        expect.objectContaining({ workspaceId: WS }),
+        'contact-42',
+      );
+      expect(panel.threads[0]).toMatchObject({ id: 'thread-1', unread: true });
+      expect(panel.sent[0]).toMatchObject({ externalRef: 'cust:cust-1:email:k', status: 'sent' });
+    });
+
+    it('degrade-clean: Email-Ops dormant → configured:false, polls nothing, still shows local links', async () => {
+      const { svc, email, lastTx } = makeService(); // default email = dormant
+      const { tx, emailLinks } = makeTx(makeRow({ id: 'cust-1', contactId: 'contact-42' }));
+      emailLinks.push({
+        id: 'eml-1', workspaceId: WS, customerId: 'cust-1', contactId: 'contact-42', mode: 'draft',
+        externalSource: 'customer-ops', externalRef: 'cust:cust-1:email:k', subject: 'Hi',
+        lastStatus: 'pending_approval', createdAt: new Date(), updatedAt: new Date(),
+      });
+      lastTx.current = tx;
+
+      const panel = await svc.emailForUser(aaron, 'cust-1', WS);
+      expect(panel).toMatchObject({ configured: false, entitled: false, canSend: false });
+      expect(email.listThreadsWithContact).not.toHaveBeenCalled();
+      expect(panel.sent[0]).toMatchObject({ status: 'pending_approval', mode: 'draft' });
+    });
+  });
+
+  describe('sendEmailForUser', () => {
+    it('SEND: gates on dual SKU, deterministic external_ref, calls Email-Ops, writes link + activity', async () => {
+      const { svc, email, lastTx } = makeService({ email: entitledEmail() });
+      const { tx, activities, emailLinks } = makeTx(makeRow({ id: 'cust-1', contactId: 'contact-42' }));
+      lastTx.current = tx;
+
+      const result = await svc.sendEmailForUser(aaron, 'cust-1', sendDto, WS);
+
+      expect(email.composeEmail).toHaveBeenCalledTimes(1);
+      const [ctx, req] = (email.composeEmail as jest.Mock).mock.calls[0];
+      expect(ctx).toMatchObject({ workspaceId: WS, ucUid: UC_UID, entitlements: expect.any(Array) });
+      expect(req.externalSource).toBe('customer-ops');
+      expect(req.externalRef).toBe('cust:cust-1:email:fixed-key');
+      expect(req.mode).toBe('send');
+      expect(req.toAddress).toBe('jane@acme.test');
+      expect(req.contactId).toBe('contact-42'); // thin reference, never a copy
+
+      expect(emailLinks).toHaveLength(1);
+      expect(emailLinks[0]).toMatchObject({
+        workspaceId: WS, customerId: 'cust-1', contactId: 'contact-42', mode: 'send',
+        externalRef: 'cust:cust-1:email:fixed-key', messageId: 'msg-1', lastStatus: 'queued',
+      });
+      expect(activities.some((a) => a.kind === CustomerActivityKind.EMAIL_SENT)).toBe(true);
+      expect(result.message).toMatchObject({ id: 'msg-1', status: 'queued' });
+      expect(result.link).toMatchObject({ externalRef: 'cust:cust-1:email:fixed-key', status: 'queued' });
+    });
+
+    it('DRAFT mode stages the message (mode=draft on the wire + the link)', async () => {
+      const draftEmail = entitledEmail({
+        composeEmail: jest.fn().mockResolvedValue({ ...COMPOSE_RESULT, id: 'msg-2', status: 'pending_approval', mode: 'draft' }),
+      });
+      const { svc, email, lastTx } = makeService({ email: draftEmail });
+      const { tx, emailLinks } = makeTx(makeRow({ id: 'cust-1', contactId: 'contact-42' }));
+      lastTx.current = tx;
+
+      await svc.sendEmailForUser(aaron, 'cust-1', { ...sendDto, mode: 'draft', idempotencyKey: 'draft-1' }, WS);
+      const [, req] = (email.composeEmail as jest.Mock).mock.calls[0];
+      expect(req.mode).toBe('draft');
+      expect(emailLinks[0]).toMatchObject({ mode: 'draft', lastStatus: 'pending_approval' });
+    });
+
+    it('falls back to the FEDERATED contact primary email when toAddress is omitted', async () => {
+      const getContact = jest.fn().mockResolvedValue({
+        contactId: 'contact-42', displayName: 'Jane', primaryEmail: 'jane@fed.test',
+        currentOrgId: null, currentOrgName: null, lastInteractionAt: null, communicationStrength: null,
+        tags: [], etag: null, vcardUid: null, kind: 'individual', status: 'active', emails: [], phones: [], recentEvents: [],
+      });
+      const { svc, email, lastTx } = makeService({ email: entitledEmail(), contact: { getContact } });
+      const { tx } = makeTx(makeRow({ id: 'cust-1', contactId: 'contact-42' }));
+      lastTx.current = tx;
+
+      await svc.sendEmailForUser(aaron, 'cust-1', { subject: 'Hi', body: 'b', idempotencyKey: 'k2' }, WS);
+      expect(getContact).toHaveBeenCalled(); // the address was federated, not stored
+      const [, req] = (email.composeEmail as jest.Mock).mock.calls[0];
+      expect(req.toAddress).toBe('jane@fed.test');
+    });
+
+    it('400 when no toAddress and the federated contact has no primary email', async () => {
+      const getContact = jest.fn().mockResolvedValue(null); // CO dormant / no email
+      const { svc, email, lastTx } = makeService({ email: entitledEmail(), contact: { getContact } });
+      const { tx } = makeTx(makeRow({ id: 'cust-1', contactId: 'contact-42' }));
+      lastTx.current = tx;
+
+      await expect(
+        svc.sendEmailForUser(aaron, 'cust-1', { subject: 'Hi', body: 'b' }, WS),
+      ).rejects.toThrow(/no recipient address/i);
+      expect(email.composeEmail).not.toHaveBeenCalled();
+    });
+
+    it('DENIES with 403 when the caller lacks the dual SKU — and makes NO Email-Ops call', async () => {
+      const denyEmail = entitledEmail({
+        checkEntitlement: jest.fn().mockReturnValue({ allowed: false, mode: 'enforce', reason: 'not entitled' }),
+      });
+      const { svc, email, lastTx } = makeService({ email: denyEmail });
+      const { tx } = makeTx(makeRow({ id: 'cust-1' }));
+      lastTx.current = tx;
+
+      await expect(svc.sendEmailForUser(aaron, 'cust-1', sendDto, WS)).rejects.toThrow(/not entitled/i);
+      expect(email.composeEmail).not.toHaveBeenCalled();
+      expect(tx.customerEmailLink.create).not.toHaveBeenCalled();
+    });
+
+    it('DEGRADE-CLEAN: 400 + no Email-Ops call when unconfigured', async () => {
+      const unconfigured = entitledEmail({ isConfigured: jest.fn().mockReturnValue(false) });
+      const { svc, email, lastTx } = makeService({ email: unconfigured });
+      const { tx } = makeTx(makeRow({ id: 'cust-1' }));
+      lastTx.current = tx;
+
+      await expect(svc.sendEmailForUser(aaron, 'cust-1', sendDto, WS)).rejects.toThrow(/not connected/i);
+      expect(email.composeEmail).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe('CustomersService — the engagement → funnel-stage hook (Phase 4)', () => {
+  it('a REPLY advances LEAD → PROSPECT and logs STAGE_CHANGE + ENGAGEMENT_ADVANCED', async () => {
+    const row = makeRow({ stage: RelationshipStage.LEAD });
+    const { tx, activities } = makeTx(row);
+    const { svc } = makeService();
+
+    const out = await svc.recordEngagementInTx(tx, 'cust-1', { kind: 'replied', source: 'email-ops' }, UC_UID);
+
+    expect(out.advanced).toBe(true);
+    expect(out.toStage).toBe(RelationshipStage.PROSPECT);
+    expect(tx.customer.update).toHaveBeenCalledTimes(1);
+    expect(tx.customer.update.mock.calls[0][0].data).toMatchObject({ stage: RelationshipStage.PROSPECT });
+    // BOTH a STAGE_CHANGE (from/to) and an ENGAGEMENT_ADVANCED row in the same tx.
+    expect(activities.some((a) => a.kind === CustomerActivityKind.STAGE_CHANGE && a.toStage === 'PROSPECT')).toBe(true);
+    expect(activities.some((a) => a.kind === CustomerActivityKind.ENGAGEMENT_ADVANCED)).toBe(true);
+  });
+
+  it('a CLICK advances PROSPECT → CUSTOMER', async () => {
+    const row = makeRow({ stage: RelationshipStage.PROSPECT });
+    const { tx } = makeTx(row);
+    const { svc } = makeService();
+    const out = await svc.recordEngagementInTx(tx, 'cust-1', { kind: 'clicked', source: 'outreach' }, UC_UID);
+    expect(out.advanced).toBe(true);
+    expect(out.toStage).toBe(RelationshipStage.CUSTOMER);
+  });
+
+  it('an OPEN is recorded but does NOT advance (weak intent)', async () => {
+    const row = makeRow({ stage: RelationshipStage.LEAD });
+    const { tx, activities } = makeTx(row);
+    const { svc } = makeService();
+    const out = await svc.recordEngagementInTx(tx, 'cust-1', { kind: 'opened' }, UC_UID);
+    expect(out.advanced).toBe(false);
+    expect(tx.customer.update).not.toHaveBeenCalled();
+    // Still logged as engagement provenance (no stage write).
+    expect(activities).toHaveLength(1);
+    expect(activities[0].kind).toBe(CustomerActivityKind.ENGAGEMENT_ADVANCED);
+  });
+
+  it('a BOUNCE never advances (data-quality signal), only logs', async () => {
+    const row = makeRow({ stage: RelationshipStage.LEAD });
+    const { tx, activities } = makeTx(row);
+    const { svc } = makeService();
+    const out = await svc.recordEngagementInTx(tx, 'cust-1', { kind: 'bounced', source: 'email-ops' }, UC_UID);
+    expect(out.advanced).toBe(false);
+    expect(tx.customer.update).not.toHaveBeenCalled();
+    expect(activities[0].kind).toBe(CustomerActivityKind.ENGAGEMENT_ADVANCED);
+  });
+
+  it('does NOT advance past the top of the funnel (CUSTOMER stays CUSTOMER on a reply)', async () => {
+    const row = makeRow({ stage: RelationshipStage.CUSTOMER });
+    const { tx } = makeTx(row);
+    const { svc } = makeService();
+    const out = await svc.recordEngagementInTx(tx, 'cust-1', { kind: 'replied' }, UC_UID);
+    expect(out.advanced).toBe(false);
+    expect(tx.customer.update).not.toHaveBeenCalled();
+  });
+
+  it('does NOT advance a LOST relationship on a reply (re-open first)', async () => {
+    const row = makeRow({ stage: RelationshipStage.PROSPECT, isLost: true });
+    const { tx } = makeTx(row);
+    const { svc } = makeService();
+    const out = await svc.recordEngagementInTx(tx, 'cust-1', { kind: 'replied' }, UC_UID);
+    expect(out.advanced).toBe(false);
+    expect(tx.customer.update).not.toHaveBeenCalled();
+    expect(out.reason).toMatch(/closed-lost/i);
+  });
+
+  it('the advance is exactly ONE step (never skips qualification: LEAD reply → PROSPECT, not CUSTOMER)', async () => {
+    const row = makeRow({ stage: RelationshipStage.LEAD });
+    const { tx } = makeTx(row);
+    const { svc } = makeService();
+    const out = await svc.recordEngagementInTx(tx, 'cust-1', { kind: 'replied' }, UC_UID);
+    expect(out.toStage).toBe(RelationshipStage.PROSPECT); // NOT CUSTOMER
+  });
+
+  it('404s when the relationship does not exist', async () => {
+    const { tx } = makeTx(null);
+    tx.customer.findUnique.mockResolvedValue(null);
+    const { svc } = makeService();
+    await expect(
+      svc.recordEngagementInTx(tx, 'missing', { kind: 'replied' }, UC_UID),
+    ).rejects.toThrow(NotFoundException);
   });
 });

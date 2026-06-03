@@ -77,3 +77,69 @@ export function nextStage(stage: RelationshipStage): RelationshipStage | null {
   const r = stageRank(stage);
   return r >= 0 && r < STAGE_ORDER.length - 1 ? STAGE_ORDER[r + 1] : null;
 }
+
+// ============================================================
+// Phase 4: the engagement → funnel-stage policy (pure).
+//
+// An inbound engagement signal from Outreach/Email-Ops (a reply/click/open, or a
+// bounce) can ADVANCE the funnel. This is the single source of truth for "which
+// engagement advances which stage," kept here next to the manual-transition
+// rules so both paths share one funnel definition, and it is unit-tested
+// directly. Binding policy:
+//   - POSITIVE intent ('replied', 'clicked') advances exactly ONE step
+//     (LEAD→PROSPECT, PROSPECT→CUSTOMER) — the same one-step guardrail as a
+//     manual transition. A reply/click is a real qualification signal.
+//   - 'opened' is a WEAK signal: recorded, but does NOT advance by default
+//     (an open is not intent; advancing on it would inflate the pipeline).
+//   - 'bounced' / 'unsubscribed' NEVER advance — they are data-quality /
+//     suppression signals (recorded as provenance only).
+//   - A LOST relationship never advances on engagement (re-open it first).
+//   - A relationship already at the top of the funnel (CUSTOMER) never advances.
+// ============================================================
+
+/** The normalized engagement signal the hook reacts to (== OutreachEngagementKind). */
+export type EngagementSignal = 'opened' | 'clicked' | 'replied' | 'bounced' | 'unsubscribed';
+
+export interface EngagementDecision {
+  advance: boolean;
+  /** The stage to move to when advancing; null when not advancing. */
+  toStage: RelationshipStage | null;
+  reason: string;
+}
+
+/** The engagement signals that count as positive intent (advance the funnel). */
+const POSITIVE_SIGNALS: ReadonlySet<EngagementSignal> = new Set(['replied', 'clicked']);
+
+/**
+ * Decide whether an engagement signal advances the funnel from `from`. Pure; no
+ * DB, no side effects. The service calls this inside the RLS tx before writing.
+ */
+export function engagementAdvance(
+  from: RelationshipStage,
+  signal: EngagementSignal,
+  isLost: boolean,
+): EngagementDecision {
+  if (isLost) {
+    return {
+      advance: false,
+      toStage: null,
+      reason: 'relationship is closed-lost; re-open before it can advance',
+    };
+  }
+  if (!POSITIVE_SIGNALS.has(signal)) {
+    const why =
+      signal === 'opened'
+        ? "an 'opened' signal is recorded but does not advance the funnel (weak intent)"
+        : `a '${signal}' signal is a data-quality/suppression event and never advances the funnel`;
+    return { advance: false, toStage: null, reason: why };
+  }
+  const to = nextStage(from);
+  if (!to) {
+    return { advance: false, toStage: null, reason: `already at the top of the funnel (${from})` };
+  }
+  return {
+    advance: true,
+    toStage: to,
+    reason: `positive '${signal}' engagement advances ${from}→${to}`,
+  };
+}

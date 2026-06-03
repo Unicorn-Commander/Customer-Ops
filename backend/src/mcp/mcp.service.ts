@@ -17,6 +17,9 @@ import { CustomerOpsTools } from './mcp.tools';
 
 // The funnel stages, as a zod enum for tool input validation.
 const STAGE = z.enum(['LEAD', 'PROSPECT', 'CUSTOMER']);
+// Phase-4 engagement signals + email send mode, as zod enums.
+const ENGAGEMENT = z.enum(['opened', 'clicked', 'replied', 'bounced', 'unsubscribed']);
+const EMAIL_MODE = z.enum(['send', 'draft']);
 
 @Injectable()
 export class McpService {
@@ -40,7 +43,7 @@ export class McpService {
     const server = new McpServer(
       {
         name: 'customer-ops',
-        version: '0.2.0',
+        version: '0.3.0',
       },
       {
         capabilities: { tools: {} },
@@ -49,11 +52,15 @@ export class McpService {
           'list the caller’s workspaces. Cockpit tools drive the relationship ' +
           'funnel: list relationships by stage, read a customer-360 (the local ' +
           'relationship + the FEDERATED Contact-Ops contact + Accounting-Ops ' +
-          'invoices), view the pipeline board, move a relationship through the ' +
-          'funnel, and add timeline notes. Invoicing tools federate to ' +
-          'Accounting-Ops (the AR engine / ledger): list a customer’s invoices ' +
-          'with live status, and create an invoice from a draft. Contacts are ' +
-          'federated from Contact-Ops and invoices from Accounting-Ops, never copied.',
+          'invoices + Outreach campaigns/touches + Email-Ops threads), view the ' +
+          'pipeline board, move a relationship through the funnel, and add ' +
+          'timeline notes. Invoicing tools federate to Accounting-Ops (the AR ' +
+          'engine / ledger). Outreach tools federate to the Outreach app ' +
+          '(Listmonk + Postiz): list campaigns/touches, start a campaign. Email ' +
+          'tools federate to the Email-Ops app (Stalwart): list mailbox threads, ' +
+          'send/draft an email. The engagement tool advances the funnel stage on ' +
+          'an inbound reply/click. Everything (contacts, invoices, campaigns, ' +
+          'mail) is federated from its owning app at read time, never copied.',
       },
     );
 
@@ -239,6 +246,120 @@ export class McpService {
         },
       },
       async (args: any) => wrap(await tools.createCustomerInvoice(user, args)),
+    );
+
+    // ── Phase 4 outreach tools (federate to the Outreach app) ──
+
+    server.registerTool(
+      'list_customer_outreach',
+      {
+        title: 'List customer outreach',
+        description:
+          'This customer’s outreach, FEDERATED from the Outreach app (Listmonk ' +
+          'campaigns + Postiz social): the live campaigns available to enroll into, ' +
+          'the live touch history for the contact, and the local enrollment links. ' +
+          'Reports degrade-clean / entitlement affordances (configured, entitled, ' +
+          'canStart) — Outreach must be connected and the workspace must carry both ' +
+          'customer-ops and outreach entitlements to start a campaign.',
+        inputSchema: {
+          customer_id: z.string(),
+          workspace_id: z.string().optional(),
+        },
+      },
+      async (args: any) => wrap(await tools.listCustomerOutreach(user, args)),
+    );
+
+    server.registerTool(
+      'start_customer_campaign',
+      {
+        title: 'Start customer campaign',
+        description:
+          'Enroll this customer’s contact into an Outreach campaign/sequence ' +
+          '(Listmonk email or a multi-step sequence). Idempotent on a deterministic ' +
+          'external_ref derived from the optional idempotency_key (a retry with the ' +
+          'same key returns the same enrollment, queues no second send). Requires ' +
+          'BOTH customer-ops and outreach entitlements. The Outreach app owns the ' +
+          'campaign + every send — Customer-Ops only records a thin link.',
+        inputSchema: {
+          customer_id: z.string(),
+          workspace_id: z.string().optional(),
+          campaign_id: z.string(),
+          contact_email: z.string().max(320).optional(),
+          merge_fields: z.record(z.string()).optional(),
+          idempotency_key: z.string().max(200).optional(),
+        },
+      },
+      async (args: any) => wrap(await tools.startCustomerCampaign(user, args)),
+    );
+
+    // ── Phase 4 email tools (federate to the Email-Ops app) ──
+
+    server.registerTool(
+      'list_customer_email',
+      {
+        title: 'List customer email',
+        description:
+          'This customer’s email, FEDERATED from the Email-Ops app (the Stalwart ' +
+          'mailbox surface): the live mailbox threads with the contact + the local ' +
+          'outbound links. Reports degrade-clean / entitlement affordances ' +
+          '(configured, entitled, canSend). Reading threads is viewer-level; sending ' +
+          'requires both customer-ops and email-ops entitlements.',
+        inputSchema: {
+          customer_id: z.string(),
+          workspace_id: z.string().optional(),
+        },
+      },
+      async (args: any) => wrap(await tools.listCustomerEmail(user, args)),
+    );
+
+    server.registerTool(
+      'send_customer_email',
+      {
+        title: 'Send customer email',
+        description:
+          'Send or draft an outbound email to this customer’s contact via the ' +
+          'Email-Ops app. mode=send queues delivery now; mode=draft stages the ' +
+          'agent-inbox approval surface (the safe default for an agent — a human ' +
+          'approves before it leaves). Idempotent on a deterministic external_ref. ' +
+          'Requires BOTH customer-ops and email-ops entitlements. The Email-Ops app ' +
+          'owns the mailbox + message — Customer-Ops stores no message body.',
+        inputSchema: {
+          customer_id: z.string(),
+          workspace_id: z.string().optional(),
+          to_address: z.string().max(320).optional(),
+          subject: z.string().min(1).max(500),
+          body: z.string().min(1).max(50000),
+          in_reply_to_thread_id: z.string().max(200).optional(),
+          mode: EMAIL_MODE.optional(),
+          idempotency_key: z.string().max(200).optional(),
+        },
+      },
+      async (args: any) => wrap(await tools.sendCustomerEmail(user, args)),
+    );
+
+    // ── Phase 4 engagement → stage hook ──
+
+    server.registerTool(
+      'record_customer_engagement',
+      {
+        title: 'Record customer engagement',
+        description:
+          'Record an inbound engagement signal on a customer (a reply/click/open ' +
+          'from Outreach or Email-Ops, or a bounce) and advance the funnel stage when ' +
+          'it warrants it: a reply or click advances exactly one step (never skipping ' +
+          'qualification); an open is recorded but does not advance; a bounce/' +
+          'unsubscribe never advances. Logs the stage change + the engagement ' +
+          'provenance in one transaction.',
+        inputSchema: {
+          customer_id: z.string(),
+          workspace_id: z.string().optional(),
+          kind: ENGAGEMENT,
+          source: z.enum(['outreach', 'email-ops']).optional(),
+          external_ref: z.string().max(200).optional(),
+          detail: z.string().max(2000).optional(),
+        },
+      },
+      async (args: any) => wrap(await tools.recordCustomerEngagement(user, args)),
     );
 
     return server;

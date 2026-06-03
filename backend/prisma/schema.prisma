@@ -22,14 +22,26 @@ datasource db {
 // contact details on a 360 are FEDERATED from Contact-Ops at read time —
 // never copied.
 //
-// PHASE 3 (this layer) = the invoicing surface: the Accounting-Ops AR
-// federation seam. Customer-Ops calls AO's native invoicing
-// (create_invoice_from_draft / get_invoice) over MCP — AO is the ONE
-// ledger / system-of-record. Customer-Ops holds only a THIN local link
-// (CustomerInvoiceLink) so it can list "this customer's invoices" and
-// poll their live status; it NEVER posts a ledger entry or stores invoice
-// line detail. The link is RLS-fenced exactly like the other scoped
-// tables. Outreach/Email-Ops/Meeting-Ops remain later-phase seams.
+// PHASE 3 = the invoicing surface: the Accounting-Ops AR federation seam.
+// Customer-Ops calls AO's native invoicing (create_invoice_from_draft /
+// get_invoice) over MCP — AO is the ONE ledger / system-of-record.
+// Customer-Ops holds only a THIN local link (CustomerInvoiceLink) so it can
+// list "this customer's invoices" and poll their live status; it NEVER posts
+// a ledger entry or stores invoice line detail.
+//
+// PHASE 4 (this layer) = the Outreach + Email surfaces: the Outreach and
+// Email-Ops APP federation seams. Customer-Ops calls the (future) Outreach app
+// (over Listmonk campaigns + Postiz social) to list campaigns/touches for a
+// contact and trigger a campaign/sequence enrollment or a social touch, and the
+// (future) Email-Ops app (over the Stalwart mail server) to list mailbox
+// threads/messages with a contact and send/draft an outbound email. Those apps
+// are the system-of-record for campaigns/sends and mailboxes; Customer-Ops holds
+// only THIN local links (CustomerOutreachLink / CustomerEmailLink) recording the
+// enrollments/sends IT initiated (+ a cached status) — it stores no recipient
+// list, no message body, and runs no campaign engine or mail server. It also
+// advances the funnel stage on an inbound engagement signal (reply/click), with
+// activity logging. Both links are RLS-fenced exactly like the other scoped
+// tables. Meeting-Ops remains a later-phase seam.
 //
 // Customer-Ops is a SURFACE, not an engine: it OWNS the relationship
 // (the lifecycle stage + pipeline keyed on workspace_id + contactId)
@@ -100,6 +112,20 @@ enum CustomerActivityKind {
   // Accounting-Ops (the ledger SoR). The activity body records the AO
   // invoice number + external_ref; the ledger itself lives in AO.
   INVOICE_CREATED
+  // Phase 4: a campaign/sequence enrollment or a social touch was triggered
+  // for this customer's contact in the Outreach app (Listmonk/Postiz; the
+  // campaign SoR). The body records the Outreach enrollment id + external_ref.
+  CAMPAIGN_STARTED
+  // Phase 4: an outbound email was sent or drafted to this customer's contact
+  // via the Email-Ops app (Stalwart; the mailbox SoR). The body records the
+  // Email-Ops message id + the send/draft mode + external_ref.
+  EMAIL_SENT
+  // Phase 4: the customer's funnel stage advanced because of an inbound
+  // engagement signal (a reply/click from Outreach or Email-Ops). This is the
+  // engagement→stage hook; the body records the signal that drove it. Stage
+  // changes still ALSO log a STAGE_CHANGE row (with from/to) in the same tx —
+  // this kind tags WHY the advance happened (the engagement provenance).
+  ENGAGEMENT_ADVANCED
 }
 
 // ============================================================
@@ -133,6 +159,8 @@ model Workspace {
   customers            Customer[]
   customerActivities   CustomerActivity[]
   customerInvoiceLinks CustomerInvoiceLink[]
+  customerOutreachLinks CustomerOutreachLink[]
+  customerEmailLinks    CustomerEmailLink[]
 
   @@index([slug])
   @@index([status])
@@ -240,6 +268,8 @@ model Customer {
   workspace     Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   activities    CustomerActivity[]
   invoiceLinks  CustomerInvoiceLink[]
+  outreachLinks CustomerOutreachLink[]
+  emailLinks    CustomerEmailLink[]
 
   // A contact holds exactly one lifecycle position per workspace.
   @@unique([workspaceId, contactId])
@@ -359,9 +389,135 @@ model CustomerInvoiceLink {
   @@map("customer_invoice_links")
 }
 
+// ============================================================
+// OUTREACH FEDERATION LINK (Customer-Ops OWNS this thin link — tenant-scoped)
+// ============================================================
+//
+// PHASE 4. The ONLY outreach data Customer-Ops persists, and deliberately
+// thin: the **Outreach** app is the campaign engine-surface (it fronts Listmonk
+// lists/campaigns/sends + Postiz scheduled social posts) and the
+// system-of-record for every campaign, list, send, and social touch. This row
+// is a LINK from a Customer-Ops relationship to an Outreach enrollment/touch,
+// keyed by the deterministic idempotency tuple the Outreach app is idempotent
+// on:
+//   (workspaceId, externalSource='customer-ops', externalRef).
+//
+// Why hold it at all (federate, don't fork): so the cockpit remembers WHICH
+// enrollments/touches it kicked off for a customer (to render + de-dupe), and
+// caches a last-known status. The live campaign/touch history is FEDERATED from
+// the Outreach app at read time (OutreachPort.listTouchesForContact) — this link
+// is only Customer-Ops' own initiation memory. It stores no recipient list, no
+// send content, and runs no campaign engine.
+//
+// RLS-fenced on workspaceId exactly like `customers` / `customer_activities` /
+// `customer_invoice_links`: the workspaceId is denormalized onto the row, a
+// no-GUC read returns zero rows (fail-closed), and a write into another
+// workspace is blocked by the WITH CHECK. ENABLE + FORCE, identical policy.
+model CustomerOutreachLink {
+  id          String  @id @default(uuid())
+  workspaceId String
+  customerId  String
+  // The federated Contact-Ops contact id the enrollment targets (a thin
+  // reference; the contact record is NEVER copied — golden rule).
+  contactId   String
+  // 'email' (Listmonk campaign/sequence) | 'social' (Postiz scheduled post).
+  channel     String  @default("email")
+  // The deterministic idempotency key the Outreach app is idempotent on.
+  // external_source is always 'customer-ops' for links this app creates.
+  externalSource String @default("customer-ops")
+  externalRef    String
+  // The Outreach campaign/sequence (email) or Postiz channel (social) this
+  // enrollment/touch ran against (the app's id; carried through, never owned).
+  campaignId  String?
+  // The Outreach enrollment/touch id once known (returned by enroll_contact /
+  // schedule_social_touch). Null only between a trigger attempt and the first
+  // successful round-trip.
+  outreachId  String?
+  // ── Cached Outreach projection (render convenience; the app is authoritative) ──
+  campaignName String?
+  lastStatus   String? // queued|scheduled|sent|delivered|opened|clicked|replied|bounced|failed
+  lastPolledAt DateTime?
+  // Attribution + provenance.
+  createdByUcUid String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  customer  Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  // One link per Outreach enrollment origin ref, per workspace (mirrors the
+  // app's own idempotency tuple).
+  @@unique([workspaceId, externalSource, externalRef])
+  @@index([workspaceId])
+  // The customer-360 outreach panel reads a customer's links newest-first.
+  @@index([workspaceId, customerId, createdAt])
+  @@map("customer_outreach_links")
+}
+
+// ============================================================
+// EMAIL FEDERATION LINK (Customer-Ops OWNS this thin link — tenant-scoped)
+// ============================================================
+//
+// PHASE 4. The ONLY outbound-mail data Customer-Ops persists, and deliberately
+// thin: the **Email-Ops** app is the mailbox surface (it fronts the Stalwart
+// mail server for mailbox state + threads) and the system-of-record for every
+// mailbox, thread, and message. This row is a LINK from a Customer-Ops
+// relationship to an Email-Ops message Customer-Ops initiated (a send or a
+// drafted agent-inbox approval), keyed by the deterministic idempotency tuple
+// the Email-Ops app is idempotent on:
+//   (workspaceId, externalSource='customer-ops', externalRef).
+//
+// Why hold it at all (federate, don't fork): so the cockpit remembers WHICH
+// outbound messages it composed for a customer (to render + de-dupe), and caches
+// a last-known status. The live thread/message history is FEDERATED from the
+// Email-Ops app at read time (EmailOpsPort.listThreadsWithContact) — this link
+// is only Customer-Ops' own outbound memory. It stores NO message body and runs
+// no mail server.
+//
+// RLS-fenced on workspaceId exactly like the other scoped tables. ENABLE +
+// FORCE, identical policy.
+model CustomerEmailLink {
+  id          String  @id @default(uuid())
+  workspaceId String
+  customerId  String
+  // The federated Contact-Ops contact id the message is to (thin reference;
+  // never copied).
+  contactId   String
+  // 'send' (queued for delivery) | 'draft' (staged for agent-inbox approval).
+  mode        String  @default("send")
+  // The deterministic idempotency key the Email-Ops app is idempotent on.
+  externalSource String @default("customer-ops")
+  externalRef    String
+  // The Email-Ops thread the message landed in (new or the replied-to thread),
+  // once known. The message id once known (returned by compose_email).
+  threadId    String?
+  messageId   String?
+  // A short subject kept for cheap list rendering (NOT the body — the body lives
+  // in Email-Ops/Stalwart; Customer-Ops never persists message content).
+  subject     String?
+  // ── Cached Email-Ops projection (render convenience; the app is authoritative) ──
+  lastStatus  String? // queued|sent|delivered|draft|pending_approval|failed
+  lastPolledAt DateTime?
+  // Attribution + provenance.
+  createdByUcUid String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  customer  Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  // One link per Email-Ops message origin ref, per workspace.
+  @@unique([workspaceId, externalSource, externalRef])
+  @@index([workspaceId])
+  // The customer-360 email panel reads a customer's outbound links newest-first.
+  @@index([workspaceId, customerId, createdAt])
+  @@map("customer_email_links")
+}
+
 // NOTE: The Workspace↔Customer / Workspace↔CustomerActivity /
-// Workspace↔CustomerInvoiceLink relations are declared here to satisfy
-// Prisma's relation requirement. They do NOT make Workspace a tenant-scoped
-// table — Workspace is the tenancy CONTROL table (not RLS-fenced); Customer +
-// CustomerActivity + CustomerInvoiceLink are the scoped projections (RLS-fenced
-// by the migrations).
+// Workspace↔CustomerInvoiceLink / Workspace↔CustomerOutreachLink /
+// Workspace↔CustomerEmailLink relations are declared here to satisfy Prisma's
+// relation requirement. They do NOT make Workspace a tenant-scoped table —
+// Workspace is the tenancy CONTROL table (not RLS-fenced); Customer +
+// CustomerActivity + CustomerInvoiceLink + CustomerOutreachLink +
+// CustomerEmailLink are the scoped projections (RLS-fenced by the migrations).

@@ -5,8 +5,10 @@
  * This is the automated companion to the SQL acceptance scripts: it drives the
  * exact GUC chokepoint the app uses (PrismaService.withWorkspace → SET LOCAL
  * app.current_workspace) and asserts the fence holds for `customers`, the
- * Phase-2 `customer_activities` table, and the Phase-3 `customer_invoice_links`
- * (the Accounting-Ops invoice link) table:
+ * Phase-2 `customer_activities` table, the Phase-3 `customer_invoice_links`
+ * (the Accounting-Ops invoice link) table, and the Phase-4
+ * `customer_outreach_links` + `customer_email_links` (the Outreach + Email-Ops
+ * federation link) tables:
  *   - no-GUC reads return 0 rows (fail-closed),
  *   - writes land only in the bound workspace,
  *   - a cross-workspace read sees 0 rows,
@@ -39,10 +41,18 @@ describeIfDb('RLS integration (customer_ops_app, real Prisma)', () => {
   let prisma!: PrismaService & PrismaClient;
   let owner!: PrismaClient;
 
-  const cleanupIds: { customers: string[]; activities: string[]; invoiceLinks: string[] } = {
+  const cleanupIds: {
+    customers: string[];
+    activities: string[];
+    invoiceLinks: string[];
+    outreachLinks: string[];
+    emailLinks: string[];
+  } = {
     customers: [],
     activities: [],
     invoiceLinks: [],
+    outreachLinks: [],
+    emailLinks: [],
   };
 
   beforeAll(async () => {
@@ -71,6 +81,8 @@ describeIfDb('RLS integration (customer_ops_app, real Prisma)', () => {
   afterAll(async () => {
     // Clean up seeded rows (children first for FK), then the workspaces.
     try {
+      await owner.customerOutreachLink.deleteMany({ where: { workspaceId: { in: [WS_A, WS_B] } } });
+      await owner.customerEmailLink.deleteMany({ where: { workspaceId: { in: [WS_A, WS_B] } } });
       await owner.customerInvoiceLink.deleteMany({ where: { workspaceId: { in: [WS_A, WS_B] } } });
       await owner.customerActivity.deleteMany({ where: { workspaceId: { in: [WS_A, WS_B] } } });
       await owner.customer.deleteMany({ where: { workspaceId: { in: [WS_A, WS_B] } } });
@@ -100,15 +112,25 @@ describeIfDb('RLS integration (customer_ops_app, real Prisma)', () => {
     const l = await prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
       `SELECT count(*)::bigint AS n FROM customer_invoice_links`,
     );
+    const o = await prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
+      `SELECT count(*)::bigint AS n FROM customer_outreach_links`,
+    );
+    const e = await prisma.$queryRawUnsafe<Array<{ n: bigint }>>(
+      `SELECT count(*)::bigint AS n FROM customer_email_links`,
+    );
     expect(Number(c[0].n)).toBe(0);
     expect(Number(a[0].n)).toBe(0);
     expect(Number(l[0].n)).toBe(0);
+    expect(Number(o[0].n)).toBe(0);
+    expect(Number(e[0].n)).toBe(0);
   });
 
   it('writes land only in the bound workspace; cross-read sees 0', async () => {
     const custA = randomUUID();
     const actA = randomUUID();
     const linkA = randomUUID();
+    const orlA = randomUUID();
+    const emlA = randomUUID();
     // Write into WS_A through the GUC chokepoint.
     await prisma.withWorkspace(WS_A, 'uc-a', async (tx) => {
       await tx.customer.create({
@@ -129,10 +151,38 @@ describeIfDb('RLS integration (customer_ops_app, real Prisma)', () => {
           totalAmount: '2040.0000',
         },
       });
+      await tx.customerOutreachLink.create({
+        data: {
+          id: orlA,
+          workspaceId: WS_A,
+          customerId: custA,
+          contactId: 'contact-a',
+          channel: 'email',
+          externalSource: 'customer-ops',
+          externalRef: `cust:${custA}:enroll:k1`,
+          outreachId: 'enr-a',
+          lastStatus: 'queued',
+        },
+      });
+      await tx.customerEmailLink.create({
+        data: {
+          id: emlA,
+          workspaceId: WS_A,
+          customerId: custA,
+          contactId: 'contact-a',
+          mode: 'send',
+          externalSource: 'customer-ops',
+          externalRef: `cust:${custA}:email:k1`,
+          messageId: 'msg-a',
+          lastStatus: 'sent',
+        },
+      });
     });
     cleanupIds.customers.push(custA);
     cleanupIds.activities.push(actA);
     cleanupIds.invoiceLinks.push(linkA);
+    cleanupIds.outreachLinks.push(orlA);
+    cleanupIds.emailLinks.push(emlA);
 
     // Bound to WS_A: I can see my row.
     const seenInA = await prisma.withWorkspace(WS_A, 'uc-a', (tx) =>
@@ -161,6 +211,31 @@ describeIfDb('RLS integration (customer_ops_app, real Prisma)', () => {
       tx.customerInvoiceLink.findMany({ where: { externalRef: `cust:${custA}:k1` } }),
     );
     expect(linkByRefInB).toHaveLength(0);
+
+    // The Phase-4 outreach + email links (incl. their external_ref idempotency
+    // tuples) are INVISIBLE across the fence — Outreach/Email-Ops references never
+    // leak between tenants.
+    const orlSeenInB = await prisma.withWorkspace(WS_B, 'uc-b', (tx) =>
+      tx.customerOutreachLink.findMany({ where: { id: orlA } }),
+    );
+    expect(orlSeenInB).toHaveLength(0);
+    const orlByRefInB = await prisma.withWorkspace(WS_B, 'uc-b', (tx) =>
+      tx.customerOutreachLink.findMany({ where: { externalRef: `cust:${custA}:enroll:k1` } }),
+    );
+    expect(orlByRefInB).toHaveLength(0);
+    const emlSeenInB = await prisma.withWorkspace(WS_B, 'uc-b', (tx) =>
+      tx.customerEmailLink.findMany({ where: { id: emlA } }),
+    );
+    expect(emlSeenInB).toHaveLength(0);
+    const emlByRefInB = await prisma.withWorkspace(WS_B, 'uc-b', (tx) =>
+      tx.customerEmailLink.findMany({ where: { externalRef: `cust:${custA}:email:k1` } }),
+    );
+    expect(emlByRefInB).toHaveLength(0);
+    // Within the owning workspace, the new links are visible.
+    const orlInA = await prisma.withWorkspace(WS_A, 'uc-a', (tx) =>
+      tx.customerOutreachLink.findUnique({ where: { id: orlA } }),
+    );
+    expect(orlInA?.lastStatus).toBe('queued');
 
     // Money round-trips with full value fidelity within the owning workspace
     // (NUMERIC(20,4); Prisma.Decimal canonicalizes, so compare by value).
@@ -207,6 +282,41 @@ describeIfDb('RLS integration (customer_ops_app, real Prisma)', () => {
             externalSource: 'customer-ops',
             externalRef: 'cust:evil:k',
             entityId: 'entity-evil',
+          },
+        }),
+      ),
+    ).rejects.toThrow(/row-level security|violates/i);
+
+    // Same for customer_outreach_links — the Outreach idempotency tuple stays
+    // tenant-bound; a cross-workspace write is rejected.
+    await expect(
+      prisma.withWorkspace(WS_A, 'uc-a', (tx) =>
+        tx.customerOutreachLink.create({
+          data: {
+            id: randomUUID(),
+            workspaceId: WS_B,
+            customerId: 'whatever',
+            contactId: 'contact-evil',
+            channel: 'email',
+            externalSource: 'customer-ops',
+            externalRef: 'cust:evil:enroll:k',
+          },
+        }),
+      ),
+    ).rejects.toThrow(/row-level security|violates/i);
+
+    // Same for customer_email_links.
+    await expect(
+      prisma.withWorkspace(WS_A, 'uc-a', (tx) =>
+        tx.customerEmailLink.create({
+          data: {
+            id: randomUUID(),
+            workspaceId: WS_B,
+            customerId: 'whatever',
+            contactId: 'contact-evil',
+            mode: 'send',
+            externalSource: 'customer-ops',
+            externalRef: 'cust:evil:email:k',
           },
         }),
       ),

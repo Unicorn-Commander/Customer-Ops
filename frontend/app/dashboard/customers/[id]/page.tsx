@@ -9,13 +9,21 @@ import {
   createInvoice,
   CreateInvoiceInput,
   Customer360,
+  EmailPanel,
+  emailStatusLabel,
   getCustomer360,
   InvoicePanel,
   invoiceStatusLabel,
   markLost,
   money,
+  OutreachPanel,
+  outreachStatusLabel,
   reopen,
+  sendEmail,
+  SendEmailInput,
   Stage,
+  startCampaign,
+  StartCampaignInput,
   STAGES,
   STAGE_LABEL,
   transitionStage,
@@ -28,8 +36,11 @@ import { PriorityTag, StageBadge } from '@/components/Badges';
  *   - the FEDERATED Contact-Ops contact (name, emails, phones, org, tags) —
  *     resolved by the backend at read time, NEVER copied; a placeholder when CO
  *     is dormant,
- *   - the activity timeline (stage changes / notes), and
- *   - the Phase-3 federation slots (invoices/meetings/email — empty seams).
+ *   - the activity timeline (stage changes / notes),
+ *   - the Phase-3 Accounting-Ops invoice panel (federated), and
+ *   - the Phase-4 Outreach + Email-Ops panels (federated; campaigns/touches +
+ *     start-campaign, mailbox threads + send/draft), with degrade-clean +
+ *     entitlement affordances. Meeting-Ops remains the one empty seam.
  */
 export default function Customer360Page() {
   const params = useParams<{ id: string }>();
@@ -115,7 +126,8 @@ export default function Customer360Page() {
   if (error && !data) return <p className="co-error">{error}</p>;
   if (!data) return null;
 
-  const { relationship: rel, contact, contactFederation, timeline, invoices } = data;
+  const { relationship: rel, contact, contactFederation, timeline, invoices, outreach, email } =
+    data;
 
   return (
     <>
@@ -295,20 +307,33 @@ export default function Customer360Page() {
             onChanged={load}
           />
 
-          {/* Remaining federation seams (later phases) */}
+          {/* Phase 4: the federated Email-Ops mailbox panel */}
+          <EmailPanelView
+            workspaceId={workspaceId}
+            customerId={id}
+            initial={email}
+            defaultToAddress={contact?.primaryEmail ?? undefined}
+            onChanged={load}
+          />
+
+          {/* Phase 4: the federated Outreach campaigns/touches panel */}
+          <OutreachPanelView
+            workspaceId={workspaceId}
+            customerId={id}
+            initial={outreach}
+            onChanged={load}
+          />
+
+          {/* The one remaining federation seam (later phase) */}
           <div className="co-panel">
-            <h3 style={{ marginTop: 0, fontSize: 15 }}>Connected (next phases)</h3>
+            <h3 style={{ marginTop: 0, fontSize: 15 }}>Connected (next phase)</h3>
             <p className="co-muted" style={{ marginTop: 0, marginBottom: 14, fontSize: 13 }}>
-              These surfaces federate from their own engines. The seams are wired;
-              the data plane lands in a later phase.
+              This surface federates from its own engine. The seam is wired; the
+              data plane lands in a later phase.
             </p>
             <div className="co-slot">
               <span>Meetings &amp; action items</span>
               <span className="co-tag">meeting-ops</span>
-            </div>
-            <div className="co-slot">
-              <span>Email threads</span>
-              <span className="co-tag">email-ops</span>
             </div>
           </div>
         </div>
@@ -522,6 +547,393 @@ function InvoiceForm(props: {
           }
         >
           {props.busy ? 'Creating…' : 'Send to Accounting-Ops'}
+        </button>
+        <button className="co-btn co-btn--sm co-btn--ghost" disabled={props.busy} onClick={props.onCancel}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Map a status tone to the design-system tag class (shared by Phase-4 panels). */
+function toneClass(t: string): string {
+  return t === 'ok'
+    ? 'co-tag co-tag--ok'
+    : t === 'warn'
+      ? 'co-tag co-tag--warn'
+      : t === 'info'
+        ? 'co-tag'
+        : 'co-tag co-tag--muted';
+}
+
+/**
+ * The Email-Ops mailbox panel of the customer-360. Renders the FEDERATED mailbox
+ * threads with the contact (live, by the backend) + the local outbound links,
+ * with degrade-clean / entitlement affordances, and a "send / draft" action when
+ * entitled. Email-Ops (Stalwart) is the mailbox system-of-record; this UI never
+ * stores a message — it asks the backend to send/draft via the Email-Ops app.
+ */
+function EmailPanelView(props: {
+  workspaceId: string | null;
+  customerId: string;
+  initial: EmailPanel;
+  defaultToAddress?: string;
+  onChanged: () => void | Promise<void>;
+}) {
+  const { workspaceId, customerId, initial, defaultToAddress } = props;
+  const [panel, setPanel] = useState<EmailPanel>(initial);
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => setPanel(initial), [initial]);
+
+  return (
+    <div className="co-panel">
+      <div className="co-row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+        <h3 style={{ margin: 0, fontSize: 15 }}>Email</h3>
+        <span className="co-tag">
+          {panel.configured ? 'federated · email-ops' : 'email-ops · not connected'}
+        </span>
+      </div>
+
+      {!panel.configured ? (
+        <p className="co-muted" style={{ marginTop: 12 }}>
+          Connect Email-Ops to see this contact’s mailbox threads and send mail.
+          Mailboxes are federated to Email-Ops (the Stalwart mail surface) —
+          Customer-Ops never stores message content.
+        </p>
+      ) : (
+        <>
+          {panel.threads.length === 0 && panel.sent.length === 0 ? (
+            <p className="co-muted" style={{ marginTop: 12, marginBottom: 8 }}>
+              No email threads with this contact yet.
+            </p>
+          ) : (
+            <ul className="co-invoices" style={{ marginTop: 12, marginBottom: 8 }}>
+              {panel.threads.map((t) => (
+                <li
+                  key={t.id}
+                  className="co-row"
+                  style={{ justifyContent: 'space-between', alignItems: 'center', gap: 8 }}
+                >
+                  <span>
+                    <strong>{t.subject ?? '(no subject)'}</strong>
+                    <span className="co-muted" style={{ marginLeft: 8 }}>
+                      {t.messageCount} msg{t.messageCount === 1 ? '' : 's'}
+                      {t.lastSnippet ? ` · ${t.lastSnippet}` : ''}
+                    </span>
+                  </span>
+                  {t.unread && <span className="co-tag co-tag--warn">Unread</span>}
+                </li>
+              ))}
+              {/* Local outbound links we initiated (de-dupe memory + status). */}
+              {panel.sent.map((m) => {
+                const s = emailStatusLabel(m.status);
+                return (
+                  <li
+                    key={m.id}
+                    className="co-row"
+                    style={{ justifyContent: 'space-between', alignItems: 'center', gap: 8 }}
+                  >
+                    <span>
+                      <strong>{m.subject ?? m.externalRef}</strong>
+                      <span className="co-muted" style={{ marginLeft: 8 }}>
+                        {m.mode === 'draft' ? 'drafted' : 'sent'}
+                      </span>
+                    </span>
+                    <span className={toneClass(s.tone)}>{s.label}</span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+
+          {panel.canSend ? (
+            !open ? (
+              <button className="co-btn co-btn--sm" onClick={() => setOpen(true)}>
+                Send email
+              </button>
+            ) : (
+              <EmailForm
+                defaultToAddress={defaultToAddress}
+                busy={busy}
+                error={err}
+                onCancel={() => {
+                  setOpen(false);
+                  setErr(null);
+                }}
+                onSubmit={async (body) => {
+                  if (!workspaceId) return;
+                  setBusy(true);
+                  setErr(null);
+                  try {
+                    await sendEmail(workspaceId, customerId, body);
+                    setOpen(false);
+                    await props.onChanged();
+                  } catch (e) {
+                    setErr((e as Error).message);
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              />
+            )
+          ) : (
+            <p className="co-muted" style={{ marginTop: 8, fontSize: 13 }}>
+              Sending requires both the Customer-Ops and Email-Ops entitlements.
+              Mailbox threads are shown read-only.
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/** The minimal compose form: to, subject, body, and send-vs-draft. */
+function EmailForm(props: {
+  defaultToAddress?: string;
+  busy: boolean;
+  error: string | null;
+  onCancel: () => void;
+  onSubmit: (body: SendEmailInput) => void | Promise<void>;
+}) {
+  const [toAddress, setToAddress] = useState(props.defaultToAddress ?? '');
+  const [subject, setSubject] = useState('');
+  const [body, setBody] = useState('');
+
+  const canSubmit = subject.trim().length > 0 && body.trim().length > 0 && !props.busy;
+
+  return (
+    <div className="co-field" style={{ marginTop: 10, display: 'grid', gap: 8 }}>
+      {props.error && <p className="co-error">{props.error}</p>}
+      <input
+        className="co-input"
+        placeholder="To (defaults to the contact’s primary email)"
+        value={toAddress}
+        onChange={(e) => setToAddress(e.target.value)}
+      />
+      <input
+        className="co-input"
+        placeholder="Subject"
+        value={subject}
+        onChange={(e) => setSubject(e.target.value)}
+      />
+      <textarea
+        className="co-input"
+        rows={4}
+        placeholder="Message…"
+        value={body}
+        onChange={(e) => setBody(e.target.value)}
+      />
+      <div className="co-row" style={{ gap: 8 }}>
+        <button
+          className="co-btn co-btn--sm"
+          disabled={!canSubmit}
+          onClick={() =>
+            props.onSubmit({
+              toAddress: toAddress.trim() || undefined,
+              subject: subject.trim(),
+              body: body.trim(),
+              mode: 'send',
+            })
+          }
+        >
+          {props.busy ? 'Sending…' : 'Send now'}
+        </button>
+        <button
+          className="co-btn co-btn--sm co-btn--ghost"
+          disabled={!canSubmit}
+          onClick={() =>
+            props.onSubmit({
+              toAddress: toAddress.trim() || undefined,
+              subject: subject.trim(),
+              body: body.trim(),
+              mode: 'draft',
+            })
+          }
+          title="Stage in the Email-Ops agent-inbox approval surface"
+        >
+          Save as draft
+        </button>
+        <button className="co-btn co-btn--sm co-btn--ghost" disabled={props.busy} onClick={props.onCancel}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The Outreach panel of the customer-360. Renders the FEDERATED outreach touches
+ * for the contact (live, by the backend) + the live campaign picker + the local
+ * enrollment links, with degrade-clean / entitlement affordances, and a "start
+ * campaign" action when entitled. Outreach (Listmonk + Postiz) is the campaign
+ * system-of-record; this UI never sends a campaign — it asks the backend to
+ * enroll the contact via the Outreach app.
+ */
+function OutreachPanelView(props: {
+  workspaceId: string | null;
+  customerId: string;
+  initial: OutreachPanel;
+  onChanged: () => void | Promise<void>;
+}) {
+  const { workspaceId, customerId, initial } = props;
+  const [panel, setPanel] = useState<OutreachPanel>(initial);
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => setPanel(initial), [initial]);
+
+  return (
+    <div className="co-panel">
+      <div className="co-row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+        <h3 style={{ margin: 0, fontSize: 15 }}>Outreach</h3>
+        <span className="co-tag">
+          {panel.configured ? 'federated · outreach' : 'outreach · not connected'}
+        </span>
+      </div>
+
+      {!panel.configured ? (
+        <p className="co-muted" style={{ marginTop: 12 }}>
+          Connect Outreach to run email campaigns and social touches for this
+          contact. Campaigns are federated to Outreach (Listmonk + Postiz) —
+          Customer-Ops never holds a recipient list or sends a campaign.
+        </p>
+      ) : (
+        <>
+          {panel.touches.length === 0 && panel.enrollments.length === 0 ? (
+            <p className="co-muted" style={{ marginTop: 12, marginBottom: 8 }}>
+              No outreach touches for this contact yet.
+            </p>
+          ) : (
+            <ul className="co-invoices" style={{ marginTop: 12, marginBottom: 8 }}>
+              {panel.touches.map((t) => {
+                const s = outreachStatusLabel(t.status);
+                return (
+                  <li
+                    key={t.id}
+                    className="co-row"
+                    style={{ justifyContent: 'space-between', alignItems: 'center', gap: 8 }}
+                  >
+                    <span>
+                      <strong>{t.campaignName ?? t.subject ?? `${t.channel} touch`}</strong>
+                      <span className="co-muted" style={{ marginLeft: 8 }}>
+                        {t.channel}
+                        {t.lastEngagementKind ? ` · ${t.lastEngagementKind}` : ''}
+                      </span>
+                    </span>
+                    <span className={toneClass(s.tone)}>{s.label}</span>
+                  </li>
+                );
+              })}
+              {/* Local enrollment links we initiated (de-dupe memory + status). */}
+              {panel.enrollments.map((en) => {
+                const s = outreachStatusLabel(en.status);
+                return (
+                  <li
+                    key={en.id}
+                    className="co-row"
+                    style={{ justifyContent: 'space-between', alignItems: 'center', gap: 8 }}
+                  >
+                    <span>
+                      <strong>{en.campaignName ?? en.externalRef}</strong>
+                      <span className="co-muted" style={{ marginLeft: 8 }}>
+                        {en.channel} · enrolled
+                      </span>
+                    </span>
+                    <span className={toneClass(s.tone)}>{s.label}</span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+
+          {panel.canStart ? (
+            !open ? (
+              <button className="co-btn co-btn--sm" onClick={() => setOpen(true)}>
+                Start campaign
+              </button>
+            ) : (
+              <CampaignForm
+                campaigns={panel.campaigns}
+                busy={busy}
+                error={err}
+                onCancel={() => {
+                  setOpen(false);
+                  setErr(null);
+                }}
+                onSubmit={async (body) => {
+                  if (!workspaceId) return;
+                  setBusy(true);
+                  setErr(null);
+                  try {
+                    await startCampaign(workspaceId, customerId, body);
+                    setOpen(false);
+                    await props.onChanged();
+                  } catch (e) {
+                    setErr((e as Error).message);
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              />
+            )
+          ) : (
+            <p className="co-muted" style={{ marginTop: 8, fontSize: 13 }}>
+              Starting a campaign requires both the Customer-Ops and Outreach
+              entitlements. Outreach history is shown read-only.
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/** The minimal start-campaign form: pick a federated campaign to enroll into. */
+function CampaignForm(props: {
+  campaigns: OutreachPanel['campaigns'];
+  busy: boolean;
+  error: string | null;
+  onCancel: () => void;
+  onSubmit: (body: StartCampaignInput) => void | Promise<void>;
+}) {
+  const [campaignId, setCampaignId] = useState(props.campaigns[0]?.id ?? '');
+  const canSubmit = campaignId.trim().length > 0 && !props.busy;
+
+  return (
+    <div className="co-field" style={{ marginTop: 10, display: 'grid', gap: 8 }}>
+      {props.error && <p className="co-error">{props.error}</p>}
+      {props.campaigns.length === 0 ? (
+        <p className="co-muted" style={{ fontSize: 13 }}>
+          No campaigns are available in the Outreach app yet. Create one in
+          Outreach, then enroll this contact here.
+        </p>
+      ) : (
+        <select
+          className="co-input"
+          value={campaignId}
+          onChange={(e) => setCampaignId(e.target.value)}
+        >
+          {props.campaigns.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name} ({c.channel}
+              {c.isSequence ? ' · sequence' : ''})
+            </option>
+          ))}
+        </select>
+      )}
+      <div className="co-row" style={{ gap: 8 }}>
+        <button
+          className="co-btn co-btn--sm"
+          disabled={!canSubmit}
+          onClick={() => props.onSubmit({ campaignId: campaignId.trim() })}
+        >
+          {props.busy ? 'Enrolling…' : 'Enroll contact'}
         </button>
         <button className="co-btn co-btn--sm co-btn--ghost" disabled={props.busy} onClick={props.onCancel}>
           Cancel

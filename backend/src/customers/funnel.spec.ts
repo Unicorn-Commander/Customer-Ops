@@ -1,5 +1,11 @@
 import { RelationshipStage } from '@prisma/client';
-import { checkTransition, nextStage, stageRank, STAGE_ORDER } from './funnel';
+import {
+  checkTransition,
+  engagementAdvance,
+  nextStage,
+  stageRank,
+  STAGE_ORDER,
+} from './funnel';
 
 /**
  * The funnel rules are the lifecycle Customer-Ops OWNS. These pin the binding
@@ -79,5 +85,64 @@ describe('funnel rules', () => {
       expect(nextStage(RelationshipStage.PROSPECT)).toBe(RelationshipStage.CUSTOMER);
       expect(nextStage(RelationshipStage.CUSTOMER)).toBeNull();
     });
+  });
+});
+
+/**
+ * The Phase-4 engagement → funnel-stage policy. Pin the binding rules:
+ *   - replied/clicked = positive intent → advance exactly one step
+ *   - opened = weak → recorded, no advance
+ *   - bounced/unsubscribed = data-quality/suppression → never advance
+ *   - lost = never advance (re-open first)
+ *   - top of funnel (CUSTOMER) = never advance
+ */
+describe('engagementAdvance (the engagement → stage policy)', () => {
+  it('replied advances one step (LEAD→PROSPECT, PROSPECT→CUSTOMER)', () => {
+    expect(engagementAdvance(RelationshipStage.LEAD, 'replied', false)).toMatchObject({
+      advance: true,
+      toStage: RelationshipStage.PROSPECT,
+    });
+    expect(engagementAdvance(RelationshipStage.PROSPECT, 'replied', false)).toMatchObject({
+      advance: true,
+      toStage: RelationshipStage.CUSTOMER,
+    });
+  });
+
+  it('clicked advances one step too (positive intent)', () => {
+    expect(engagementAdvance(RelationshipStage.LEAD, 'clicked', false)).toMatchObject({
+      advance: true,
+      toStage: RelationshipStage.PROSPECT,
+    });
+  });
+
+  it('never skips qualification: a LEAD reply lands on PROSPECT, not CUSTOMER', () => {
+    const d = engagementAdvance(RelationshipStage.LEAD, 'replied', false);
+    expect(d.toStage).toBe(RelationshipStage.PROSPECT);
+    expect(d.toStage).not.toBe(RelationshipStage.CUSTOMER);
+  });
+
+  it('opened is recorded but does NOT advance (weak intent)', () => {
+    const d = engagementAdvance(RelationshipStage.LEAD, 'opened', false);
+    expect(d.advance).toBe(false);
+    expect(d.toStage).toBeNull();
+    expect(d.reason).toMatch(/does not advance/i);
+  });
+
+  it('bounced / unsubscribed never advance (data-quality / suppression)', () => {
+    expect(engagementAdvance(RelationshipStage.LEAD, 'bounced', false).advance).toBe(false);
+    expect(engagementAdvance(RelationshipStage.PROSPECT, 'unsubscribed', false).advance).toBe(false);
+  });
+
+  it('a lost relationship never advances (re-open first)', () => {
+    const d = engagementAdvance(RelationshipStage.PROSPECT, 'replied', true);
+    expect(d.advance).toBe(false);
+    expect(d.reason).toMatch(/closed-lost/i);
+  });
+
+  it('the top of the funnel never advances (CUSTOMER + reply = no-op)', () => {
+    const d = engagementAdvance(RelationshipStage.CUSTOMER, 'replied', false);
+    expect(d.advance).toBe(false);
+    expect(d.toStage).toBeNull();
+    expect(d.reason).toMatch(/top of the funnel/i);
   });
 });

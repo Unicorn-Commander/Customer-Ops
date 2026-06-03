@@ -29,6 +29,10 @@ import {
   CreateInvoiceDto,
   ListCustomersQueryDto,
   MarkLostDto,
+  RecordEngagementDto,
+  ScheduleSocialTouchDto,
+  SendEmailDto,
+  StartCampaignDto,
   TransitionStageDto,
   UpdateCustomerDto,
 } from './dto/customer.dto';
@@ -84,7 +88,9 @@ export class CustomersController {
 
   @Get(':id/360')
   @ApiOperation({
-    summary: 'Customer-360: the relationship + timeline + FEDERATED contact, with Phase-3 slots.',
+    summary:
+      'Customer-360: the relationship + timeline + FEDERATED contact + invoices (Phase 3) + ' +
+      'outreach + email panels (Phase 4).',
   })
   async customer360(
     @CurrentUser() user: AuthedUser,
@@ -181,5 +187,110 @@ export class CustomersController {
     @Body() dto: CreateInvoiceDto,
   ) {
     return this.customers.createInvoiceForUser(user, id, dto, workspaceId);
+  }
+
+  // ── Phase 4: the Outreach surface (the Outreach app: Listmonk + Postiz) ──
+  // Customer-Ops FEDERATES outreach to the Outreach app (the campaign SoR); these
+  // routes never send a campaign. Degrade-clean when Outreach is unconfigured;
+  // dual-SKU (customer-ops + outreach) gated on the start/schedule actions.
+
+  @Get(':id/outreach')
+  @ApiOperation({
+    summary:
+      "This customer's outreach: live campaigns + touches federated from the Outreach app, " +
+      'plus the local enrollment links. Reports connect/entitlement affordances.',
+  })
+  async listOutreach(
+    @CurrentUser() user: AuthedUser,
+    @Param('workspaceId') workspaceId: string,
+    @Param('id') id: string,
+  ) {
+    return this.customers.outreachForUser(user, id, workspaceId);
+  }
+
+  @Post(':id/outreach/campaigns')
+  @ApiOperation({
+    summary:
+      "Enroll this customer's contact into an Outreach campaign/sequence (idempotent; " +
+      'requires customer-ops + outreach entitlements). Federates to the Outreach app.',
+  })
+  async startCampaign(
+    @CurrentUser() user: AuthedUser,
+    @Param('workspaceId') workspaceId: string,
+    @Param('id') id: string,
+    @Body() dto: StartCampaignDto,
+  ) {
+    return this.customers.startCampaignForUser(user, id, dto, workspaceId);
+  }
+
+  @Post(':id/outreach/social')
+  @ApiOperation({
+    summary:
+      "Schedule a Postiz social touch for this customer's contact (idempotent; requires " +
+      'customer-ops + outreach). Federates to the Outreach app.',
+  })
+  async scheduleSocialTouch(
+    @CurrentUser() user: AuthedUser,
+    @Param('workspaceId') workspaceId: string,
+    @Param('id') id: string,
+    @Body() dto: ScheduleSocialTouchDto,
+  ) {
+    return this.customers.scheduleSocialTouchForUser(user, id, dto, workspaceId);
+  }
+
+  // ── Phase 4: the Email surface (the Email-Ops app: Stalwart) ──
+  // Customer-Ops FEDERATES mailboxes to the Email-Ops app (the mailbox SoR);
+  // these routes never store a message body. Degrade-clean when Email-Ops is
+  // unconfigured; dual-SKU (customer-ops + email-ops) gated on send/draft.
+
+  @Get(':id/email')
+  @ApiOperation({
+    summary:
+      "This customer's email: live mailbox threads with the contact federated from the " +
+      'Email-Ops app, plus the local outbound links. Reports connect/entitlement affordances.',
+  })
+  async listEmail(
+    @CurrentUser() user: AuthedUser,
+    @Param('workspaceId') workspaceId: string,
+    @Param('id') id: string,
+  ) {
+    return this.customers.emailForUser(user, id, workspaceId);
+  }
+
+  @Post(':id/email')
+  @ApiOperation({
+    summary:
+      "Send or draft an outbound email to this customer's contact via the Email-Ops app " +
+      '(idempotent; requires customer-ops + email-ops). mode=send delivers now; mode=draft ' +
+      'stages the agent-inbox approval surface.',
+  })
+  async sendEmail(
+    @CurrentUser() user: AuthedUser,
+    @Param('workspaceId') workspaceId: string,
+    @Param('id') id: string,
+    @Body() dto: SendEmailDto,
+  ) {
+    return this.customers.sendEmailForUser(user, id, dto, workspaceId);
+  }
+
+  // ── Phase 4: the engagement → funnel-stage hook ──
+  // An inbound engagement signal (reply/click from Outreach/Email-Ops; a bounce)
+  // advances the customer's funnel stage when positive, with activity logging.
+  // This is the endpoint the Outreach/Email-Ops webhooks (or an agent) call.
+
+  @Post(':id/engagement')
+  @ApiOperation({
+    summary:
+      'Record an inbound engagement (reply/click/open/bounce) and advance the funnel stage ' +
+      'when the signal warrants it (one step, never skipping qualification). Logs the stage ' +
+      'change + the engagement provenance in one transaction.',
+  })
+  async recordEngagement(
+    @CurrentUser() user: AuthedUser,
+    @Param('workspaceId') workspaceId: string,
+    @Param('id') id: string,
+    @Body() dto: RecordEngagementDto,
+  ) {
+    return this.customers.recordEngagementForUser(user, id, dto, workspaceId);
   }
 }

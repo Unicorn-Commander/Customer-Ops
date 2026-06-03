@@ -10,6 +10,8 @@ import { HealthModule } from './health/health.module';
 import { McpModule } from './mcp/mcp.module';
 import { ContactOpsModule } from './contact-ops/contact-ops.module';
 import { AccountingOpsModule } from './accounting-ops/accounting-ops.module';
+import { OutreachOpsModule } from './outreach-ops/outreach-ops.module';
+import { EmailOpsModule } from './email-ops/email-ops.module';
 import { CustomersModule } from './customers/customers.module';
 
 @Module({
@@ -35,6 +37,9 @@ import { CustomersModule } from './customers/customers.module';
     ContactOpsModule,
     // Phase 3 — the invoicing surface (the Accounting-Ops AR federation seam).
     AccountingOpsModule,
+    // Phase 4 — the Outreach + Email surfaces (the Outreach + Email-Ops app seams).
+    OutreachOpsModule,
+    EmailOpsModule,
     CustomersModule,
     // MCP last so it can consume the cockpit tools.
     McpModule,
