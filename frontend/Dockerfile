@@ -17,6 +17,10 @@ FROM node:20-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
+# Next standalone's server.js binds to $HOSTNAME; in Docker that defaults to the
+# container id, so it never listens on 0.0.0.0 (Traefik + healthcheck can't reach
+# it). Pin it to 0.0.0.0.
+ENV HOSTNAME=0.0.0.0
 
 COPY --from=build /app/.next/standalone ./
 COPY --from=build /app/.next/static ./.next/static
