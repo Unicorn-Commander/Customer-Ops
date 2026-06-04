@@ -144,6 +144,17 @@ services:
       - "traefik.http.routers.customer-ops-frontend.tls=true"
       - "traefik.http.routers.customer-ops-frontend.tls.certresolver=letsencrypt"
       - "traefik.http.services.customer-ops-frontend.loadbalancer.server.port=3000"
+      # Alias: customerops.magicunicorn.dev -> 301 -> the canonical customer-ops host
+      # (one session/cookie/SSO origin; both typed URLs still land you in the app).
+      - "traefik.http.routers.customer-ops-alias.rule=Host(`customerops.magicunicorn.dev`)"
+      - "traefik.http.routers.customer-ops-alias.entrypoints=websecure"
+      - "traefik.http.routers.customer-ops-alias.tls=true"
+      - "traefik.http.routers.customer-ops-alias.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.customer-ops-alias.service=customer-ops-frontend"
+      - "traefik.http.routers.customer-ops-alias.middlewares=customer-ops-canonical"
+      - "traefik.http.middlewares.customer-ops-canonical.redirectregex.regex=^https?://customerops\\.magicunicorn\\.dev/(.*)"
+      - "traefik.http.middlewares.customer-ops-canonical.redirectregex.replacement=https://customer-ops.magicunicorn.dev/$${1}"
+      - "traefik.http.middlewares.customer-ops-canonical.redirectregex.permanent=true"
 
 volumes:
   customer-ops-pgdata:
