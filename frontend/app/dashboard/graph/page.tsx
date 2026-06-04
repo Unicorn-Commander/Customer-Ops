@@ -74,9 +74,9 @@ export default function GraphPage() {
         {status === 'loading' && (
           <div className="relative flex flex-col items-center gap-4 text-center">
             <span className="relative grid h-16 w-16 place-items-center">
-              <span className="absolute inset-0 animate-ping rounded-full bg-cyan-400/20" />
+              <span className="absolute inset-0 animate-ping rounded-full bg-cyan/20" />
               <span className="grid h-12 w-12 place-items-center rounded-full border border-subtle bg-surface-raised/80 backdrop-blur">
-                <Network className="h-5 w-5 text-cyan-400" strokeWidth={2.2} />
+                <Network className="h-5 w-5 text-cyan" strokeWidth={2.2} />
               </span>
             </span>
             <p className="text-sm text-tertiary">Mapping your relationships…</p>
