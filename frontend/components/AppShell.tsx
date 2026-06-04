@@ -1,0 +1,196 @@
+'use client';
+
+import { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
+import { usePathname, useRouter } from 'next/navigation';
+import {
+  LayoutDashboard, Users, Filter, Receipt, Megaphone, Mail, Video, Bot, Waypoints,
+  Search, Plus, LogOut, Radar, PanelLeftClose, PanelLeftOpen, type LucideIcon,
+} from 'lucide-react';
+import { getToken, getStoredUser, clearSession, type CustomerOpsUser } from '@/lib/api';
+import { ThemeToggle } from './ThemeToggle';
+import { IconTile } from './ui/IconTile';
+import { cn } from './ui/cn';
+
+interface NavItem { href: string; label: string; icon: LucideIcon; exact?: boolean; gradient: string; bar: string }
+
+const NAV: NavItem[] = [
+  { href: '/dashboard', label: 'Overview', icon: LayoutDashboard, exact: true, gradient: 'from-indigo-500 to-violet-500', bar: 'bg-violet-400' },
+  { href: '/dashboard/customers', label: 'Relationships', icon: Users, gradient: 'from-violet-500 to-fuchsia-500', bar: 'bg-fuchsia-400' },
+  { href: '/dashboard/pipeline', label: 'Pipeline', icon: Filter, gradient: 'from-amber-400 to-orange-500', bar: 'bg-amber-400' },
+  { href: '/dashboard/graph', label: 'Graph', icon: Waypoints, gradient: 'from-cyan-400 to-blue-500', bar: 'bg-cyan-400' },
+];
+
+const FEDERATED: { label: string; icon: LucideIcon; gradient: string }[] = [
+  { label: 'Invoices', icon: Receipt, gradient: 'from-emerald-400 to-teal-500' },
+  { label: 'Outreach', icon: Megaphone, gradient: 'from-fuchsia-500 to-pink-500' },
+  { label: 'Email', icon: Mail, gradient: 'from-sky-400 to-blue-500' },
+  { label: 'Meetings', icon: Video, gradient: 'from-teal-400 to-cyan-500' },
+  { label: 'Agents', icon: Bot, gradient: 'from-violet-500 to-cyan-500' },
+];
+
+const DEMO_USER: CustomerOpsUser = { id: 'demo', email: 'aaron@magicunicorn.tech', username: 'aaron', firstName: 'Aaron', lastName: 'Stransky' };
+
+function titleFor(pathname: string): { title: string; sub: string } {
+  if (pathname.startsWith('/dashboard/customers')) return { title: 'Relationships', sub: 'Every contact, by lifecycle stage' };
+  if (pathname.startsWith('/dashboard/pipeline')) return { title: 'Pipeline', sub: 'Lead → Prospect → Customer' };
+  if (pathname.startsWith('/dashboard/graph')) return { title: 'Knowledge graph', sub: 'People, orgs & deals as a living network' };
+  return { title: 'Overview', sub: 'Your relationship cockpit at a glance' };
+}
+
+export function AppShell({ children, demo = false }: { children: React.ReactNode; demo?: boolean }) {
+  const router = useRouter();
+  const pathname = usePathname() || '/dashboard';
+  const [ready, setReady] = useState(demo);
+  const [user, setUser] = useState<CustomerOpsUser | null>(demo ? DEMO_USER : null);
+  const [collapsed, setCollapsed] = useState(false);
+
+  useEffect(() => {
+    try { setCollapsed(localStorage.getItem('co-sidebar') === 'collapsed'); } catch { /* ignore */ }
+  }, []);
+  useEffect(() => {
+    if (demo) return;
+    if (!getToken()) { router.replace('/auth/login'); return; }
+    setUser(getStoredUser<CustomerOpsUser>());
+    setReady(true);
+  }, [router, demo]);
+
+  const { title, sub } = useMemo(() => titleFor(pathname), [pathname]);
+  const initials = (user ? `${user.firstName?.[0] ?? ''}${user.lastName?.[0] ?? ''}` : '··').toUpperCase();
+
+  const toggleCollapsed = () => setCollapsed((c) => {
+    const next = !c;
+    try { localStorage.setItem('co-sidebar', next ? 'collapsed' : 'open'); } catch { /* ignore */ }
+    return next;
+  });
+  const signOut = () => { clearSession(); router.replace('/auth/login'); };
+
+  if (!ready) {
+    return (
+      <div className="grid min-h-screen place-items-center bg-surface-base">
+        <div className="h-7 w-7 animate-spin rounded-full border-2 border-accent/30 border-t-accent" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex min-h-screen bg-surface-base text-secondary">
+      {/* ---- Sidebar ---- */}
+      <aside
+        className={cn(
+          'sticky top-0 hidden h-screen shrink-0 flex-col border-r border-subtle bg-surface-base/70 px-3 py-4 backdrop-blur-xl transition-[width] duration-200 ease-token md:flex',
+          collapsed ? 'w-[72px] items-center' : 'w-[252px]',
+        )}
+      >
+        {/* Brand */}
+        <Link href="/dashboard" className={cn('relative mb-5 flex items-center gap-2.5', collapsed ? 'justify-center px-0' : 'px-2')}>
+          <span aria-hidden className="co-glow absolute -left-1 -top-1 h-10 w-10" />
+          <span className="relative grid h-9 w-9 place-items-center rounded-[11px] bg-gradient-to-br from-accent to-fuchsia shadow-glow">
+            <Radar className="h-5 w-5 text-white" strokeWidth={2.4} />
+          </span>
+          {!collapsed && (
+            <span className="relative text-[15px] font-semibold tracking-tight">
+              <span className="co-wordmark">Customer</span><span className="text-tertiary">-Ops</span>
+            </span>
+          )}
+        </Link>
+
+        {/* Primary nav */}
+        <nav className={cn('flex flex-col gap-1', collapsed && 'w-full items-center')}>
+          {NAV.map((item) => {
+            const active = item.exact ? pathname === item.href : pathname.startsWith(item.href);
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                title={collapsed ? item.label : undefined}
+                className={cn(
+                  'group relative flex items-center rounded-token transition-colors duration-fast ease-token',
+                  collapsed ? 'h-11 w-11 justify-center' : 'gap-3 px-2.5 py-2',
+                  active ? 'bg-surface-overlay' : 'hover:bg-surface-raised',
+                )}
+              >
+                {active && !collapsed && <span className={cn('absolute left-0 top-1.5 h-[calc(100%-12px)] w-[3px] rounded-full', item.bar)} />}
+                <IconTile icon={item.icon} gradient={item.gradient} size="sm" />
+                {!collapsed && (
+                  <span className={cn('text-sm', active ? 'font-semibold text-primary' : 'font-medium text-primary/85 group-hover:text-primary')}>
+                    {item.label}
+                  </span>
+                )}
+              </Link>
+            );
+          })}
+        </nav>
+
+        {/* Federated surfaces */}
+        <div className={cn('mt-6', collapsed ? 'w-full' : 'px-2.5')}>
+          {!collapsed && <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-tertiary">Federated surfaces</div>}
+          <div className={cn('flex flex-col gap-1', collapsed && 'items-center')}>
+            {FEDERATED.map((f) => (
+              <div
+                key={f.label}
+                title={collapsed ? f.label : undefined}
+                className={cn('flex items-center text-[13px] text-primary/80', collapsed ? 'h-10 w-10 justify-center' : 'gap-3 rounded-token px-1 py-1')}
+              >
+                <IconTile icon={f.icon} gradient={f.gradient} size="sm" />
+                {!collapsed && f.label}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="mt-auto w-full" />
+
+        {/* Collapse toggle */}
+        <button
+          onClick={toggleCollapsed}
+          title={collapsed ? 'Expand' : 'Collapse'}
+          className={cn(
+            'mb-2 flex items-center rounded-token text-tertiary transition-colors hover:bg-surface-raised hover:text-primary',
+            collapsed ? 'h-10 w-10 justify-center' : 'gap-2.5 px-2.5 py-2 text-xs',
+          )}
+        >
+          {collapsed ? <PanelLeftOpen className="h-[18px] w-[18px]" strokeWidth={2.25} /> : <><PanelLeftClose className="h-[18px] w-[18px]" strokeWidth={2.25} /> Collapse</>}
+        </button>
+
+        {/* User */}
+        <div className={cn('flex items-center rounded-token border border-subtle bg-surface-raised', collapsed ? 'h-11 w-11 justify-center' : 'gap-2.5 p-2.5')}>
+          <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-gradient-to-br from-accent to-fuchsia text-xs font-bold text-white">{initials}</span>
+          {!collapsed && (
+            <>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-xs font-medium text-primary">{user?.firstName} {user?.lastName}</div>
+                <div className="truncate text-[11px] text-tertiary">{user?.email}</div>
+              </div>
+              <button onClick={signOut} aria-label="Sign out" className="grid h-7 w-7 place-items-center rounded-md text-muted transition-colors hover:bg-surface-overlay hover:text-danger">
+                <LogOut className="h-4 w-4" strokeWidth={2.25} />
+              </button>
+            </>
+          )}
+        </div>
+      </aside>
+
+      {/* ---- Main column ---- */}
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="sticky top-0 z-20 flex items-center justify-between gap-4 border-b border-subtle bg-surface-base/80 px-5 py-3 backdrop-blur-xl">
+          <div className="min-w-0">
+            <h1 className="truncate text-[15px] font-semibold text-primary">{title}</h1>
+            <p className="truncate text-xs text-tertiary">{sub}</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button className="hidden items-center gap-2 rounded-token border border-subtle bg-surface-raised px-3 py-2 text-xs text-tertiary transition-colors hover:text-primary sm:flex">
+              <Search className="h-4 w-4" strokeWidth={2.25} /><span>Search</span>
+              <kbd className="ml-1 rounded border border-subtle bg-surface-overlay px-1.5 py-0.5 font-mono text-[10px] text-muted">⌘K</kbd>
+            </button>
+            <ThemeToggle />
+            <Link href="/dashboard/customers" className="inline-flex items-center gap-1.5 rounded-token bg-accent px-3 py-2 text-xs font-semibold text-accent-contrast shadow-glow transition-colors hover:bg-accent-hover">
+              <Plus className="h-4 w-4" strokeWidth={2.5} /> New
+            </Link>
+          </div>
+        </header>
+
+        <main className="co-ambient co-ambient-grid flex-1 px-5 py-6">{children}</main>
+      </div>
+    </div>
+  );
+}
