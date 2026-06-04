@@ -1,0 +1,160 @@
+# =============================================================================
+# Customer-Ops — DOGFOOD production deploy (host: bigboy / SSH alias magicunicorn)
+# =============================================================================
+# Public host : customer-ops.magicunicorn.dev   (wildcard *.magicunicorn.dev
+#               already resolves to bigboy — NO new DNS record needed)
+# Reverse proxy: Traefik v3.6 (project "traefik-bigboy"), external network "web",
+#               entrypoint "websecure" (443), certresolver "letsencrypt".
+#               Matched 1:1 from the live siblings project-ops + contact-ops.
+#
+# ROUTING (matches the app's own config — NEXT_PUBLIC_API_URL=.../api/v1 and the
+# Keycloak callback /api/v1/auth/keycloak/callback are SAME-HOST path routes):
+#   customer-ops.magicunicorn.dev/api/**  -> customer-ops-backend  :3211  (priority 100)
+#   customer-ops.magicunicorn.dev/**      -> customer-ops-frontend :3000  (catch-all)
+# The /api router carries a higher explicit priority so it wins over the SPA
+# catch-all. The prefix is NOT stripped — the NestJS global prefix is `api/v1`,
+# so Traefik forwards the full path through.
+#
+# (project-ops instead splits the API onto api.projectops.magicunicorn.dev. We
+#  deliberately did NOT copy that here: Customer-Ops' frontend bakes
+#  NEXT_PUBLIC_API_URL=https://customer-ops.magicunicorn.dev/api/v1 and its
+#  Keycloak callback is a /api/v1 path, so same-host path routing is the match
+#  that needs ZERO app-config or second-cert changes. To switch to a subdomain
+#  later, see DEPLOY.md "Alternative: API subdomain".)
+#
+# Bring up:  docker compose -f deploy/docker-compose.dogfood.yml up -d --build
+# (run from the repo ROOT so the ../backend / ../frontend build contexts resolve)
+# =============================================================================
+
+# Pin the project name so container/network/volume names are stable regardless
+# of the directory the command is run from (sibling-style determinism).
+name: customer-ops
+
+services:
+  # ---------------------------------------------------------------------------
+  # Postgres 17 — private (NOT on web). First boot runs infrastructure/database/
+  # init/*.sql as superuser, which pre-creates the customer_ops_* role split and
+  # the shared extensions. Prisma `migrate deploy` (run by the backend on start)
+  # owns the actual schema + RLS + grants.
+  # ---------------------------------------------------------------------------
+  customer-ops-postgres:
+    image: postgres:17
+    container_name: customer-ops-postgres
+    restart: unless-stopped
+    environment:
+      # The object-owner / admin role the runtime + migrations connect as in
+      # Phase 1 (DATABASE_URL/ADMIN_DATABASE_URL use customer_ops_admin).
+      POSTGRES_USER: customer_ops_admin
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: customerops
+    volumes:
+      - customer-ops-pgdata:/var/lib/postgresql/data
+      # First-boot init (role split + extensions). Idempotent; ignored if the
+      # data volume already exists.
+      - ../infrastructure/database/init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U customer_ops_admin -d customerops"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
+  # Backend — NestJS (port 3211). On start: `prisma migrate deploy` then
+  # `node dist/main`. Routed by Traefik on the SAME host under /api.
+  # ---------------------------------------------------------------------------
+  customer-ops-backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: customer-ops-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    # The image CMD already does `npx prisma migrate deploy && node dist/main`;
+    # we pin it here too so the deploy intent is explicit and reviewable.
+    command: ["sh", "-c", "npx prisma migrate deploy && node dist/main"]
+    expose:
+      - "3211"
+    depends_on:
+      customer-ops-postgres:
+        condition: service_healthy
+    networks:
+      - internal
+      - web
+    healthcheck:
+      # Node 20-alpine has neither curl nor wget by default; use a tiny node probe.
+      test:
+        - "CMD"
+        - "node"
+        - "-e"
+        - "require('http').get('http://127.0.0.1:3211/api/v1/health/live',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=web"
+      # API on the same host, higher priority than the SPA catch-all. Prefix is
+      # forwarded intact (NestJS global prefix = api/v1).
+      - "traefik.http.routers.customer-ops-backend.rule=Host(`customer-ops.magicunicorn.dev`) && PathPrefix(`/api`)"
+      - "traefik.http.routers.customer-ops-backend.priority=100"
+      - "traefik.http.routers.customer-ops-backend.entrypoints=websecure"
+      - "traefik.http.routers.customer-ops-backend.tls=true"
+      - "traefik.http.routers.customer-ops-backend.tls.certresolver=letsencrypt"
+      - "traefik.http.services.customer-ops-backend.loadbalancer.server.port=3211"
+
+  # ---------------------------------------------------------------------------
+  # Frontend — Next.js standalone (port 3000). SPA catch-all on the host root.
+  # NEXT_PUBLIC_API_URL is inlined at BUILD time (Next bakes NEXT_PUBLIC_*), so
+  # it is passed as a build arg, sourced from the env file.
+  # ---------------------------------------------------------------------------
+  customer-ops-frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-https://customer-ops.magicunicorn.dev/api/v1}
+    container_name: customer-ops-frontend
+    restart: unless-stopped
+    expose:
+      - "3000"
+    depends_on:
+      - customer-ops-backend
+    networks:
+      - web
+    healthcheck:
+      test:
+        - "CMD"
+        - "node"
+        - "-e"
+        - "require('http').get('http://127.0.0.1:3000/',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))"
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=web"
+      - "traefik.http.routers.customer-ops-frontend.rule=Host(`customer-ops.magicunicorn.dev`)"
+      - "traefik.http.routers.customer-ops-frontend.entrypoints=websecure"
+      - "traefik.http.routers.customer-ops-frontend.tls=true"
+      - "traefik.http.routers.customer-ops-frontend.tls.certresolver=letsencrypt"
+      - "traefik.http.services.customer-ops-frontend.loadbalancer.server.port=3000"
+
+volumes:
+  customer-ops-pgdata:
+    name: customer-ops-pgdata
+
+networks:
+  # The EXISTING external Traefik ingress network (verified via docker inspect
+  # traefik -> attached to "web"; all siblings join it). Must already exist.
+  web:
+    external: true
+  # App-private network for backend <-> postgres. Created by this compose.
+  internal:
+    name: customer-ops-internal
+    driver: bridge

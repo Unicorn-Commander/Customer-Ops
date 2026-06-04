@@ -50,7 +50,10 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { IconTile } from './ui/IconTile';
+import { StageBadge } from './ui/StageBadge';
 import { cn } from './ui/cn';
+import { useEntitySearch } from '@/lib/useEntitySearch';
+import { contactLabel, type CustomerRow, type Stage } from '@/lib/customers';
 
 /* ---------------------------------------------------------------------------
    Model
@@ -74,10 +77,18 @@ export interface CommandItem {
   icon:
     | { kind: 'tile'; icon: LucideIcon; gradient: string }
     | { kind: 'lucide'; icon: LucideIcon };
+  /**
+   * Live-entity metadata. Present only on `Results` rows; drives the entity-style
+   * presentation (org sub-label + a StageBadge instead of a plain hint).
+   */
+  entity?: { stage: Stage; subLabel: string | null };
 }
 
 /** Stable order for section rendering. */
 const GROUP_ORDER: CommandGroup[] = ['Navigation', 'Actions', 'Results'];
+
+/** Cap rendered live-entity matches so the palette stays a focused quick-jump. */
+const MAX_RESULTS = 6;
 
 /* ---------------------------------------------------------------------------
    Fuzzy matching — tiny subsequence scorer (no deps)
@@ -218,7 +229,28 @@ function Highlight({ text, indices }: { text: string; indices: number[] }) {
    gradients so the palette reads as the same cockpit. Extend here.
    ------------------------------------------------------------------------- */
 
-function useCommands(close: () => void): CommandItem[] {
+/** Build the live-entity `Results` items from cached rows. Memoize on `rows`:
+ *  building is query-independent (the renderer's fuzzy pass ranks + caps them),
+ *  so we pay this once per load, not per keystroke. */
+function entityCommands(rows: CustomerRow[], go: (href: string) => () => void): CommandItem[] {
+  return rows.map((r) => {
+    const name = contactLabel(r);
+    const org = r.contact?.currentOrgName ?? null;
+    const email = r.contact?.primaryEmail ?? null;
+    return {
+      id: `rel-${r.id}`,
+      label: name,
+      group: 'Results' as const,
+      // Email + org feed the fuzzy matcher (searchable) without rendering as the label.
+      keywords: [email, org].filter(Boolean).join(' ') || undefined,
+      run: go(`/dashboard/customers/${r.id}`),
+      icon: { kind: 'lucide' as const, icon: Users },
+      entity: { stage: r.stage, subLabel: org ?? email },
+    };
+  });
+}
+
+function useCommands(close: () => void, entityRows: CustomerRow[], includeEntities: boolean): CommandItem[] {
   const router = useRouter();
 
   return useMemo<CommandItem[]>(() => {
@@ -328,13 +360,17 @@ function useCommands(close: () => void): CommandItem[] {
       },
     ];
 
-    // FUTURE: merge an async entity-search source here, e.g.
-    //   ...entityResults.map(r => ({ id:`rel-${r.id}`, group:'Results', label:r.name,
-    //     run: go(`/dashboard/customers/${r.id}`), icon:{kind:'lucide',icon:Users} }))
-    // The renderer groups + ranks + navigates any CommandItem uniformly.
+    // LIVE ENTITY SEARCH. Merge the workspace's relationships as `Results` items
+    // (gated on a non-empty, debounced query so they only join the ranking once
+    // typing settles — commands stay instant). The renderer groups + ranks +
+    // navigates any CommandItem uniformly, so results interleave by score in the
+    // same keyboard order as everything else.
+    if (includeEntities && entityRows.length > 0) {
+      items.push(...entityCommands(entityRows, go));
+    }
 
     return items;
-  }, [router, close]);
+  }, [router, close, entityRows, includeEntities]);
 }
 
 /* ---------------------------------------------------------------------------
@@ -377,12 +413,21 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
   const exitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [query, setQuery] = useState('');
+  // A ~150ms-debounced mirror of `query`. Commands filter on the live `query`
+  // (instant); live-entity Results only join the candidate pool once this
+  // settles, so a burst of keystrokes doesn't rank hundreds of rows each frame.
+  const [debouncedQuery, setDebouncedQuery] = useState('');
   const [activeId, setActiveId] = useState<string | null>(null);
 
   const listboxId = useId();
 
   const close = useCallback(() => onClose(), [onClose]);
-  const commands = useCommands(close);
+
+  // Lazily load + cache the workspace's relationships the first time we open;
+  // degrades silently to commands-only on no-workspace / fetch error.
+  const { rows: entityRows, loaded: entitiesLoaded } = useEntitySearch(open);
+  const includeEntities = debouncedQuery.trim().length > 0;
+  const commands = useCommands(close, entityRows, includeEntities);
 
   // ---- Filter + rank ------------------------------------------------------
   const results = useMemo(() => {
@@ -402,7 +447,12 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
       if (b.score !== a.score) return b.score - a.score;
       return a.item.label.localeCompare(b.item.label);
     });
-    return scored;
+
+    // Cap live-entity Results to the top matches (commands are never capped).
+    // Capping here — not in the renderer — keeps `flatIds` (keyboard order) and
+    // the rendered groups in lock-step.
+    let shown = 0;
+    return scored.filter((r) => (r.item.group === 'Results' ? ++shown <= MAX_RESULTS : true));
   }, [commands, query]);
 
   // Flat list of ids in render order — the spine of keyboard navigation.
@@ -419,6 +469,13 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
     return GROUP_ORDER.filter((g) => map.has(g)).map((g) => ({ group: g, rows: map.get(g)! }));
   }, [results]);
 
+  // ---- Debounce the query that gates live-entity Results (~150ms) ----------
+  useEffect(() => {
+    if (query === debouncedQuery) return undefined;
+    const id = setTimeout(() => setDebouncedQuery(query), 150);
+    return () => clearTimeout(id);
+  }, [query, debouncedQuery]);
+
   // ---- Open / close lifecycle --------------------------------------------
   useLayoutEffect(() => {
     if (open) {
@@ -429,6 +486,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
 
       setMounted(true);
       setQuery('');
+      setDebouncedQuery('');
       setShown(false);
       // Next frame → animate in (so the browser registers the from-state first).
       const raf = requestAnimationFrame(() => setShown(true));
@@ -620,16 +678,33 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
           className="max-h-[min(56vh,420px)] overflow-y-auto overscroll-contain p-2"
         >
           {grouped.length === 0 ? (
-            <div className="px-3 py-10 text-center">
-              <div className="text-sm font-medium text-secondary">No matches</div>
-              <div className="mt-1 text-xs text-tertiary">
-                Try a different term — or hit{' '}
-                <span className="font-mono text-muted">esc</span> to dismiss.
+            includeEntities && !entitiesLoaded ? (
+              // A query matched nothing yet, but the live-entity search is still
+              // resolving — say so rather than falsely claiming "No matches".
+              <div className="px-3 py-10 text-center">
+                <div className="text-sm font-medium text-secondary">Searching your relationships…</div>
+                <div className="mt-1 text-xs text-tertiary">One moment.</div>
               </div>
-            </div>
+            ) : (
+              <div className="px-3 py-10 text-center">
+                <div className="text-sm font-medium text-secondary">No matches</div>
+                <div className="mt-1 text-xs text-tertiary">
+                  Try a different term — or hit{' '}
+                  <span className="font-mono text-muted">esc</span> to dismiss.
+                </div>
+              </div>
+            )
           ) : (
             grouped.map(({ group, rows }) => (
-              <div key={group} className="mb-1 last:mb-0">
+              <div
+                key={group}
+                // Live-entity Results resolve in asynchronously (after the debounce),
+                // so fade the group in once when it appears — commands are static and
+                // need no entrance. The stable `group` key means it plays on enter
+                // only, not on every keystroke. Portaled outside `.co-app`, so the
+                // global reduced-motion guard doesn't reach us — gate it ourselves.
+                className={cn('mb-1 last:mb-0', group === 'Results' && !reduced && 'animate-fade-up')}
+              >
                 <div className="px-2.5 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wider text-tertiary">
                   {group}
                 </div>
@@ -647,8 +722,10 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
                       onClick={() => item.run()}
                       className={cn(
                         'group flex cursor-pointer items-center gap-3 rounded-token px-2.5 py-2',
-                        'transition-colors duration-fast ease-token',
+                        'transition-[background-color,transform] duration-fast ease-token',
                         active ? 'bg-surface-overlay' : 'hover:bg-surface-raised/60',
+                        // Subtle tactile press, matching the system's button press language.
+                        !reduced && 'active:scale-[0.985]',
                       )}
                     >
                       {item.icon.kind === 'tile' ? (
@@ -666,19 +743,42 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
                         </span>
                       )}
 
-                      <span
-                        className={cn(
-                          'min-w-0 flex-1 truncate text-sm',
-                          active ? 'text-primary' : 'text-primary/85',
-                        )}
-                      >
-                        <Highlight text={item.label} indices={indices} />
-                      </span>
-
-                      {item.hint && (
-                        <span className="hidden shrink-0 truncate font-mono text-[11px] text-muted sm:block">
-                          {item.hint}
+                      {item.entity ? (
+                        // Live-entity row: contact name + org/email sub-label.
+                        <span className="flex min-w-0 flex-1 flex-col">
+                          <span
+                            className={cn(
+                              'truncate text-sm',
+                              active ? 'text-primary' : 'text-primary/85',
+                            )}
+                          >
+                            <Highlight text={item.label} indices={indices} />
+                          </span>
+                          {item.entity.subLabel && (
+                            <span className="truncate text-xs text-tertiary">
+                              {item.entity.subLabel}
+                            </span>
+                          )}
                         </span>
+                      ) : (
+                        <span
+                          className={cn(
+                            'min-w-0 flex-1 truncate text-sm',
+                            active ? 'text-primary' : 'text-primary/85',
+                          )}
+                        >
+                          <Highlight text={item.label} indices={indices} />
+                        </span>
+                      )}
+
+                      {item.entity ? (
+                        <StageBadge stage={item.entity.stage} className="hidden shrink-0 sm:inline-flex" />
+                      ) : (
+                        item.hint && (
+                          <span className="hidden shrink-0 truncate font-mono text-[11px] text-muted sm:block">
+                            {item.hint}
+                          </span>
+                        )
                       )}
 
                       {/* Enter affordance on the active row. */}
