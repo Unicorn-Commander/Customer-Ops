@@ -1,0 +1,616 @@
+:root {
+  --bg: #0b0f1a;
+  --bg-elev: #131a2a;
+  --border: #243049;
+  --fg: #e8edf7;
+  --fg-muted: #9aa7c2;
+  --primary: #6366f1;
+  --primary-fg: #ffffff;
+  --danger: #f87171;
+  --radius: 12px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family:
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial,
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.co-center {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.co-card {
+  width: 100%;
+  max-width: 420px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 32px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
+}
+
+.co-title {
+  margin: 0 0 4px;
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.co-subtitle {
+  margin: 0 0 24px;
+  color: var(--fg-muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.co-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 12px 16px;
+  border: none;
+  border-radius: 10px;
+  background: var(--primary);
+  color: var(--primary-fg);
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter 0.15s ease;
+}
+
+.co-btn:hover {
+  filter: brightness(1.08);
+}
+
+.co-btn--ghost {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--fg);
+}
+
+.co-muted {
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+
+.co-error {
+  color: var(--danger);
+  font-weight: 500;
+}
+
+.co-spinner {
+  width: 36px;
+  height: 36px;
+  border: 3px solid var(--border);
+  border-bottom-color: var(--primary);
+  border-radius: 50%;
+  margin: 0 auto;
+  animation: co-spin 0.8s linear infinite;
+}
+
+@keyframes co-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Dashboard shell */
+.co-shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: auto 1fr;
+}
+
+.co-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 24px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev);
+}
+
+.co-brand {
+  font-weight: 700;
+  font-size: 16px;
+  letter-spacing: 0.2px;
+}
+
+.co-brand span {
+  color: var(--primary);
+}
+
+.co-content {
+  padding: 32px 24px;
+  max-width: 960px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.co-panel {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 24px;
+  margin-bottom: 16px;
+}
+
+.co-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.co-tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(99, 102, 241, 0.15);
+  color: #a5b4fc;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* ============================================================
+   Phase 2 cockpit — nav, tables, kanban board, 360, badges
+   ============================================================ */
+
+/* Primary nav in the topbar */
+.co-nav {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.co-nav a {
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--fg-muted);
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.co-nav a:hover {
+  background: rgba(99, 102, 241, 0.1);
+  color: var(--fg);
+}
+
+.co-nav a.is-active {
+  background: rgba(99, 102, 241, 0.18);
+  color: #c7d2fe;
+}
+
+/* Wider content for the cockpit views */
+.co-content--wide {
+  max-width: 1240px;
+}
+
+/* Page header row */
+.co-pagehead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.co-pagehead h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.co-pagehead p {
+  margin: 4px 0 0;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+
+/* Buttons sized for inline use */
+.co-btn--sm {
+  width: auto;
+  padding: 7px 12px;
+  font-size: 13px;
+  border-radius: 8px;
+}
+
+/* Stat strip */
+.co-stats {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+
+.co-stat {
+  flex: 1;
+  min-width: 140px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+}
+
+.co-stat .v {
+  font-size: 24px;
+  font-weight: 700;
+}
+
+.co-stat .k {
+  color: var(--fg-muted);
+  font-size: 12px;
+  margin-top: 2px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+/* Table */
+.co-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.co-table th {
+  text-align: left;
+  padding: 10px 12px;
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.co-table td {
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.co-table tr:last-child td {
+  border-bottom: none;
+}
+
+.co-table tr.co-clickable {
+  cursor: pointer;
+  transition: background 0.1s ease;
+}
+
+.co-table tr.co-clickable:hover {
+  background: rgba(99, 102, 241, 0.06);
+}
+
+/* Stage + priority badges */
+.co-badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  border: 1px solid transparent;
+}
+
+.co-badge--lead {
+  background: rgba(148, 163, 184, 0.16);
+  color: #cbd5e1;
+}
+
+.co-badge--prospect {
+  background: rgba(96, 165, 250, 0.16);
+  color: #93c5fd;
+}
+
+.co-badge--customer {
+  background: rgba(52, 211, 153, 0.16);
+  color: #6ee7b7;
+}
+
+.co-badge--lost {
+  background: rgba(248, 113, 113, 0.16);
+  color: #fca5a5;
+}
+
+.co-prio {
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.co-prio--HIGH {
+  color: #fca5a5;
+}
+
+.co-prio--MEDIUM {
+  color: #fcd34d;
+}
+
+.co-prio--LOW {
+  color: var(--fg-muted);
+}
+
+/* Kanban board */
+.co-board {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.co-lane {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  min-height: 200px;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.co-lane.is-dragover {
+  border-color: var(--primary);
+  background: rgba(99, 102, 241, 0.07);
+}
+
+.co-lane__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  padding: 0 4px;
+}
+
+.co-lane__title {
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.co-lane__meta {
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.co-cardlist {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.co-card-mini {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  cursor: grab;
+  transition: border-color 0.1s ease, transform 0.05s ease;
+}
+
+.co-card-mini:hover {
+  border-color: var(--primary);
+}
+
+.co-card-mini:active {
+  cursor: grabbing;
+  transform: scale(0.99);
+}
+
+.co-card-mini__name {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.co-card-mini__sub {
+  color: var(--fg-muted);
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.co-card-mini__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 10px;
+}
+
+.co-empty {
+  color: var(--fg-muted);
+  font-size: 13px;
+  text-align: center;
+  padding: 24px 8px;
+}
+
+/* 360 layout */
+.co-360 {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+.co-deflist {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px 16px;
+  font-size: 14px;
+}
+
+.co-deflist dt {
+  color: var(--fg-muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  align-self: center;
+}
+
+.co-deflist dd {
+  margin: 0;
+}
+
+/* Timeline */
+.co-timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.co-timeline li {
+  position: relative;
+  padding: 0 0 16px 20px;
+  border-left: 2px solid var(--border);
+}
+
+.co-timeline li:last-child {
+  border-left-color: transparent;
+  padding-bottom: 0;
+}
+
+.co-timeline li::before {
+  content: '';
+  position: absolute;
+  left: -6px;
+  top: 2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--primary);
+}
+
+.co-timeline__kind {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  color: #a5b4fc;
+}
+
+.co-timeline__body {
+  font-size: 14px;
+  margin-top: 2px;
+}
+
+.co-timeline__time {
+  font-size: 11px;
+  color: var(--fg-muted);
+  margin-top: 2px;
+}
+
+/* Federation slot badge (Phase-3 placeholders) */
+.co-slot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  margin-bottom: 8px;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+
+.co-slot .co-tag {
+  background: rgba(148, 163, 184, 0.14);
+  color: #94a3b8;
+}
+
+/* Inline form controls */
+.co-input,
+.co-select {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 14px;
+}
+
+.co-input:focus,
+.co-select:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
+.co-field {
+  margin-bottom: 12px;
+}
+
+.co-field label {
+  display: block;
+  font-size: 12px;
+  color: var(--fg-muted);
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.co-link {
+  color: #a5b4fc;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.co-link:hover {
+  text-decoration: underline;
+}
+
+@media (max-width: 900px) {
+  .co-board {
+    grid-template-columns: 1fr;
+  }
+  .co-360 {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ============================================================
+   Phase 3 — the Accounting-Ops invoice panel (customer-360)
+   ============================================================ */
+.co-invoices {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.co-invoices > li {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 13px;
+}
+/* Status-tinted tag variants (federated AO invoice.status). */
+.co-tag--ok {
+  background: rgba(34, 197, 94, 0.15);
+  color: #86efac;
+}
+.co-tag--warn {
+  background: rgba(234, 179, 8, 0.16);
+  color: #fde047;
+}
+.co-tag--muted {
+  background: rgba(148, 163, 184, 0.14);
+  color: #94a3b8;
+}
