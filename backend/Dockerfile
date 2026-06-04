@@ -2,6 +2,8 @@
 # ---- Build stage ----
 FROM node:20-alpine AS build
 WORKDIR /app
+# Prisma's engines need OpenSSL present to detect libssl + pick the right engine.
+RUN apk add --no-cache openssl libc6-compat
 
 COPY package*.json ./
 RUN npm ci
@@ -19,6 +21,8 @@ RUN npm prune --omit=dev
 FROM node:20-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
+# The Prisma migration/query engine needs libssl at runtime too.
+RUN apk add --no-cache openssl libc6-compat
 
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
