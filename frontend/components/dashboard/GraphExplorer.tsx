@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { Waypoints, ChevronRight, ArrowLeft, X, MousePointerClick, Network } from 'lucide-react';
 import { KnowledgeGraph3D } from './KnowledgeGraph3D';
 import { ROOT_GRAPH, buildSubGraph, nodeDetail } from '@/lib/graph-explore';
@@ -10,15 +10,31 @@ import type { GraphData, GraphNode } from './KnowledgeGraph';
 
 interface Level { label: string; data: GraphData }
 
+export interface GraphExplorerProps {
+  /** The top-level book graph. Defaults to the sample (so /graph-preview keeps
+   *  working); the live route passes a graph derived from the workspace's rows. */
+  root?: GraphData;
+}
+
 /** The interactive 3D relationship explorer: click to inspect, double-click to
  *  drill into an entity's own sub-graph, breadcrumb to climb back out. */
-export function GraphExplorer() {
-  const [stack, setStack] = useState<Level[]>([{ label: 'Your book', data: ROOT_GRAPH }]);
+export function GraphExplorer({ root = ROOT_GRAPH }: GraphExplorerProps) {
+  // The breadcrumb label for level 0 is the hub node's label (live graphs may
+  // carry a workspace-specific name); fall back to "Your book".
+  const rootLabel = root.nodes.find((n) => n.type === 'hub')?.label ?? 'Your book';
+  const [stack, setStack] = useState<Level[]>([{ label: rootLabel, data: root }]);
   const [selected, setSelected] = useState<GraphNode | null>(null);
   const current = stack[stack.length - 1];
 
+  // If the live root changes identity (data finished loading / workspace switch),
+  // reset the explorer to the new book so we never drill against a stale graph.
+  useEffect(() => {
+    setStack([{ label: root.nodes.find((n) => n.type === 'hub')?.label ?? 'Your book', data: root }]);
+    setSelected(null);
+  }, [root]);
+
   const drill = (node: GraphNode) => {
-    const sub = buildSubGraph(node);
+    const sub = buildSubGraph(node, root);
     if (!sub) return;
     setStack((s) => [...s, { label: node.label, data: sub }]);
     setSelected(null);

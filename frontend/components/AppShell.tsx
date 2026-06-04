@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import {
@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { getToken, getStoredUser, clearSession, type CustomerOpsUser } from '@/lib/api';
 import { ThemeToggle } from './ThemeToggle';
+import { CommandPalette } from './CommandPalette';
 import { IconTile } from './ui/IconTile';
 import { cn } from './ui/cn';
 
@@ -44,10 +45,29 @@ export function AppShell({ children, demo = false }: { children: React.ReactNode
   const [ready, setReady] = useState(demo);
   const [user, setUser] = useState<CustomerOpsUser | null>(demo ? DEMO_USER : null);
   const [collapsed, setCollapsed] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
 
   useEffect(() => {
     try { setCollapsed(localStorage.getItem('co-sidebar') === 'collapsed'); } catch { /* ignore */ }
   }, []);
+
+  // Global ⌘K / Ctrl+K (and "/" when not typing) toggles the command palette.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const cmdK = (e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K');
+      const el = e.target as HTMLElement | null;
+      const typing = !!el && (el.isContentEditable
+        || el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT');
+      const slash = e.key === '/' && !typing && !e.metaKey && !e.ctrlKey && !e.altKey;
+      if (cmdK || slash) {
+        e.preventDefault();
+        setPaletteOpen((o) => !o);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+  const closePalette = useCallback(() => setPaletteOpen(false), []);
   useEffect(() => {
     if (demo) return;
     if (!getToken()) { router.replace('/auth/login'); return; }
@@ -178,7 +198,13 @@ export function AppShell({ children, demo = false }: { children: React.ReactNode
             <p className="truncate text-xs text-tertiary">{sub}</p>
           </div>
           <div className="flex items-center gap-2">
-            <button className="hidden items-center gap-2 rounded-token border border-subtle bg-surface-raised px-3 py-2 text-xs text-tertiary transition-colors hover:text-primary sm:flex">
+            <button
+              type="button"
+              onClick={() => setPaletteOpen(true)}
+              aria-haspopup="dialog"
+              aria-keyshortcuts="Meta+K Control+K"
+              className="hidden items-center gap-2 rounded-token border border-subtle bg-surface-raised px-3 py-2 text-xs text-tertiary transition-colors hover:text-primary sm:flex"
+            >
               <Search className="h-4 w-4" strokeWidth={2.25} /><span>Search</span>
               <kbd className="ml-1 rounded border border-subtle bg-surface-overlay px-1.5 py-0.5 font-mono text-[10px] text-muted">⌘K</kbd>
             </button>
@@ -191,6 +217,10 @@ export function AppShell({ children, demo = false }: { children: React.ReactNode
 
         <main className="co-ambient co-ambient-grid flex-1 px-5 py-6">{children}</main>
       </div>
+
+      {/* ⌘K command palette — portaled to <body>, opened from the topbar search
+          button or the global keyboard shortcut. */}
+      <CommandPalette open={paletteOpen} onClose={closePalette} />
     </div>
   );
 }
