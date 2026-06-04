@@ -1,52 +1,54 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
-import Link from 'next/link';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Users, Plus, X, AlertCircle } from 'lucide-react';
+import { Button } from '@/components/ui/Button';
+import { IconTile } from '@/components/ui/IconTile';
+import { cn } from '@/components/ui/cn';
+import { RelationshipsTable } from '@/components/dashboard/RelationshipsTable';
 import { useWorkspace } from '@/lib/useWorkspace';
-import {
-  contactLabel,
-  CustomerRow,
-  createCustomer,
-  listCustomers,
-  money,
-  Stage,
-  STAGES,
-  STAGE_LABEL,
-} from '@/lib/customers';
-import { PriorityTag, StageBadge } from '@/components/Badges';
+import { createCustomer, listCustomers, type CustomerRow } from '@/lib/customers';
 
 /**
- * Relationships list — every customer relationship in the workspace, filterable
- * by funnel stage, with a quick-create. Contact names are FEDERATED from
- * Contact-Ops by the backend (shown as a placeholder when CO is dormant).
+ * Relationships — the funnel cockpit's master list. THIN live wrapper: it
+ * resolves the workspace, loads every relationship once, and renders the
+ * presentational <RelationshipsTable>, which owns stage-filter / search / sort
+ * over that set (so the chip counts stay live without re-fetching per filter).
+ *
+ * Contact names are FEDERATED from Contact-Ops by the backend; a relationship
+ * row may carry a null contact (CO dormant) — the table renders a placeholder,
+ * never a copy. Creating one binds an existing Contact-Ops contact id as a Lead.
  */
 export default function CustomersPage() {
   const { workspaceId, loading: wsLoading, error: wsError } = useWorkspace();
   const [rows, setRows] = useState<CustomerRow[] | null>(null);
-  const [stage, setStage] = useState<Stage | 'ALL'>('ALL');
   const [includeLost, setIncludeLost] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
   const [creating, setCreating] = useState(false);
   const [newContactId, setNewContactId] = useState('');
   const [busy, setBusy] = useState(false);
+  const createInputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
     if (!workspaceId) return;
     setError(null);
     try {
-      const items = await listCustomers(workspaceId, {
-        stage: stage === 'ALL' ? undefined : stage,
-        includeLost,
-      });
-      setRows(items);
+      setRows(await listCustomers(workspaceId, { includeLost }));
     } catch (e) {
       setError((e as Error).message);
     }
-  }, [workspaceId, stage, includeLost]);
+  }, [workspaceId, includeLost]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  const openCreate = () => {
+    setCreating(true);
+    // Focus the field on the next paint so it's ready to type into.
+    requestAnimationFrame(() => createInputRef.current?.focus());
+  };
 
   const submitCreate = async () => {
     if (!workspaceId || !newContactId.trim()) return;
@@ -64,113 +66,105 @@ export default function CustomersPage() {
     }
   };
 
+  const loading = wsLoading || (rows === null && !error && !wsError);
+  const fatalError = wsError || error;
+
   return (
-    <>
-      <div className="co-pagehead">
-        <div>
-          <h1>Relationships</h1>
-          <p>
-            The customer lifecycle — lead → prospect → customer. Contacts are
-            federated from Contact-Ops; the relationship + stage live here.
-          </p>
-        </div>
-        <button className="co-btn co-btn--sm" onClick={() => setCreating((v) => !v)}>
-          {creating ? 'Cancel' : '+ New relationship'}
-        </button>
-      </div>
-
-      {creating && (
-        <div className="co-panel">
-          <div className="co-field">
-            <label>Contact-Ops contact id</label>
-            <input
-              className="co-input"
-              placeholder="person_id from Contact-Ops (federated; not copied)"
-              value={newContactId}
-              onChange={(e) => setNewContactId(e.target.value)}
-            />
+    <div className="mx-auto max-w-[1200px] animate-fade-up space-y-5">
+      {/* ── Header ── */}
+      <header className="flex flex-wrap items-start justify-between gap-4">
+        <div className="flex items-start gap-3">
+          <IconTile icon={Users} gradient="from-violet-500 to-fuchsia-500" size="lg" glow />
+          <div>
+            <h1 className="text-xl font-semibold tracking-tight text-primary">Relationships</h1>
+            <p className="mt-0.5 max-w-xl text-sm text-tertiary">
+              The whole customer lifecycle — lead → prospect → customer. Contacts federate from
+              Contact-Ops; the relationship and stage live here.
+            </p>
           </div>
-          <button className="co-btn co-btn--sm" disabled={busy || !newContactId.trim()} onClick={submitCreate}>
-            {busy ? 'Creating…' : 'Create as Lead'}
-          </button>
         </div>
-      )}
 
-      <div className="co-panel">
-        <div className="co-row" style={{ justifyContent: 'space-between', marginBottom: 12 }}>
-          <div className="co-row" style={{ gap: 8 }}>
-            <button
-              className={`co-btn co-btn--sm ${stage === 'ALL' ? '' : 'co-btn--ghost'}`}
-              onClick={() => setStage('ALL')}
-            >
-              All
-            </button>
-            {STAGES.map((s) => (
-              <button
-                key={s}
-                className={`co-btn co-btn--sm ${stage === s ? '' : 'co-btn--ghost'}`}
-                onClick={() => setStage(s)}
-              >
-                {STAGE_LABEL[s]}
-              </button>
-            ))}
-          </div>
-          <label className="co-row co-muted" style={{ gap: 6, cursor: 'pointer' }}>
+        <div className="flex shrink-0 items-center gap-2">
+          <label
+            className="inline-flex cursor-pointer select-none items-center gap-2 rounded-token border border-subtle bg-surface-raised px-3 py-2 text-xs font-medium text-tertiary transition-colors hover:text-secondary"
+            title="Include relationships marked as lost"
+          >
             <input
               type="checkbox"
               checked={includeLost}
               onChange={(e) => setIncludeLost(e.target.checked)}
+              className="h-3.5 w-3.5 accent-[rgb(var(--co-accent))]"
             />
             Show lost
           </label>
+          <Button
+            glow={!creating}
+            variant={creating ? 'secondary' : 'primary'}
+            leading={creating ? <X className="h-4 w-4" strokeWidth={2.5} /> : <Plus className="h-4 w-4" strokeWidth={2.5} />}
+            onClick={() => (creating ? setCreating(false) : openCreate())}
+          >
+            {creating ? 'Cancel' : 'New relationship'}
+          </Button>
         </div>
+      </header>
 
-        {(wsError || error) && <p className="co-error">{wsError || error}</p>}
-        {!wsError && !error && (wsLoading || rows === null) && <p className="co-muted">Loading…</p>}
-        {!wsError && !error && rows !== null && rows.length === 0 && (
-          <p className="co-empty">No relationships in this stage yet.</p>
-        )}
+      {/* ── Inline create ── */}
+      {creating && (
+        <div className="rounded-token-lg border border-subtle bg-surface-raised p-4 shadow-token">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+            <div className="flex-1">
+              <label htmlFor="co-new-contact" className="mb-1.5 block text-xs font-semibold text-secondary">
+                Contact-Ops contact id
+              </label>
+              <input
+                id="co-new-contact"
+                ref={createInputRef}
+                value={newContactId}
+                onChange={(e) => setNewContactId(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void submitCreate();
+                  if (e.key === 'Escape') setCreating(false);
+                }}
+                placeholder="person_id from Contact-Ops (federated; not copied)"
+                className={cn(
+                  'h-10 w-full rounded-token border border-subtle bg-surface-overlay/60 px-3 text-sm text-primary',
+                  'placeholder:text-muted',
+                  'transition-colors duration-fast ease-token',
+                  'focus:border-accent/60 focus:outline-none focus:ring-2 focus:ring-accent/30',
+                )}
+              />
+            </div>
+            <Button onClick={submitCreate} disabled={busy || !newContactId.trim()}>
+              {busy ? 'Creating…' : 'Create as Lead'}
+            </Button>
+          </div>
+          <p className="mt-2 text-xs text-tertiary">
+            The new relationship enters the funnel as a <span className="font-medium text-stage-lead">Lead</span>.
+            The contact stays in Contact-Ops — only the relationship is created here.
+          </p>
+        </div>
+      )}
 
-        {rows && rows.length > 0 && (
-          <table className="co-table">
-            <thead>
-              <tr>
-                <th>Contact</th>
-                <th>Stage</th>
-                <th>Priority</th>
-                <th>Value</th>
-                <th>Source</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => (
-                <tr key={r.id}>
-                  <td>
-                    <div style={{ fontWeight: 600 }}>{contactLabel(r)}</div>
-                    <div className="co-muted" style={{ fontSize: 12 }}>
-                      {r.contact?.primaryEmail ?? r.contact?.currentOrgName ?? r.contactId}
-                    </div>
-                  </td>
-                  <td>
-                    <StageBadge stage={r.stage} lost={r.isLost} />
-                  </td>
-                  <td>
-                    <PriorityTag priority={r.priority} />
-                  </td>
-                  <td>{money(r.expectedValue, r.currency ?? 'USD')}</td>
-                  <td className="co-muted">{r.source ?? '—'}</td>
-                  <td style={{ textAlign: 'right' }}>
-                    <Link className="co-link" href={`/dashboard/customers/${r.id}`}>
-                      Open 360 →
-                    </Link>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
-    </>
+      {/* ── Error ── */}
+      {fatalError && (
+        <div className="flex items-start gap-3 rounded-token-lg border border-danger/30 bg-danger-subtle px-4 py-3 text-sm text-danger">
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" strokeWidth={2.25} aria-hidden />
+          <div className="min-w-0">
+            <p className="font-medium">Couldn’t load relationships</p>
+            <p className="mt-0.5 break-words text-danger/85">{fatalError}</p>
+          </div>
+          {!wsError && (
+            <Button variant="secondary" size="sm" className="ml-auto shrink-0" onClick={() => void load()}>
+              Retry
+            </Button>
+          )}
+        </div>
+      )}
+
+      {/* ── Table (renders its own skeleton via `loading`) ── */}
+      {!fatalError && (
+        <RelationshipsTable rows={rows ?? []} loading={loading} onNew={openCreate} />
+      )}
+    </div>
   );
 }

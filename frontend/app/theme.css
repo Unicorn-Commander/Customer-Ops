@@ -1,0 +1,200 @@
+/* =============================================================================
+   Customer-Ops — design system (theme.css)  ·  "next-era" pass
+   -----------------------------------------------------------------------------
+   Loaded ALONGSIDE the legacy globals.css. All tokens namespaced `--co-*` so
+   nothing collides with the legacy vars the not-yet-migrated leaf pages use.
+
+   Aesthetic: deep, clear, modern. A near-future cockpit — layered aurora field,
+   crisp glass with a top light-line, vivid stage + per-feature color, an electric
+   cyan tech-accent for the knowledge graph. No animated header; motion is subtle
+   and always reduced-motion safe.
+   ========================================================================== */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---- DARK (default) -------------------------------------------------------- */
+:root,
+:root[data-theme="dark"] {
+  --co-surface-base: 8 9 14;         /* #08090e deep near-black, blue undertone */
+  --co-surface-raised: 15 17 25;     /* #0f1119 cards */
+  --co-surface-overlay: 22 25 36;    /* #161924 wells, popovers */
+  --co-surface-elevated: 29 33 47;   /* #1d212f dialogs, hover */
+
+  --co-edge-subtle: 28 31 45;        /* hairline inside a surface */
+  --co-edge: 52 58 80;               /* #343a50 clearer default edge */
+
+  --co-text-primary: 241 243 250;    /* brighter for clarity */
+  --co-text-secondary: 189 196 214;
+  --co-text-tertiary: 140 148 170;
+  --co-text-muted: 98 106 129;
+
+  --co-accent: 132 104 255;          /* electric violet */
+  --co-accent-hover: 154 128 255;
+  --co-accent-contrast: 255 255 255;
+  --co-fuchsia: 236 124 255;
+  --co-cyan: 56 220 235;             /* electric cyan — graph / tech accent */
+
+  --co-success: 52 211 153;
+  --co-warning: 251 191 36;
+  --co-danger: 248 113 113;
+  --co-info: 96 165 250;
+
+  --co-pos: 45 212 167;
+  --co-neg: 251 111 111;
+
+  --co-stage-lead: 56 200 248;       /* sky/cyan */
+  --co-stage-prospect: 167 139 250;  /* violet */
+  --co-stage-customer: 52 211 153;   /* emerald */
+
+  --co-feat-relationships: 139 124 255;
+  --co-feat-pipeline: 251 191 36;
+  --co-feat-invoices: 52 211 153;
+  --co-feat-outreach: 236 124 255;
+  --co-feat-email: 96 165 250;
+  --co-feat-meetings: 45 212 191;
+  --co-feat-agents: 167 139 250;
+  --co-feat-graph: 56 220 235;
+
+  --co-radius: 10px;
+  --co-radius-lg: 16px;
+  --co-radius-xl: 22px;
+
+  --co-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.5);
+  --co-shadow-lg: 0 24px 60px -16px rgb(0 0 0 / 0.65);
+
+  --co-dur-fast: 120ms;
+  --co-dur: 220ms;
+  --co-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  color-scheme: dark;
+}
+
+/* ---- LIGHT (designed, not inverted) ---------------------------------------- */
+:root[data-theme="light"] {
+  --co-surface-base: 247 248 252;
+  --co-surface-raised: 255 255 255;
+  --co-surface-overlay: 242 244 249;
+  --co-surface-elevated: 255 255 255;
+
+  --co-edge-subtle: 229 232 240;
+  --co-edge: 205 210 222;
+
+  --co-text-primary: 21 24 33;
+  --co-text-secondary: 64 70 89;
+  --co-text-tertiary: 95 102 122;
+  --co-text-muted: 140 147 166;
+
+  --co-accent: 122 88 255;
+  --co-accent-hover: 104 66 240;
+  --co-accent-contrast: 255 255 255;
+  --co-fuchsia: 192 38 211;
+  --co-cyan: 8 145 178;
+
+  --co-success: 5 150 105;
+  --co-warning: 202 138 4;
+  --co-danger: 220 38 38;
+  --co-info: 37 99 235;
+
+  --co-pos: 4 120 87;
+  --co-neg: 200 30 30;
+
+  --co-stage-lead: 2 132 199;
+  --co-stage-prospect: 124 58 237;
+  --co-stage-customer: 5 150 105;
+
+  --co-feat-relationships: 109 64 240;
+  --co-feat-pipeline: 202 138 4;
+  --co-feat-invoices: 5 150 105;
+  --co-feat-outreach: 192 38 211;
+  --co-feat-email: 37 99 235;
+  --co-feat-meetings: 13 148 136;
+  --co-feat-agents: 124 58 237;
+  --co-feat-graph: 8 145 178;
+
+  --co-shadow: 0 1px 2px 0 rgb(16 16 24 / 0.06), 0 1px 3px 0 rgb(16 16 24 / 0.08);
+  --co-shadow-lg: 0 24px 50px -16px rgb(16 16 24 / 0.2), 0 8px 18px -8px rgb(16 16 24 / 0.1);
+
+  color-scheme: light;
+}
+
+/* ---- Base ------------------------------------------------------------------ */
+@layer base {
+  .co-app {
+    background-color: rgb(var(--co-surface-base));
+    color: rgb(var(--co-text-secondary));
+    font-family: theme("fontFamily.sans");
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  .co-app ::selection { background-color: rgb(var(--co-accent) / 0.3); color: rgb(var(--co-text-primary)); }
+  .co-app *::-webkit-scrollbar { width: 10px; height: 10px; }
+  .co-app *::-webkit-scrollbar-thumb {
+    background: rgb(var(--co-edge) / 0.8); border-radius: 999px;
+    border: 2px solid transparent; background-clip: padding-box;
+  }
+  .co-app *::-webkit-scrollbar-thumb:hover { background: rgb(var(--co-text-muted) / 0.7); background-clip: padding-box; }
+}
+
+/* ---- Cinematic layer (built on the --co-* triplets) ------------------------ */
+@layer components {
+  /* Ambient aurora field — layered violet/cyan/fuchsia blooms + fine grid + vignette. */
+  .co-ambient {
+    position: relative; isolation: isolate;
+    background-color: rgb(var(--co-surface-base));
+    background-image:
+      radial-gradient(55% 45% at 6% -12%, rgb(var(--co-accent) / 0.20), transparent 60%),
+      radial-gradient(50% 42% at 102% -8%, rgb(var(--co-cyan) / 0.13), transparent 58%),
+      radial-gradient(75% 65% at 70% 118%, rgb(var(--co-fuchsia) / 0.10), transparent 62%);
+  }
+  .co-ambient-grid::before {
+    content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+    background-image:
+      linear-gradient(rgb(var(--co-edge) / 0.45) 1px, transparent 1px),
+      linear-gradient(90deg, rgb(var(--co-edge) / 0.45) 1px, transparent 1px);
+    background-size: 40px 40px;
+    -webkit-mask-image: radial-gradient(115% 75% at 50% -8%, #000 0%, transparent 72%);
+    mask-image: radial-gradient(115% 75% at 50% -8%, #000 0%, transparent 72%);
+    opacity: 0.45;
+  }
+
+  /* Radial bloom behind a brand/graph element. */
+  .co-glow { position: absolute; border-radius: 9999px; pointer-events: none; z-index: 0;
+    background: radial-gradient(circle, rgb(var(--co-accent) / 0.55), transparent 68%); filter: blur(46px); }
+  .co-glow-fuchsia { background: radial-gradient(circle, rgb(var(--co-fuchsia) / 0.5), transparent 68%); }
+  .co-glow-cyan { background: radial-gradient(circle, rgb(var(--co-cyan) / 0.5), transparent 68%); }
+
+  /* Crisp glass — translucent fill + bright top light-line + blur. */
+  .co-glass {
+    position: relative;
+    background-color: rgb(var(--co-surface-raised) / 0.66);
+    border: 1px solid rgb(var(--co-edge) / 0.65);
+    border-radius: var(--co-radius-lg);
+    backdrop-filter: blur(18px) saturate(1.45);
+    -webkit-backdrop-filter: blur(18px) saturate(1.45);
+    box-shadow: var(--co-shadow-lg), inset 0 1px 0 0 rgb(255 255 255 / 0.06);
+  }
+  .co-glass-edge::before {
+    content: ""; position: absolute; inset: 0; border-radius: inherit; padding: 1px; pointer-events: none;
+    background: linear-gradient(180deg, rgb(255 255 255 / 0.16), transparent 38%);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor; mask-composite: exclude;
+  }
+
+  /* Gradient wordmark (static). */
+  .co-wordmark {
+    background: linear-gradient(100deg, rgb(var(--co-accent)), rgb(var(--co-fuchsia)) 55%, rgb(var(--co-cyan)));
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; color: transparent;
+  }
+
+  .co-rail { box-shadow: inset 3px 0 0 0 var(--co-rail, rgb(var(--co-accent))); }
+
+  .co-lift { transition: transform var(--co-dur) var(--co-ease), box-shadow var(--co-dur) var(--co-ease), border-color var(--co-dur) var(--co-ease); }
+  .co-lift:hover { transform: translateY(-2px); box-shadow: 0 22px 46px -16px rgb(var(--co-accent) / 0.35); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .co-app *, .co-lift { animation: none !important; transition: none !important; }
+  .co-lift:hover { transform: none !important; }
+}
