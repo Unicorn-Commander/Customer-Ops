@@ -63,6 +63,10 @@ interface JsonRpcResponse {
 export class ContactOpsClient extends ContactOpsPort {
   private readonly logger = new Logger(ContactOpsClient.name);
   private rpcId = 0;
+  /** Cached bearer tokens keyed by purpose (`cc` = the customer-ops
+   *  client-credentials subject; `co:<ws>` = the Brigade-exchanged contact-ops
+   *  token per workspace). Refreshed ~30s before exp. */
+  private readonly tokenCache = new Map<string, { token: string; expMs: number }>();
 
   constructor(private readonly config: ConfigService) {
     super();
@@ -98,15 +102,133 @@ export class ContactOpsClient extends ContactOpsPort {
    * (WORKSPACE_PER_REQUEST_ENABLED); CO still re-gates membership server-side,
    * so the header is a hint, never the authz boundary.
    */
-  private authHeaders(ctx: FederationContext): Record<string, string> {
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    const token = this.config.get<string>('CONTACT_OPS_SERVICE_TOKEN');
-    if (token && token.trim()) headers['Authorization'] = `Bearer ${token.trim()}`;
-    // Per-request workspace addressing (handoff §2.3 precedence: path → header →
-    // claim). CO re-checks membership against this before binding the GUC.
-    headers['X-Workspace-Id'] = ctx.workspaceId;
+  private async authHeaders(ctx: FederationContext): Promise<Record<string, string>> {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      // CO's MCP endpoint (Streamable HTTP) requires this Accept.
+      Accept: 'application/json, text/event-stream',
+    };
+    // Workspace addressing. CONTACT_OPS_WORKSPACE_OVERRIDE maps this app's local
+    // workspace onto Contact-Ops' uc-registry tenant id for the single-workspace
+    // dogfood (until the suite shares one uc-registry id — SUITE-IDENTITY §0.1).
+    const ws = this.workspaceOverride ?? ctx.workspaceId;
+    const bearer = await this.bearerFor(ws);
+    if (bearer) headers['Authorization'] = `Bearer ${bearer}`;
+    headers['X-Workspace-Id'] = ws;
     if (ctx.ucUid) headers['X-Uc-Uid'] = ctx.ucUid;
     return headers;
+  }
+
+  private get workspaceOverride(): string | null {
+    const w = this.config.get<string>('CONTACT_OPS_WORKSPACE_OVERRIDE');
+    return w && w.trim() ? w.trim() : null;
+  }
+
+  /** The auth mode: `static` forwards CONTACT_OPS_SERVICE_TOKEN (legacy / dev);
+   *  `brigade-sts` mints a customer-ops client-credentials token and exchanges it
+   *  at Brigade (RFC-8693) for a contact-ops-audience, workspace-bound token. */
+  private get authMode(): 'static' | 'brigade-sts' {
+    return this.config.get<string>('CONTACT_OPS_AUTH_MODE')?.trim() === 'brigade-sts'
+      ? 'brigade-sts'
+      : 'static';
+  }
+
+  /** Resolve the bearer for a federation call (per the auth mode). */
+  private async bearerFor(workspaceId: string): Promise<string | null> {
+    if (this.authMode === 'static') {
+      const t = this.config.get<string>('CONTACT_OPS_SERVICE_TOKEN');
+      return t && t.trim() ? t.trim() : null;
+    }
+    return this.brigadeExchangedToken(workspaceId);
+  }
+
+  /** A cached, contact-ops-audience token for `workspaceId`, obtained by
+   *  exchanging the customer-ops client-credentials token at Brigade. */
+  private async brigadeExchangedToken(workspaceId: string): Promise<string | null> {
+    const key = `co:${workspaceId}`;
+    const hit = this.tokenCache.get(key);
+    if (hit && hit.expMs - 30_000 > Date.now()) return hit.token;
+
+    const subject = await this.mintClientCredentials();
+    if (!subject) return null;
+
+    const exchangeUrl =
+      this.config.get<string>('BRIGADE_EXCHANGE_URL')?.trim() ||
+      'https://brigade.unicorncommander.ai/api/v1/federation/token';
+    const audience = this.config.get<string>('CONTACT_OPS_AUDIENCE')?.trim() || 'contact-ops';
+    const body = new URLSearchParams({
+      grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
+      subject_token: subject,
+      audience,
+      scope: 'contacts:read contacts:write',
+      workspace_id: workspaceId,
+    });
+    const tok = await this.postForm(exchangeUrl, body, 'Brigade exchange');
+    if (!tok) return null;
+    this.tokenCache.set(key, tok);
+    return tok.token;
+  }
+
+  /** The customer-ops client-credentials subject token (cached by exp). */
+  private async mintClientCredentials(): Promise<string | null> {
+    const key = 'cc:subject';
+    const hit = this.tokenCache.get(key);
+    if (hit && hit.expMs - 30_000 > Date.now()) return hit.token;
+
+    const base = (this.config.get<string>('KEYCLOAK_URL') || '').replace(/\/$/, '');
+    const realm = this.config.get<string>('KEYCLOAK_REALM') || 'uchub';
+    const clientId = this.config.get<string>('KEYCLOAK_CLIENT_ID') || 'customer-ops';
+    const secret = this.config.get<string>('KEYCLOAK_CLIENT_SECRET') || '';
+    if (!base || !secret) {
+      this.logger.warn('brigade-sts: KEYCLOAK_URL/KEYCLOAK_CLIENT_SECRET unset — cannot mint');
+      return null;
+    }
+    const body = new URLSearchParams({
+      grant_type: 'client_credentials',
+      client_id: clientId,
+      client_secret: secret,
+      scope: 'contacts:read contacts:write',
+    });
+    const tok = await this.postForm(
+      `${base}/realms/${encodeURIComponent(realm)}/protocol/openid-connect/token`,
+      body,
+      'client-credentials mint',
+    );
+    if (!tok) return null;
+    this.tokenCache.set(key, tok);
+    return tok.token;
+  }
+
+  /** POST a form to a token/exchange endpoint; return {token, expMs} or null. */
+  private async postForm(
+    url: string,
+    body: URLSearchParams,
+    label: string,
+  ): Promise<{ token: string; expMs: number } | null> {
+    let res: Response;
+    try {
+      res = await this.fetchWithTimeout(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body.toString(),
+      });
+    } catch (err) {
+      this.logger.warn(`${label} transport error: ${(err as Error).message}`);
+      return null;
+    }
+    if (!res.ok) {
+      this.logger.warn(`${label} HTTP ${res.status}`);
+      return null;
+    }
+    let json: { access_token?: string; expires_in?: number };
+    try {
+      json = (await res.json()) as { access_token?: string; expires_in?: number };
+    } catch {
+      return null;
+    }
+    if (!json.access_token) return null;
+    const ttl = typeof json.expires_in === 'number' ? json.expires_in : 300;
+    return { token: json.access_token, expMs: Date.now() + ttl * 1000 };
   }
 
   // --- MCP JSON-RPC transport --------------------------------------------
@@ -135,7 +257,7 @@ export class ContactOpsClient extends ContactOpsPort {
     try {
       res = await this.fetchWithTimeout(`${base}/mcp`, {
         method: 'POST',
-        headers: this.authHeaders(ctx),
+        headers: await this.authHeaders(ctx),
         body: JSON.stringify(body),
       });
     } catch (err) {
@@ -325,7 +447,7 @@ export class ContactOpsClient extends ContactOpsPort {
     try {
       res = await this.fetchWithTimeout(
         `${base}/api/v1/workspaces/${encodeURIComponent(ctx.workspaceId)}`,
-        { method: 'GET', headers: this.authHeaders(ctx) },
+        { method: 'GET', headers: await this.authHeaders(ctx) },
       );
     } catch (err) {
       this.logger.warn(
@@ -378,8 +500,14 @@ export class ContactOpsClient extends ContactOpsPort {
     identity: ContactIdentityInput,
   ): Promise<ContactUpsertResult | null> {
     if (!this.baseUrl) return null;
+    // CO's upsert_person dedups on a natural identifier (email/phone). Without
+    // one we cannot upsert — caller keeps the lead provisional.
+    if (!identity.email && !identity.phone) {
+      this.logger.debug?.('upsertContact: no email/phone to match on — skipping CO upsert');
+      return null;
+    }
     const toolName =
-      this.config.get<string>('CONTACT_OPS_INGEST_TOOL')?.trim() || 'ingest_person';
+      this.config.get<string>('CONTACT_OPS_INGEST_TOOL')?.trim() || 'upsert_person';
 
     const raw = await this.callTool(ctx, toolName, this.toIngestArgs(identity));
     if (!raw) return null;
@@ -402,15 +530,17 @@ export class ContactOpsClient extends ContactOpsPort {
   /** Map a Customer-Ops identity push to Contact-Ops' canonical person shape.
    *  Isolated so the P-00059 contract is a one-method change (see upsertContact). */
   private toIngestArgs(identity: ContactIdentityInput): Record<string, unknown> {
-    const args: Record<string, unknown> = {
-      source: identity.source,
-      source_ref: identity.sourceDedupKey,
-    };
+    // CO `upsert_person`: `match_by` (the dedup identifiers it idempotently keys
+    // on) + a flat person shape (display_name, emails[], phones[], initial_tags).
+    const matchBy: Array<{ namespace: string; value: string }> = [];
+    if (identity.email) matchBy.push({ namespace: 'email', value: identity.email });
+    if (identity.phone) matchBy.push({ namespace: 'phone', value: identity.phone });
+
+    const args: Record<string, unknown> = { match_by: matchBy };
     if (identity.displayName) args['display_name'] = identity.displayName;
     if (identity.email) args['emails'] = [{ address: identity.email, is_primary: true }];
     if (identity.phone) args['phones'] = [{ e164: identity.phone, is_primary: true }];
-    if (identity.orgName) args['org_name'] = identity.orgName;
-    if (identity.tags && identity.tags.length) args['tags'] = identity.tags;
+    if (identity.tags && identity.tags.length) args['initial_tags'] = identity.tags;
     return args;
   }
 }
