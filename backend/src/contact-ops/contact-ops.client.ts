@@ -35,6 +35,7 @@
 
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { BrigadeTokenSource } from '../common/federation/brigade-token-source';
 import { ContactOpsPort, FederationContext } from './contact-ops.port';
 import {
   ContactIdentityInput,
@@ -63,12 +64,11 @@ interface JsonRpcResponse {
 export class ContactOpsClient extends ContactOpsPort {
   private readonly logger = new Logger(ContactOpsClient.name);
   private rpcId = 0;
-  /** Cached bearer tokens keyed by purpose (`cc` = the customer-ops
-   *  client-credentials subject; `co:<ws>` = the Brigade-exchanged contact-ops
-   *  token per workspace). Refreshed ~30s before exp. */
-  private readonly tokenCache = new Map<string, { token: string; expMs: number }>();
 
-  constructor(private readonly config: ConfigService) {
+  constructor(
+    private readonly config: ConfigService,
+    private readonly brigade: BrigadeTokenSource,
+  ) {
     super();
     if (!this.baseUrl) {
       this.logger.warn(
@@ -133,102 +133,19 @@ export class ContactOpsClient extends ContactOpsPort {
       : 'static';
   }
 
-  /** Resolve the bearer for a federation call (per the auth mode). */
+  /** Resolve the bearer for a federation call (per the auth mode). `static`
+   *  forwards CONTACT_OPS_SERVICE_TOKEN; `brigade-sts` delegates to the shared
+   *  BrigadeTokenSource (mint customer-ops CC → exchange for aud=contact-ops). */
   private async bearerFor(workspaceId: string): Promise<string | null> {
     if (this.authMode === 'static') {
       const t = this.config.get<string>('CONTACT_OPS_SERVICE_TOKEN');
       return t && t.trim() ? t.trim() : null;
     }
-    return this.brigadeExchangedToken(workspaceId);
-  }
-
-  /** A cached, contact-ops-audience token for `workspaceId`, obtained by
-   *  exchanging the customer-ops client-credentials token at Brigade. */
-  private async brigadeExchangedToken(workspaceId: string): Promise<string | null> {
-    const key = `co:${workspaceId}`;
-    const hit = this.tokenCache.get(key);
-    if (hit && hit.expMs - 30_000 > Date.now()) return hit.token;
-
-    const subject = await this.mintClientCredentials();
-    if (!subject) return null;
-
-    const exchangeUrl =
-      this.config.get<string>('BRIGADE_EXCHANGE_URL')?.trim() ||
-      'https://brigade.unicorncommander.ai/api/v1/federation/token';
-    const audience = this.config.get<string>('CONTACT_OPS_AUDIENCE')?.trim() || 'contact-ops';
-    const body = new URLSearchParams({
-      grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
-      subject_token: subject,
-      audience,
+    return this.brigade.exchangedToken({
+      audience: this.config.get<string>('CONTACT_OPS_AUDIENCE')?.trim() || 'contact-ops',
       scope: 'contacts:read contacts:write',
-      workspace_id: workspaceId,
+      workspaceId,
     });
-    const tok = await this.postForm(exchangeUrl, body, 'Brigade exchange');
-    if (!tok) return null;
-    this.tokenCache.set(key, tok);
-    return tok.token;
-  }
-
-  /** The customer-ops client-credentials subject token (cached by exp). */
-  private async mintClientCredentials(): Promise<string | null> {
-    const key = 'cc:subject';
-    const hit = this.tokenCache.get(key);
-    if (hit && hit.expMs - 30_000 > Date.now()) return hit.token;
-
-    const base = (this.config.get<string>('KEYCLOAK_URL') || '').replace(/\/$/, '');
-    const realm = this.config.get<string>('KEYCLOAK_REALM') || 'uchub';
-    const clientId = this.config.get<string>('KEYCLOAK_CLIENT_ID') || 'customer-ops';
-    const secret = this.config.get<string>('KEYCLOAK_CLIENT_SECRET') || '';
-    if (!base || !secret) {
-      this.logger.warn('brigade-sts: KEYCLOAK_URL/KEYCLOAK_CLIENT_SECRET unset — cannot mint');
-      return null;
-    }
-    const body = new URLSearchParams({
-      grant_type: 'client_credentials',
-      client_id: clientId,
-      client_secret: secret,
-      scope: 'contacts:read contacts:write',
-    });
-    const tok = await this.postForm(
-      `${base}/realms/${encodeURIComponent(realm)}/protocol/openid-connect/token`,
-      body,
-      'client-credentials mint',
-    );
-    if (!tok) return null;
-    this.tokenCache.set(key, tok);
-    return tok.token;
-  }
-
-  /** POST a form to a token/exchange endpoint; return {token, expMs} or null. */
-  private async postForm(
-    url: string,
-    body: URLSearchParams,
-    label: string,
-  ): Promise<{ token: string; expMs: number } | null> {
-    let res: Response;
-    try {
-      res = await this.fetchWithTimeout(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: body.toString(),
-      });
-    } catch (err) {
-      this.logger.warn(`${label} transport error: ${(err as Error).message}`);
-      return null;
-    }
-    if (!res.ok) {
-      this.logger.warn(`${label} HTTP ${res.status}`);
-      return null;
-    }
-    let json: { access_token?: string; expires_in?: number };
-    try {
-      json = (await res.json()) as { access_token?: string; expires_in?: number };
-    } catch {
-      return null;
-    }
-    if (!json.access_token) return null;
-    const ttl = typeof json.expires_in === 'number' ? json.expires_in : 300;
-    return { token: json.access_token, expMs: Date.now() + ttl * 1000 };
   }
 
   // --- MCP JSON-RPC transport --------------------------------------------

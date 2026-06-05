@@ -46,6 +46,7 @@
 
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { BrigadeTokenSource } from '../common/federation/brigade-token-source';
 import { MeetingOpsPort, FederationContext } from './meeting-ops.port';
 import {
   FederatedActionItem,
@@ -75,7 +76,10 @@ export class MeetingOpsClient extends MeetingOpsPort {
   private readonly logger = new Logger(MeetingOpsClient.name);
   private rpcId = 0;
 
-  constructor(private readonly config: ConfigService) {
+  constructor(
+    private readonly config: ConfigService,
+    private readonly brigade: BrigadeTokenSource,
+  ) {
     super();
     if (!this.baseUrl) {
       this.logger.warn(
@@ -96,6 +100,32 @@ export class MeetingOpsClient extends MeetingOpsPort {
     return raw && raw.trim() ? raw.trim().replace(/\/$/, '') : null;
   }
 
+  /** The MCP JSON-RPC path under the base. Meeting-Ops exposes its federation MCP
+   *  at `/api/federation/mcp` (a dedicated Brigade-verified router, separate from
+   *  the per-user `/mcp`), so this is configurable; default `/mcp` for siblings
+   *  that mount it at the root. Always leads with a slash. */
+  private get mcpPath(): string {
+    const raw = this.config.get<string>('MEETING_OPS_MCP_PATH')?.trim();
+    if (!raw) return '/mcp';
+    return raw.startsWith('/') ? raw : `/${raw}`;
+  }
+
+  /** Workspace override: map this app's local workspace onto Meeting-Ops'
+   *  uc-registry tenant for the single-workspace dogfood (until the suite shares
+   *  one uc-registry id — SUITE-IDENTITY §0.1). */
+  private get workspaceOverride(): string | null {
+    const w = this.config.get<string>('MEETING_OPS_WORKSPACE_OVERRIDE');
+    return w && w.trim() ? w.trim() : null;
+  }
+
+  /** Auth mode: `static` forwards MEETING_OPS_SERVICE_TOKEN; `brigade-sts`
+   *  delegates to the shared BrigadeTokenSource (aud=meeting-ops, meetings:read). */
+  private get authMode(): 'static' | 'brigade-sts' {
+    return this.config.get<string>('MEETING_OPS_AUTH_MODE')?.trim() === 'brigade-sts'
+      ? 'brigade-sts'
+      : 'static';
+  }
+
   private get timeoutMs(): number {
     const raw = this.config.get<string>('MEETING_OPS_TIMEOUT_MS');
     const n = raw ? Number(raw) : NaN;
@@ -114,13 +144,33 @@ export class MeetingOpsClient extends MeetingOpsPort {
    * along for Meeting-Ops's per-request addressing; Meeting-Ops re-gates
    * membership server-side, so the header is a hint, never the authz boundary.
    */
-  private authHeaders(ctx: FederationContext): Record<string, string> {
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    const token = this.config.get<string>('MEETING_OPS_SERVICE_TOKEN');
-    if (token && token.trim()) headers['Authorization'] = `Bearer ${token.trim()}`;
-    headers['X-Workspace-Id'] = ctx.workspaceId;
+  private async authHeaders(ctx: FederationContext): Promise<Record<string, string>> {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      // Meeting-Ops' federation MCP is Streamable-HTTP; it requires this Accept.
+      Accept: 'application/json, text/event-stream',
+    };
+    const ws = this.workspaceOverride ?? ctx.workspaceId;
+    const bearer = await this.bearerFor(ws);
+    if (bearer) headers['Authorization'] = `Bearer ${bearer}`;
+    headers['X-Workspace-Id'] = ws;
     if (ctx.ucUid) headers['X-Uc-Uid'] = ctx.ucUid;
     return headers;
+  }
+
+  /** Resolve the bearer per the auth mode. `static` forwards the service token;
+   *  `brigade-sts` mints customer-ops CC → exchanges for an aud=meeting-ops,
+   *  workspace-bound token via the shared source (meetings:read). */
+  private async bearerFor(workspaceId: string): Promise<string | null> {
+    if (this.authMode === 'static') {
+      const t = this.config.get<string>('MEETING_OPS_SERVICE_TOKEN');
+      return t && t.trim() ? t.trim() : null;
+    }
+    return this.brigade.exchangedToken({
+      audience: this.config.get<string>('MEETING_OPS_AUDIENCE')?.trim() || 'meeting-ops',
+      scope: 'meetings:read',
+      workspaceId,
+    });
   }
 
   // --- MCP JSON-RPC transport --------------------------------------------
@@ -148,9 +198,9 @@ export class MeetingOpsClient extends MeetingOpsPort {
 
     let res: Response;
     try {
-      res = await this.fetchWithTimeout(`${base}/mcp`, {
+      res = await this.fetchWithTimeout(`${base}${this.mcpPath}`, {
         method: 'POST',
-        headers: this.authHeaders(ctx),
+        headers: await this.authHeaders(ctx),
         body: JSON.stringify(body),
       });
     } catch (err) {
