@@ -5,6 +5,7 @@ import { APP_GUARD } from '@nestjs/core';
 
 import { PrismaModule } from './prisma/prisma.module';
 import { WorkspaceModule } from './common/workspace/workspace.module';
+import { FederationAuthModule } from './common/federation/federation-auth.module';
 import { AuthModule } from './auth/auth.module';
 import { HealthModule } from './health/health.module';
 import { McpModule } from './mcp/mcp.module';
@@ -35,6 +36,8 @@ import { LeadIntakeModule } from './lead-intake/lead-intake.module';
     // Core
     PrismaModule,
     WorkspaceModule,
+    // Shared app-to-app federation credential (Brigade RFC-8693 token source).
+    FederationAuthModule,
     AuthModule,
     HealthModule,
     // Phase 2 — the relationship cockpit + the Contact-Ops federation seam.

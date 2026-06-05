@@ -1,6 +1,13 @@
 import { ConfigService } from '@nestjs/config';
 import { MeetingOpsClient } from './meeting-ops.client';
 import { FederationContext } from './meeting-ops.port';
+import { BrigadeTokenSource } from '../common/federation/brigade-token-source';
+
+/** These tests exercise STATIC auth mode (MEETING_OPS_SERVICE_TOKEN forwarded);
+ *  the Brigade source isn't reached. The brigade-sts path is proven live. */
+function makeBrigade(): BrigadeTokenSource {
+  return { exchangedToken: jest.fn().mockResolvedValue(null) } as unknown as BrigadeTokenSource;
+}
 
 /**
  * The Meeting-Ops federation client speaks JSON-RPC 2.0 to the Meeting-Ops app's
@@ -46,7 +53,7 @@ describe('MeetingOpsClient (Meeting-Ops MOCKED)', () => {
   });
 
   describe('when MEETING_OPS_BASE_URL is unset (dormant)', () => {
-    const client = new MeetingOpsClient(makeConfig({}));
+    const client = new MeetingOpsClient(makeConfig({}), makeBrigade());
 
     it('isConfigured() is false', () => {
       expect(client.isConfigured()).toBe(false);
@@ -92,7 +99,7 @@ describe('MeetingOpsClient (Meeting-Ops MOCKED)', () => {
     };
 
     it('isConfigured() is true', () => {
-      expect(new MeetingOpsClient(makeConfig(env)).isConfigured()).toBe(true);
+      expect(new MeetingOpsClient(makeConfig(env), makeBrigade()).isConfigured()).toBe(true);
     });
 
     it('list_meetings_for_contact: posts JSON-RPC tools/call and maps Meeting → FederatedMeeting', async () => {
@@ -121,7 +128,7 @@ describe('MeetingOpsClient (Meeting-Ops MOCKED)', () => {
         ),
       );
       global.fetch = fetchSpy as any;
-      const client = new MeetingOpsClient(makeConfig(env));
+      const client = new MeetingOpsClient(makeConfig(env), makeBrigade());
 
       const page = await client.listMeetingsForContact(CTX, 'contact-42', { limit: 10 });
 
@@ -178,7 +185,7 @@ describe('MeetingOpsClient (Meeting-Ops MOCKED)', () => {
           }),
         ),
       ) as any;
-      const client = new MeetingOpsClient(makeConfig(env));
+      const client = new MeetingOpsClient(makeConfig(env), makeBrigade());
 
       const summaries = await client.listSummariesForContact(CTX, 'contact-42');
       expect(summaries).toHaveLength(1);
@@ -217,7 +224,7 @@ describe('MeetingOpsClient (Meeting-Ops MOCKED)', () => {
           }),
         ),
       ) as any;
-      const client = new MeetingOpsClient(makeConfig(env));
+      const client = new MeetingOpsClient(makeConfig(env), makeBrigade());
 
       const items = await client.listActionItemsForContact(CTX, 'contact-42');
       expect(items).toHaveLength(2);
@@ -275,7 +282,7 @@ describe('MeetingOpsClient (Meeting-Ops MOCKED)', () => {
         );
       });
       global.fetch = fetchSpy as any;
-      const client = new MeetingOpsClient(makeConfig(env));
+      const client = new MeetingOpsClient(makeConfig(env), makeBrigade());
 
       const signal = await client.getMeetingSignal(CTX, 'contact-42');
       expect(signal.meetingCount).toBe(2);
@@ -294,7 +301,7 @@ describe('MeetingOpsClient (Meeting-Ops MOCKED)', () => {
       global.fetch = jest.fn().mockResolvedValue(
         jsonResponse({ jsonrpc: '2.0', id: 1, error: { code: -32000, message: 'boom' } }),
       ) as any;
-      const client = new MeetingOpsClient(makeConfig(env));
+      const client = new MeetingOpsClient(makeConfig(env), makeBrigade());
       await expect(client.listMeetingsForContact(CTX, 'p1')).resolves.toEqual({
         items: [],
         count: 0,
@@ -310,20 +317,20 @@ describe('MeetingOpsClient (Meeting-Ops MOCKED)', () => {
           result: { isError: true, content: [{ type: 'text', text: 'CONTACT_NOT_FOUND' }] },
         }),
       ) as any;
-      const client = new MeetingOpsClient(makeConfig(env));
+      const client = new MeetingOpsClient(makeConfig(env), makeBrigade());
       await expect(client.listActionItemsForContact(CTX, 'missing')).resolves.toEqual([]);
     });
 
     it('returns empty (never throws) on a transport error / HTTP 500', async () => {
       global.fetch = jest.fn().mockRejectedValue(new Error('ECONNREFUSED')) as any;
-      const client = new MeetingOpsClient(makeConfig(env));
+      const client = new MeetingOpsClient(makeConfig(env), makeBrigade());
       await expect(client.listMeetingsForContact(CTX, 'p1')).resolves.toEqual({
         items: [],
         count: 0,
         nextCursor: null,
       });
       global.fetch = jest.fn().mockResolvedValue(jsonResponse({}, false, 500)) as any;
-      const client2 = new MeetingOpsClient(makeConfig(env));
+      const client2 = new MeetingOpsClient(makeConfig(env), makeBrigade());
       await expect(client2.listSummariesForContact(CTX, 'p1')).resolves.toEqual([]);
     });
   });

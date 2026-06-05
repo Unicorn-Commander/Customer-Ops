@@ -46,6 +46,7 @@
 
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { BrigadeTokenSource } from '../common/federation/brigade-token-source';
 import { MeetingOpsPort, FederationContext } from './meeting-ops.port';
 import {
   FederatedActionItem,
@@ -74,12 +75,11 @@ interface JsonRpcResponse {
 export class MeetingOpsClient extends MeetingOpsPort {
   private readonly logger = new Logger(MeetingOpsClient.name);
   private rpcId = 0;
-  /** Cached bearer tokens: `cc:subject` = the customer-ops
-   *  client-credentials subject; `mo:<ws>` = the Brigade-exchanged
-   *  meeting-ops token per workspace. Refreshed ~30s before exp. */
-  private readonly tokenCache = new Map<string, { token: string; expMs: number }>();
 
-  constructor(private readonly config: ConfigService) {
+  constructor(
+    private readonly config: ConfigService,
+    private readonly brigade: BrigadeTokenSource,
+  ) {
     super();
     if (!this.baseUrl) {
       this.logger.warn(
@@ -98,6 +98,32 @@ export class MeetingOpsClient extends MeetingOpsPort {
   private get baseUrl(): string | null {
     const raw = this.config.get<string>('MEETING_OPS_BASE_URL');
     return raw && raw.trim() ? raw.trim().replace(/\/$/, '') : null;
+  }
+
+  /** The MCP JSON-RPC path under the base. Meeting-Ops exposes its federation MCP
+   *  at `/api/federation/mcp` (a dedicated Brigade-verified router, separate from
+   *  the per-user `/mcp`), so this is configurable; default `/mcp` for siblings
+   *  that mount it at the root. Always leads with a slash. */
+  private get mcpPath(): string {
+    const raw = this.config.get<string>('MEETING_OPS_MCP_PATH')?.trim();
+    if (!raw) return '/mcp';
+    return raw.startsWith('/') ? raw : `/${raw}`;
+  }
+
+  /** Workspace override: map this app's local workspace onto Meeting-Ops'
+   *  uc-registry tenant for the single-workspace dogfood (until the suite shares
+   *  one uc-registry id — SUITE-IDENTITY §0.1). */
+  private get workspaceOverride(): string | null {
+    const w = this.config.get<string>('MEETING_OPS_WORKSPACE_OVERRIDE');
+    return w && w.trim() ? w.trim() : null;
+  }
+
+  /** Auth mode: `static` forwards MEETING_OPS_SERVICE_TOKEN; `brigade-sts`
+   *  delegates to the shared BrigadeTokenSource (aud=meeting-ops, meetings:read). */
+  private get authMode(): 'static' | 'brigade-sts' {
+    return this.config.get<string>('MEETING_OPS_AUTH_MODE')?.trim() === 'brigade-sts'
+      ? 'brigade-sts'
+      : 'static';
   }
 
   private get timeoutMs(): number {
@@ -119,10 +145,11 @@ export class MeetingOpsClient extends MeetingOpsPort {
    * membership server-side, so the header is a hint, never the authz boundary.
    */
   private async authHeaders(ctx: FederationContext): Promise<Record<string, string>> {
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    // Workspace addressing. MEETING_OPS_WORKSPACE_OVERRIDE maps this app's local
-    // workspace onto Meeting-Ops' uc-registry tenant id for the single-workspace
-    // dogfood (until the suite shares one uc-registry id — SUITE-IDENTITY §0.1).
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      // Meeting-Ops' federation MCP is Streamable-HTTP; it requires this Accept.
+      Accept: 'application/json, text/event-stream',
+    };
     const ws = this.workspaceOverride ?? ctx.workspaceId;
     const bearer = await this.bearerFor(ws);
     if (bearer) headers['Authorization'] = `Bearer ${bearer}`;
@@ -131,116 +158,19 @@ export class MeetingOpsClient extends MeetingOpsPort {
     return headers;
   }
 
-  private get workspaceOverride(): string | null {
-    const w = this.config.get<string>('MEETING_OPS_WORKSPACE_OVERRIDE');
-    return w && w.trim() ? w.trim() : null;
-  }
-
-  /** Auth mode: `static` forwards MEETING_OPS_SERVICE_TOKEN (legacy/dev);
-   *  `brigade-sts` mints a customer-ops client-credentials token and exchanges
-   *  it at Brigade (RFC-8693) for a meeting-ops-audience, workspace-bound token. */
-  private get authMode(): 'static' | 'brigade-sts' {
-    return this.config.get<string>('MEETING_OPS_AUTH_MODE')?.trim() === 'brigade-sts'
-      ? 'brigade-sts'
-      : 'static';
-  }
-
-  /** Resolve the bearer for a federation call (per the auth mode). */
+  /** Resolve the bearer per the auth mode. `static` forwards the service token;
+   *  `brigade-sts` mints customer-ops CC → exchanges for an aud=meeting-ops,
+   *  workspace-bound token via the shared source (meetings:read). */
   private async bearerFor(workspaceId: string): Promise<string | null> {
     if (this.authMode === 'static') {
       const t = this.config.get<string>('MEETING_OPS_SERVICE_TOKEN');
       return t && t.trim() ? t.trim() : null;
     }
-    return this.brigadeExchangedToken(workspaceId);
-  }
-
-  /** A cached, meeting-ops-audience token for `workspaceId`, obtained by
-   *  exchanging the customer-ops client-credentials token at Brigade. */
-  private async brigadeExchangedToken(workspaceId: string): Promise<string | null> {
-    const key = `mo:${workspaceId}`;
-    const hit = this.tokenCache.get(key);
-    if (hit && hit.expMs - 30_000 > Date.now()) return hit.token;
-
-    const subject = await this.mintClientCredentials();
-    if (!subject) return null;
-
-    const exchangeUrl =
-      this.config.get<string>('BRIGADE_EXCHANGE_URL')?.trim() ||
-      'https://brigade.unicorncommander.ai/api/v1/federation/token';
-    const audience = this.config.get<string>('MEETING_OPS_AUDIENCE')?.trim() || 'meeting-ops';
-    const body = new URLSearchParams({
-      grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
-      subject_token: subject,
-      audience,
+    return this.brigade.exchangedToken({
+      audience: this.config.get<string>('MEETING_OPS_AUDIENCE')?.trim() || 'meeting-ops',
       scope: 'meetings:read',
-      workspace_id: workspaceId,
+      workspaceId,
     });
-    const tok = await this.postForm(exchangeUrl, body, 'Brigade exchange (meeting-ops)');
-    if (!tok) return null;
-    this.tokenCache.set(key, tok);
-    return tok.token;
-  }
-
-  /** The customer-ops client-credentials subject token (cached by exp). */
-  private async mintClientCredentials(): Promise<string | null> {
-    const key = 'cc:subject';
-    const hit = this.tokenCache.get(key);
-    if (hit && hit.expMs - 30_000 > Date.now()) return hit.token;
-
-    const base = (this.config.get<string>('KEYCLOAK_URL') || '').replace(/\/$/, '');
-    const realm = this.config.get<string>('KEYCLOAK_REALM') || 'uchub';
-    const clientId = this.config.get<string>('KEYCLOAK_CLIENT_ID') || 'customer-ops';
-    const secret = this.config.get<string>('KEYCLOAK_CLIENT_SECRET') || '';
-    if (!base || !secret) {
-      this.logger.warn('brigade-sts: KEYCLOAK_URL/KEYCLOAK_CLIENT_SECRET unset — cannot mint');
-      return null;
-    }
-    const body = new URLSearchParams({
-      grant_type: 'client_credentials',
-      client_id: clientId,
-      client_secret: secret,
-      scope: 'meetings:read',
-    });
-    const tok = await this.postForm(
-      `${base}/realms/${encodeURIComponent(realm)}/protocol/openid-connect/token`,
-      body,
-      'client-credentials mint (meeting-ops)',
-    );
-    if (!tok) return null;
-    this.tokenCache.set(key, tok);
-    return tok.token;
-  }
-
-  /** POST a form to a token/exchange endpoint; return {token, expMs} or null. */
-  private async postForm(
-    url: string,
-    body: URLSearchParams,
-    label: string,
-  ): Promise<{ token: string; expMs: number } | null> {
-    let res: Response;
-    try {
-      res = await this.fetchWithTimeout(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: body.toString(),
-      });
-    } catch (err) {
-      this.logger.warn(`${label} transport error: ${(err as Error).message}`);
-      return null;
-    }
-    if (!res.ok) {
-      this.logger.warn(`${label} HTTP ${res.status}`);
-      return null;
-    }
-    let json: { access_token?: string; expires_in?: number };
-    try {
-      json = (await res.json()) as { access_token?: string; expires_in?: number };
-    } catch {
-      return null;
-    }
-    if (!json.access_token) return null;
-    const ttl = typeof json.expires_in === 'number' ? json.expires_in : 300;
-    return { token: json.access_token, expMs: Date.now() + ttl * 1000 };
   }
 
   // --- MCP JSON-RPC transport --------------------------------------------
@@ -268,7 +198,7 @@ export class MeetingOpsClient extends MeetingOpsPort {
 
     let res: Response;
     try {
-      res = await this.fetchWithTimeout(`${base}/mcp`, {
+      res = await this.fetchWithTimeout(`${base}${this.mcpPath}`, {
         method: 'POST',
         headers: await this.authHeaders(ctx),
         body: JSON.stringify(body),

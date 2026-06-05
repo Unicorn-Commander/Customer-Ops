@@ -1,6 +1,14 @@
 import { ConfigService } from '@nestjs/config';
 import { ContactOpsClient } from './contact-ops.client';
 import { FederationContext } from './contact-ops.port';
+import { BrigadeTokenSource } from '../common/federation/brigade-token-source';
+
+/** These tests exercise STATIC auth mode (CONTACT_OPS_SERVICE_TOKEN forwarded),
+ *  so the Brigade source is never reached; a stub that returns null suffices.
+ *  The brigade-sts path is proven live, not unit-mocked. */
+function makeBrigade(): BrigadeTokenSource {
+  return { exchangedToken: jest.fn().mockResolvedValue(null) } as unknown as BrigadeTokenSource;
+}
 
 /**
  * The Contact-Ops federation client speaks JSON-RPC 2.0 to CO's `POST /mcp` and
@@ -49,7 +57,7 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
   });
 
   describe('when CONTACT_OPS_BASE_URL is unset (dormant)', () => {
-    const client = new ContactOpsClient(makeConfig({}));
+    const client = new ContactOpsClient(makeConfig({}), makeBrigade());
 
     it('getContact returns null without any fetch', async () => {
       const fetchSpy = jest.fn();
@@ -99,7 +107,7 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
         ),
       );
       global.fetch = fetchSpy as any;
-      const client = new ContactOpsClient(makeConfig(env));
+      const client = new ContactOpsClient(makeConfig(env), makeBrigade());
 
       const contact = await client.getContact(CTX, 'p1');
 
@@ -147,7 +155,7 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
           }),
         ),
       ) as any;
-      const client = new ContactOpsClient(makeConfig(env));
+      const client = new ContactOpsClient(makeConfig(env), makeBrigade());
       const contact = await client.getContact(CTX, 'p2');
       expect(contact?.primaryEmail).toBe('primary@x.com');
     });
@@ -172,7 +180,7 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
         ),
       );
       global.fetch = fetchSpy as any;
-      const client = new ContactOpsClient(makeConfig(env));
+      const client = new ContactOpsClient(makeConfig(env), makeBrigade());
 
       const page = await client.listContacts(CTX, { hasEmail: true, tagsAny: ['vip'], limit: 10 });
       const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
@@ -187,7 +195,7 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
         jsonResponse(rpcOk({ items: [], count: 0, next_cursor: null })),
       );
       global.fetch = fetchSpy as any;
-      const client = new ContactOpsClient(makeConfig(env));
+      const client = new ContactOpsClient(makeConfig(env), makeBrigade());
 
       await client.listContacts(CTX, { query: 'jane' });
       const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
@@ -206,7 +214,7 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
         );
       });
       global.fetch = fetchSpy as any;
-      const client = new ContactOpsClient(makeConfig(env));
+      const client = new ContactOpsClient(makeConfig(env), makeBrigade());
 
       const m = await client.getContactSummaries(CTX, ['p1', 'p2', 'p1']); // dedupes p1
       expect(m.size).toBe(2);
@@ -231,7 +239,7 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
         }),
       );
       global.fetch = fetchSpy as any;
-      const client = new ContactOpsClient(makeConfig(env));
+      const client = new ContactOpsClient(makeConfig(env), makeBrigade());
 
       const proj = await client.getWorkspaceProjection(CTX);
       const [url, init] = fetchSpy.mock.calls[0];
@@ -250,7 +258,7 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
       global.fetch = jest.fn().mockResolvedValue(
         jsonResponse({ jsonrpc: '2.0', id: 1, error: { code: -32000, message: 'boom' } }),
       ) as any;
-      const client = new ContactOpsClient(makeConfig(env));
+      const client = new ContactOpsClient(makeConfig(env), makeBrigade());
       await expect(client.getContact(CTX, 'p1')).resolves.toBeNull();
     });
 
@@ -262,20 +270,20 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
           result: { isError: true, content: [{ type: 'text', text: 'PERSON_NOT_FOUND' }] },
         }),
       ) as any;
-      const client = new ContactOpsClient(makeConfig(env));
+      const client = new ContactOpsClient(makeConfig(env), makeBrigade());
       await expect(client.getContact(CTX, 'missing')).resolves.toBeNull();
     });
 
     it('returns null (never throws) on a transport error', async () => {
       global.fetch = jest.fn().mockRejectedValue(new Error('ECONNREFUSED')) as any;
-      const client = new ContactOpsClient(makeConfig(env));
+      const client = new ContactOpsClient(makeConfig(env), makeBrigade());
       await expect(client.getContact(CTX, 'p1')).resolves.toBeNull();
       await expect(client.listContacts(CTX, {})).resolves.toEqual({ items: [], count: 0, nextCursor: null });
     });
 
     it('returns empty page (never throws) on HTTP 500', async () => {
       global.fetch = jest.fn().mockResolvedValue(jsonResponse({}, false, 500)) as any;
-      const client = new ContactOpsClient(makeConfig(env));
+      const client = new ContactOpsClient(makeConfig(env), makeBrigade());
       await expect(client.listContacts(CTX, {})).resolves.toEqual({ items: [], count: 0, nextCursor: null });
     });
   });
