@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import {
   LayoutDashboard, Users, Filter, Receipt, Megaphone, Mail, Video, Bot, Waypoints,
-  Search, Plus, LogOut, Radar, PanelLeftClose, PanelLeftOpen, type LucideIcon,
+  Inbox, Search, Plus, LogOut, Radar, PanelLeftClose, PanelLeftOpen, type LucideIcon,
 } from 'lucide-react';
 import { getToken, getStoredUser, clearSession, type CustomerOpsUser } from '@/lib/api';
 import { ThemeToggle } from './ThemeToggle';
@@ -17,6 +17,7 @@ interface NavItem { href: string; label: string; icon: LucideIcon; exact?: boole
 
 const NAV: NavItem[] = [
   { href: '/dashboard', label: 'Overview', icon: LayoutDashboard, exact: true, gradient: 'from-indigo-500 to-violet-500', bar: 'bg-violet-400' },
+  { href: '/dashboard/leads', label: 'Ingestion', icon: Inbox, gradient: 'from-lime-400 to-emerald-500', bar: 'bg-emerald-400' },
   { href: '/dashboard/customers', label: 'Relationships', icon: Users, gradient: 'from-violet-500 to-fuchsia-500', bar: 'bg-fuchsia-400' },
   { href: '/dashboard/pipeline', label: 'Pipeline', icon: Filter, gradient: 'from-amber-400 to-orange-500', bar: 'bg-amber-400' },
   { href: '/dashboard/graph', label: 'Graph', icon: Waypoints, gradient: 'from-cyan-400 to-blue-500', bar: 'bg-cyan-400' },
@@ -33,6 +34,7 @@ const FEDERATED: { label: string; icon: LucideIcon; gradient: string }[] = [
 const DEMO_USER: CustomerOpsUser = { id: 'demo', email: 'aaron@magicunicorn.tech', username: 'aaron', firstName: 'Aaron', lastName: 'Stransky' };
 
 function titleFor(pathname: string): { title: string; sub: string } {
+  if (pathname.startsWith('/dashboard/leads')) return { title: 'Lead Ingestion', sub: 'The intake firehose for the lead pipeline' };
   if (pathname.startsWith('/dashboard/customers')) return { title: 'Relationships', sub: 'Every contact, by lifecycle stage' };
   if (pathname.startsWith('/dashboard/pipeline')) return { title: 'Pipeline', sub: 'Lead → Prospect → Customer' };
   if (pathname.startsWith('/dashboard/graph')) return { title: 'Knowledge graph', sub: 'People, orgs & deals as a living network' };
