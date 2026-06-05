@@ -37,6 +37,8 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ContactOpsPort, FederationContext } from './contact-ops.port';
 import {
+  ContactIdentityInput,
+  ContactUpsertResult,
   FederatedContact,
   FederatedContactPage,
   FederatedContactSummary,
@@ -355,6 +357,61 @@ export class ContactOpsClient extends ContactOpsPort {
       dataResidency: (raw['data_residency'] as string | null) ?? null,
       status: (raw['status'] as string) ?? 'active',
     };
+  }
+
+  /**
+   * Centralize a graduated lead's identity in Contact-Ops (the `ingest_lead`
+   * keystone's identity step). Degrade-clean: `callTool` returns null when
+   * CONTACT_OPS_BASE_URL is unset OR the ingest tool isn't live yet (P-00059) —
+   * the caller then stages the lead PENDING and a reconciler retries. Never throws.
+   *
+   * THE P-00059 SEAM: the Contact-Ops ingest tool name + its argument shape are
+   * the ONLY thing that changes when CONTACT-OPS-INGEST-CONTRACT.md's `/ingest`
+   * RBAC-MCP front door finalizes. Both are isolated here:
+   *   - tool name  → CONTACT_OPS_INGEST_TOOL env (default 'ingest_person').
+   *   - arg shape  → `toIngestArgs` below (snake_case, emails[]/phones[] arrays —
+   *                  Contact-Ops' canonical person shape per common.py).
+   * When the contract lands, confirm those two and nothing else moves.
+   */
+  async upsertContact(
+    ctx: FederationContext,
+    identity: ContactIdentityInput,
+  ): Promise<ContactUpsertResult | null> {
+    if (!this.baseUrl) return null;
+    const toolName =
+      this.config.get<string>('CONTACT_OPS_INGEST_TOOL')?.trim() || 'ingest_person';
+
+    const raw = await this.callTool(ctx, toolName, this.toIngestArgs(identity));
+    if (!raw) return null;
+
+    // Contact-Ops returns the canonical person — accept person_id|contact_id|id.
+    const personId =
+      (raw['person_id'] as string) ?? (raw['contact_id'] as string) ?? (raw['id'] as string);
+    if (typeof personId !== 'string' || !personId) {
+      this.logger.warn(`Contact-Ops ${toolName} returned no person id; treating as unresolved`);
+      return null;
+    }
+    return {
+      contactId: personId,
+      // CO may signal newness as `created`/`is_new`; default false (matched).
+      created: raw['created'] === true || raw['is_new'] === true,
+      etag: (raw['etag'] as string | null) ?? null,
+    };
+  }
+
+  /** Map a Customer-Ops identity push to Contact-Ops' canonical person shape.
+   *  Isolated so the P-00059 contract is a one-method change (see upsertContact). */
+  private toIngestArgs(identity: ContactIdentityInput): Record<string, unknown> {
+    const args: Record<string, unknown> = {
+      source: identity.source,
+      source_ref: identity.sourceDedupKey,
+    };
+    if (identity.displayName) args['display_name'] = identity.displayName;
+    if (identity.email) args['emails'] = [{ address: identity.email, is_primary: true }];
+    if (identity.phone) args['phones'] = [{ e164: identity.phone, is_primary: true }];
+    if (identity.orgName) args['org_name'] = identity.orgName;
+    if (identity.tags && identity.tags.length) args['tags'] = identity.tags;
+    return args;
   }
 }
 

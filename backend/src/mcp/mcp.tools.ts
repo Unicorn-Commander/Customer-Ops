@@ -49,6 +49,8 @@ import { CreateInvoiceDto, EngagementKind } from '../customers/dto/customer.dto'
 import { LeadTriageAgent } from '../agents/lead-triage.agent';
 import { FollowUpDrafterAgent } from '../agents/follow-up-drafter.agent';
 import { CollectionsNudgeAgent } from '../agents/collections-nudge.agent';
+import { LeadIntakeService } from '../lead-intake/lead-intake.service';
+import { LeadIntakeStatus, RelationshipPriority } from '@prisma/client';
 
 export class CustomerOpsTools {
   constructor(
@@ -57,6 +59,7 @@ export class CustomerOpsTools {
     private readonly leadTriage: LeadTriageAgent,
     private readonly followUp: FollowUpDrafterAgent,
     private readonly collections: CollectionsNudgeAgent,
+    private readonly leads: LeadIntakeService,
   ) {}
 
   /** Health/info — safe for any authenticated caller. */
@@ -357,5 +360,98 @@ export class CustomerOpsTools {
    *  DRAFT — never sends, never charges, never posts a ledger entry. */
   async draftCollectionsNudge(user: User, args: { customer_id: string; workspace_id?: string }) {
     return this.collections.draftNudge(user, args.customer_id, args.workspace_id ?? null);
+  }
+
+  // ── Phase 6 lead-ingestion tools (delegate to LeadIntakeService) ──
+
+  /** Ingest one graduated lead (the `ingest_lead` keystone). Idempotent on
+   *  (source, source_dedup_key); centralizes identity in Contact-Ops and projects
+   *  a Customer LEAD. The args mirror IngestLeadDto so an agent and a REST/
+   *  connector caller hit one pipeline. */
+  async ingestLead(
+    user: User,
+    args: {
+      workspace_id?: string;
+      source: string;
+      source_dedup_key: string;
+      contact_id?: string;
+      display_name?: string;
+      email?: string;
+      phone?: string;
+      org_name?: string;
+      tags?: string[];
+      score?: number;
+      expected_value?: string;
+      currency?: string;
+      priority?: RelationshipPriority;
+      owner_user_key?: string;
+      notes?: string;
+      raw_payload?: Record<string, unknown>;
+    },
+  ) {
+    return this.leads.ingestForUser(
+      user,
+      {
+        source: args.source,
+        sourceDedupKey: args.source_dedup_key,
+        contactId: args.contact_id,
+        displayName: args.display_name,
+        email: args.email,
+        phone: args.phone,
+        orgName: args.org_name,
+        tags: args.tags,
+        score: args.score,
+        expectedValue: args.expected_value,
+        currency: args.currency,
+        priority: args.priority,
+        ownerUserKey: args.owner_user_key,
+        notes: args.notes,
+        rawPayload: args.raw_payload,
+      },
+      args.workspace_id ?? null,
+    );
+  }
+
+  /** Intake status counts (pending/resolved/failed/discarded) + CO reachability. */
+  async leadIntakeStats(user: User, args: { workspace_id?: string }) {
+    return this.leads.statsForUser(user, args.workspace_id ?? null);
+  }
+
+  /** List staged intakes, filterable by status/source (observability). */
+  async listLeadIntakes(
+    user: User,
+    args: { workspace_id?: string; status?: LeadIntakeStatus; source?: string; limit?: number },
+  ) {
+    return this.leads.listForUser(
+      user,
+      { status: args.status, source: args.source, limit: args.limit },
+      args.workspace_id ?? null,
+    );
+  }
+
+  /** Reconcile: promote PENDING (and optionally FAILED) intakes + upgrade
+   *  provisional ids to canonical once Contact-Ops is reachable. */
+  async resolvePendingLeads(
+    user: User,
+    args: { workspace_id?: string; limit?: number; scope?: 'pending' | 'pending_and_failed' },
+  ) {
+    return this.leads.resolvePendingForUser(
+      user,
+      { limit: args.limit, scope: args.scope },
+      args.workspace_id ?? null,
+    );
+  }
+
+  /** Discard a staged intake (spam/duplicate/opt-out). Terminal. */
+  async discardLeadIntake(
+    user: User,
+    args: { intake_id: string; workspace_id?: string; reason?: string },
+  ) {
+    return this.leads.discardForUser(
+      user,
+      args.intake_id,
+      { reason: args.reason },
+      args.workspace_id ?? null,
+    );
   }
 }

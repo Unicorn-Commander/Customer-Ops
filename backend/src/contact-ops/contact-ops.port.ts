@@ -19,6 +19,8 @@
  */
 
 import {
+  ContactIdentityInput,
+  ContactUpsertResult,
   FederatedContact,
   FederatedContactPage,
   FederatedContactSummary,
@@ -73,4 +75,22 @@ export abstract class ContactOpsPort {
   abstract getWorkspaceProjection(
     ctx: FederationContext,
   ): Promise<FederatedWorkspaceProjection | null>;
+
+  /**
+   * The ONE write the port exposes: centralize a graduated lead's IDENTITY in
+   * Contact-Ops (the person SoR) and return the canonical person_id. This is the
+   * `ingest_lead` keystone's identity step — Customer-Ops never forks the
+   * phonebook; it asks Contact-Ops to upsert the person, then keys its LEAD
+   * projection on the returned contactId. Contact-Ops owns the
+   * dedupe/merge/consent rules; Customer-Ops sends only identity + a rollup tag.
+   *
+   * DEGRADE-CLEAN: returns null when Contact-Ops is unreachable (CONTACT_OPS_BASE_URL
+   * unset) OR the ingest seam (P-00059) is not yet live. A null is NOT an error —
+   * the caller stages the lead PENDING and a reconciler retries the upsert once
+   * Contact-Ops is reachable. Implementations MUST NOT throw.
+   */
+  abstract upsertContact(
+    ctx: FederationContext,
+    identity: ContactIdentityInput,
+  ): Promise<ContactUpsertResult | null>;
 }

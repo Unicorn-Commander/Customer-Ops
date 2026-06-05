@@ -27,9 +27,11 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { randomUUID } from 'crypto';
@@ -65,6 +67,7 @@ import {
   FederatedMeeting,
   FederatedMeetingSummary,
 } from '../meeting-ops/meeting-ops.types';
+import { LeadLabelResolver, isProvisionalContactId } from '../lead-intake/lead-label.port';
 import { checkTransition, engagementAdvance, STAGE_ORDER } from './funnel';
 import {
   AddNoteDto,
@@ -154,6 +157,12 @@ export class CustomersService {
     private readonly outreach: OutreachPort,
     private readonly emailOps: EmailOpsPort,
     private readonly meetingOps: MeetingOpsPort,
+    // Phase 6: resolves a real label for a PROVISIONAL contactId ('prov:…') from
+    // the lead-intake buffer while Contact-Ops is dormant. @Optional so the
+    // relationship layer has no hard dependency on the ingestion module.
+    @Optional()
+    @Inject(LeadLabelResolver)
+    private readonly leadLabels?: LeadLabelResolver,
   ) {}
 
   // ========================================================================
@@ -174,7 +183,7 @@ export class CustomersService {
       requestedWorkspaceId,
     );
     const withContacts = query.withContacts ?? true;
-    const joined = await this.joinContacts(fedCtx, rows, withContacts);
+    const joined = await this.joinContacts(user, fedCtx, rows, withContacts, requestedWorkspaceId);
     return { items: joined, count: joined.length };
   }
 
@@ -189,7 +198,7 @@ export class CustomersService {
       (tx) => this.getInTx(tx, id),
       requestedWorkspaceId,
     );
-    const [joined] = await this.joinContacts(fedCtx, [row], true);
+    const [joined] = await this.joinContacts(user, fedCtx, [row], true, requestedWorkspaceId);
     return joined;
   }
 
@@ -410,7 +419,7 @@ export class CustomersService {
         }),
       requestedWorkspaceId,
     );
-    const joined = await this.joinContacts(fedCtx, rows, withContacts);
+    const joined = await this.joinContacts(user, fedCtx, rows, withContacts, requestedWorkspaceId);
 
     const lanes = STAGE_ORDER.map((stage) => {
       const cards = joined.filter((c) => c.stage === stage);
@@ -1817,9 +1826,11 @@ export class CustomersService {
    * source of truth, the contact is an enrichment.
    */
   private async joinContacts(
+    user: User & Partial<WithWorkspaceClaim>,
     fedCtx: FederationContext,
     rows: Array<Record<string, any>>,
     withContacts: boolean,
+    requestedWorkspaceId?: string | null,
   ): Promise<CustomerWithContact[]> {
     let summaries = new Map<
       string,
@@ -1844,6 +1855,32 @@ export class CustomersService {
           },
         ]),
       );
+
+      // Phase-6 provisional fallback: any contactId the canonical phonebook did
+      // NOT resolve AND that is a local provisional id ('prov:…') gets its label
+      // from the lead-intake buffer — so an ingested lead renders with a real
+      // name while Contact-Ops is dormant. Clearly a fallback, never a contact
+      // store; it vanishes once reconciliation swaps in the canonical person.
+      if (this.leadLabels) {
+        const unresolvedProvisional = [...new Set(ids)].filter(
+          (id) => isProvisionalContactId(id) && !summaries.has(id),
+        );
+        if (unresolvedProvisional.length) {
+          const labels = await this.leadLabels.labels(
+            user,
+            requestedWorkspaceId ?? null,
+            unresolvedProvisional,
+          );
+          for (const [id, l] of labels) {
+            summaries.set(id, {
+              displayName: l.displayName,
+              primaryEmail: l.primaryEmail,
+              currentOrgName: l.currentOrgName,
+              tags: l.tags,
+            });
+          }
+        }
+      }
     }
 
     return rows.map((r) => ({

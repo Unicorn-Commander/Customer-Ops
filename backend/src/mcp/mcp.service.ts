@@ -16,6 +16,7 @@ import { CustomersService } from '../customers/customers.service';
 import { LeadTriageAgent } from '../agents/lead-triage.agent';
 import { FollowUpDrafterAgent } from '../agents/follow-up-drafter.agent';
 import { CollectionsNudgeAgent } from '../agents/collections-nudge.agent';
+import { LeadIntakeService } from '../lead-intake/lead-intake.service';
 import { CustomerOpsTools } from './mcp.tools';
 
 // The funnel stages, as a zod enum for tool input validation.
@@ -23,6 +24,10 @@ const STAGE = z.enum(['LEAD', 'PROSPECT', 'CUSTOMER']);
 // Phase-4 engagement signals + email send mode, as zod enums.
 const ENGAGEMENT = z.enum(['opened', 'clicked', 'replied', 'bounced', 'unsubscribed']);
 const EMAIL_MODE = z.enum(['send', 'draft']);
+// Phase-6 relationship priority + intake status + reconcile scope, as zod enums.
+const PRIORITY = z.enum(['LOW', 'MEDIUM', 'HIGH']);
+const INTAKE_STATUS = z.enum(['PENDING', 'RESOLVED', 'FAILED', 'DISCARDED']);
+const RESOLVE_SCOPE = z.enum(['pending', 'pending_and_failed']);
 
 @Injectable()
 export class McpService {
@@ -34,6 +39,7 @@ export class McpService {
     private readonly leadTriage: LeadTriageAgent,
     private readonly followUp: FollowUpDrafterAgent,
     private readonly collections: CollectionsNudgeAgent,
+    private readonly leads: LeadIntakeService,
   ) {}
 
   /**
@@ -49,7 +55,7 @@ export class McpService {
     const server = new McpServer(
       {
         name: 'customer-ops',
-        version: '0.5.0',
+        version: '0.6.0',
       },
       {
         capabilities: { tools: {} },
@@ -72,7 +78,12 @@ export class McpService {
           'human-in-the-loop: they return an assessment or a draft for approval and ' +
           'NEVER auto-send, post an invoice, or move a stage. Everything (contacts, ' +
           'invoices, campaigns, mail, meetings) is federated from its owning app at ' +
-          'read time, never copied.',
+          'read time, never copied. The lead-ingestion tools (ingest_lead, ' +
+          'list_lead_intakes, lead_intake_stats, resolve_pending_leads, ' +
+          'discard_lead_intake) are the leadgen front door: ingest_lead lands a ' +
+          'graduated lead idempotently, centralizes its identity in Contact-Ops, and ' +
+          'projects a Customer LEAD — degrade-clean (staged + reconciled if ' +
+          'Contact-Ops is dormant), never a second contact store.',
       },
     );
 
@@ -82,6 +93,7 @@ export class McpService {
       this.leadTriage,
       this.followUp,
       this.collections,
+      this.leads,
     );
 
     // ── Foundation tools ──
@@ -462,6 +474,116 @@ export class McpService {
         },
       },
       async (args: any) => wrap(await tools.draftCollectionsNudge(user, args)),
+    );
+
+    // ── Phase 6 lead-ingestion tools (the `ingest_lead` keystone) ──
+
+    server.registerTool(
+      'ingest_lead',
+      {
+        title: 'Ingest lead',
+        description:
+          'Ingest ONE graduated, enriched lead from a leadgen source (Northwind, Magic ' +
+          'Unicorn Outreach, LoopNet, multistate, …) or an agent. Idempotent on ' +
+          '(source, source_dedup_key) — a re-push updates the staged intake, never ' +
+          'duplicates it. Identity is CENTRALIZED in Contact-Ops (the person ' +
+          'system-of-record): pass an explicit contact_id if the source already ' +
+          'pushed to Contact-Ops, else supply identity (email/phone/display_name) and ' +
+          'Customer-Ops upserts the person. A Customer LEAD projection is created on ' +
+          'the resolved contactId (never a second contact store — only the contactId ' +
+          '+ the rollup tags are kept). Degrade-clean: if Contact-Ops is unreachable ' +
+          'the lead is staged + visible (provisional) and reconciled later. At least ' +
+          'one of contact_id / email / phone / display_name is required.',
+        inputSchema: {
+          workspace_id: z.string().optional(),
+          source: z.string().min(1).max(120),
+          source_dedup_key: z.string().min(1).max(300),
+          contact_id: z.string().max(200).optional(),
+          display_name: z.string().max(300).optional(),
+          email: z.string().max(320).optional(),
+          phone: z.string().max(40).optional(),
+          org_name: z.string().max(300).optional(),
+          tags: z.array(z.string().max(64)).optional(),
+          score: z.number().int().min(0).max(100).optional(),
+          expected_value: z.string().max(24).optional(),
+          currency: z.string().max(8).optional(),
+          priority: PRIORITY.optional(),
+          owner_user_key: z.string().max(200).optional(),
+          notes: z.string().max(4000).optional(),
+          raw_payload: z.record(z.any()).optional(),
+        },
+      },
+      async (args: any) => wrap(await tools.ingestLead(user, args)),
+    );
+
+    server.registerTool(
+      'lead_intake_stats',
+      {
+        title: 'Lead intake stats',
+        description:
+          'Status counts for the lead-intake buffer (pending/resolved/failed/' +
+          'discarded) + whether Contact-Ops is reachable. The ingestion dashboard ' +
+          'headline; cheap to poll.',
+        inputSchema: { workspace_id: z.string().optional() },
+      },
+      async (args: any) => wrap(await tools.leadIntakeStats(user, args ?? {})),
+    );
+
+    server.registerTool(
+      'list_lead_intakes',
+      {
+        title: 'List lead intakes',
+        description:
+          'List staged leads in the ingestion buffer, filterable by status ' +
+          '(PENDING/RESOLVED/FAILED/DISCARDED) and source. Each row shows the resolved ' +
+          '(or provisional) contactId + the graduated Customer projection id. ' +
+          'Observability for what has / has not yet graduated.',
+        inputSchema: {
+          workspace_id: z.string().optional(),
+          status: INTAKE_STATUS.optional(),
+          source: z.string().max(120).optional(),
+          limit: z.number().int().min(1).max(200).optional(),
+        },
+      },
+      async (args: any) => wrap(await tools.listLeadIntakes(user, args ?? {})),
+    );
+
+    server.registerTool(
+      'resolve_pending_leads',
+      {
+        title: 'Resolve pending leads',
+        description:
+          'Reconcile the intake buffer: promote PENDING (and, with scope=' +
+          'pending_and_failed, FAILED) intakes by resolving identity in Contact-Ops + ' +
+          'projecting their LEAD, and — once Contact-Ops is reachable — UPGRADE any ' +
+          'provisional contactIds to the canonical person_id (merging into an existing ' +
+          'relationship if one exists). This is the "wire P-00059 later" payoff: it ' +
+          'needs no code change, only Contact-Ops becoming reachable. Returns the ' +
+          'scanned/resolved/upgraded counts.',
+        inputSchema: {
+          workspace_id: z.string().optional(),
+          limit: z.number().int().min(1).max(500).optional(),
+          scope: RESOLVE_SCOPE.optional(),
+        },
+      },
+      async (args: any) => wrap(await tools.resolvePendingLeads(user, args ?? {})),
+    );
+
+    server.registerTool(
+      'discard_lead_intake',
+      {
+        title: 'Discard lead intake',
+        description:
+          'Discard a staged intake (spam / duplicate / opt-out). Terminal — a ' +
+          'discarded intake is never auto-resolved. A RESOLVED intake cannot be ' +
+          'discarded (mark its relationship lost instead).',
+        inputSchema: {
+          intake_id: z.string(),
+          workspace_id: z.string().optional(),
+          reason: z.string().max(500).optional(),
+        },
+      },
+      async (args: any) => wrap(await tools.discardLeadIntake(user, args)),
     );
 
     return server;
