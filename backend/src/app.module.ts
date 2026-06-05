@@ -16,6 +16,7 @@ import { MeetingOpsModule } from './meeting-ops/meeting-ops.module';
 import { AgentInferenceModule } from './agents/inference/agent-inference.module';
 import { AgentsModule } from './agents/agents.module';
 import { CustomersModule } from './customers/customers.module';
+import { LeadIntakeModule } from './lead-intake/lead-intake.module';
 
 @Module({
   imports: [
@@ -46,6 +47,10 @@ import { CustomersModule } from './customers/customers.module';
     // Phase 5 — the Meeting-Ops signal seam + the 4-lane inference port.
     MeetingOpsModule,
     AgentInferenceModule,
+    // Phase 6 — the lead-ingestion front door (the `ingest_lead` keystone).
+    // Registered before CustomersModule so its LeadLabelResolver is available
+    // for the provisional cockpit-label fallback.
+    LeadIntakeModule,
     CustomersModule,
     // Phase 5 — the relationship agents (compose the federation ports + inference).
     AgentsModule,

@@ -100,3 +100,36 @@ export interface FederatedContactPage {
   count: number;
   nextCursor: string | null;
 }
+
+/**
+ * The identity Customer-Ops pushes to Contact-Ops when a lead graduates (the
+ * `ingest_lead` keystone → the CONTACT-OPS-INGEST-CONTRACT.md "/ingest" /
+ * RBAC-MCP `ingest_person` front door). This is the IDENTITY half only — the
+ * person + the rollup tag — never Customer-Ops' vertical funnel data. Contact-Ops
+ * dedupes/merges on the strongest available key (email > phone) and returns the
+ * canonical person_id; Customer-Ops then keys its LEAD projection on it.
+ *
+ * `sourceDedupKey` + `source` ride along so Contact-Ops can make the upsert
+ * idempotent on its side too (and so a future provenance/audit trail can tie the
+ * person back to the originating leadgen record).
+ */
+export interface ContactIdentityInput {
+  /** The leadgen source slug (northwind|magic-unicorn-outreach|loopnet|…|manual|agent). */
+  source: string;
+  /** The source app's stable id for this lead (Contact-Ops idempotency hint). */
+  sourceDedupKey: string;
+  displayName?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  orgName?: string | null;
+  /** The rollup tag(s) to attach to the person (e.g. ['lead', 'northwind']). */
+  tags?: string[];
+}
+
+/** Contact-Ops' answer to an identity upsert: the canonical person_id + whether
+ *  it was newly created (vs matched to an existing person) + the new etag. */
+export interface ContactUpsertResult {
+  contactId: string; // == CO person_id
+  created: boolean;
+  etag: string | null;
+}

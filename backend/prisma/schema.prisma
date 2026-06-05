@@ -149,6 +149,30 @@ enum CustomerActivityKind {
   // records which agent + a one-line outcome + the inference lane); the agent's
   // full output is returned to the caller, not persisted as customer PII.
   AGENT_RUN
+  // Phase 6: a lead was INGESTED from a leadgen source (Northwind, Magic Unicorn
+  // Outreach, LoopNet, multistate, …) and graduated into a relationship. The
+  // body records the source + the resolved/provisional contactId + the intake
+  // id. Identity is centralized in Contact-Ops (the person SoR); Customer-Ops
+  // keeps only the contactId reference + the funnel projection (the rollup).
+  INGESTED
+}
+
+// The lifecycle of a staged lead in the ingestion buffer (LeadIntake).
+//   PENDING   — landed, identity not yet resolved (Contact-Ops dormant, or no
+//               contactId supplied + no provisional fallback). A reconciler
+//               promotes it once Contact-Ops is reachable. Nothing is lost.
+//   RESOLVED  — identity resolved (explicit contactId, a Contact-Ops upsert, or
+//               a provisional id) and a Customer LEAD projection was created/
+//               updated. The terminal happy state.
+//   FAILED    — resolution was attempted and errored hard (a Contact-Ops 5xx,
+//               an unexpected exception). Retryable via resolve-pending.
+//   DISCARDED — an operator/agent dropped the intake (spam, duplicate, opt-out).
+//               Terminal; never auto-resolved.
+enum LeadIntakeStatus {
+  PENDING
+  RESOLVED
+  FAILED
+  DISCARDED
 }
 
 // ============================================================
@@ -164,26 +188,27 @@ enum CustomerActivityKind {
 
 /// Thin mirror of the uc-registry workspace record. Customer-Ops NEVER mints workspace_id.
 model Workspace {
-  id                String       @id // == uc-registry workspace_id (uuidv7). NO @default.
-  slug              String       @unique
-  displayName       String
-  parentWorkspaceId String?
-  isolationMode     String       @default("standard") // 'strict'|'standard'|'open'  (TEXT+CHECK, §5)
-  isolationTier     String       @default("shared") // 'shared'|'premium'|'enterprise'|'dedicated'
-  hipaaMode         Boolean      @default(false)
-  gdprMode          Boolean      @default(false)
-  dataResidency     String?      @default("us-east")
-  status            String       @default("active") // active|suspended|archived|deleting
-  entitlementCache  Json? // offline/dedicated only; null on shared SaaS
-  syncedAt          DateTime     @default(now())
-  createdAt         DateTime     @default(now())
-  updatedAt         DateTime     @updatedAt
-  memberships          Membership[]
-  customers            Customer[]
-  customerActivities   CustomerActivity[]
-  customerInvoiceLinks CustomerInvoiceLink[]
+  id                    String                 @id // == uc-registry workspace_id (uuidv7). NO @default.
+  slug                  String                 @unique
+  displayName           String
+  parentWorkspaceId     String?
+  isolationMode         String                 @default("standard") // 'strict'|'standard'|'open'  (TEXT+CHECK, §5)
+  isolationTier         String                 @default("shared") // 'shared'|'premium'|'enterprise'|'dedicated'
+  hipaaMode             Boolean                @default(false)
+  gdprMode              Boolean                @default(false)
+  dataResidency         String?                @default("us-east")
+  status                String                 @default("active") // active|suspended|archived|deleting
+  entitlementCache      Json? // offline/dedicated only; null on shared SaaS
+  syncedAt              DateTime               @default(now())
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+  memberships           Membership[]
+  customers             Customer[]
+  customerActivities    CustomerActivity[]
+  customerInvoiceLinks  CustomerInvoiceLink[]
   customerOutreachLinks CustomerOutreachLink[]
   customerEmailLinks    CustomerEmailLink[]
+  leadIntakes           LeadIntake[]
 
   @@index([slug])
   @@index([status])
@@ -263,36 +288,37 @@ model Customer {
   // org, etc. are NEVER stored here — they are federated from Contact-Ops at
   // read time (the customer-360). These columns describe how the operator
   // WORKS the relationship.
-  priority        RelationshipPriority @default(MEDIUM)
+  priority          RelationshipPriority @default(MEDIUM)
   // Assigned rep — the userKey (uchub sub) of the member who owns this
   // relationship. Nullable: an unassigned lead sits in the pool.
-  ownerUserKey    String?
+  ownerUserKey      String?
   // Open pipeline value for this relationship. Money is a decimal; Customer-Ops
   // is NOT the AR engine (Accounting-Ops owns invoices), this is the cockpit's
   // forecast value only. NUMERIC(20,4) matches the suite money shape.
-  expectedValue   Decimal?             @db.Decimal(20, 4)
-  currency        String?              @default("USD")
+  expectedValue     Decimal?             @db.Decimal(20, 4)
+  currency          String?              @default("USD")
   // The next thing to do on this relationship (drives the "needs attention"
   // surface). Relationship-owned, not a Meeting-Ops/calendar event.
-  nextActionAt    DateTime?
+  nextActionAt      DateTime?
   // Lost / closed-lost marker. The stage enum stays LEAD/PROSPECT/CUSTOMER
   // (the three load-bearing stages); "lost" is an orthogonal flag so a lost
   // lead and a lost prospect both stay queryable by their last stage.
-  isLost          Boolean              @default(false)
-  lostReason      String?
-  closedLostAt    DateTime?
+  isLost            Boolean              @default(false)
+  lostReason        String?
+  closedLostAt      DateTime?
   // When the stage last changed — powers stage-age / stalled-deal reporting
   // without scanning the activity log.
-  lastStageChangeAt DateTime           @default(now())
+  lastStageChangeAt DateTime             @default(now())
 
-  createdAt   DateTime          @default(now())
-  updatedAt   DateTime          @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  workspace     Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace     Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   activities    CustomerActivity[]
   invoiceLinks  CustomerInvoiceLink[]
   outreachLinks CustomerOutreachLink[]
   emailLinks    CustomerEmailLink[]
+  intakes       LeadIntake[]
 
   // A contact holds exactly one lifecycle position per workspace.
   @@unique([workspaceId, contactId])
@@ -372,33 +398,33 @@ model CustomerActivity {
 // rows (fail-closed), and a write into another workspace is blocked by the
 // WITH CHECK. ENABLE + FORCE, identical policy.
 model CustomerInvoiceLink {
-  id          String  @id @default(uuid())
-  workspaceId String
-  customerId  String
+  id             String    @id @default(uuid())
+  workspaceId    String
+  customerId     String
   // The deterministic idempotency key AO is idempotent on. external_source is
   // always 'customer-ops' for links this app creates; stored explicitly so the
   // (source, ref) tuple is self-describing and a future second source is clean.
-  externalSource String @default("customer-ops")
+  externalSource String    @default("customer-ops")
   externalRef    String
   // The AO billing entity this invoice posts under (AO requires an entity_id;
   // it is AO's, resolved/configured per workspace — Customer-Ops just carries
   // it through so the create + poll address the same entity).
-  entityId    String
+  entityId       String
   // The AO invoice id once known (returned by create_invoice_from_draft /
   // resolved on first successful poll). Null only in the window between a
   // create attempt and the first successful AO round-trip.
-  aoInvoiceId String?
+  aoInvoiceId    String?
   // ── Cached AO projection (render convenience; AO is authoritative) ──
-  invoiceNumber String?
-  lastStatus    String? // draft|sent|partial|paid|void (AO's invoice.status)
-  currency      String  @default("USD")
-  totalAmount   Decimal? @db.Decimal(20, 4)
-  lastBalanceDue Decimal? @db.Decimal(20, 4)
+  invoiceNumber  String?
+  lastStatus     String? // draft|sent|partial|paid|void (AO's invoice.status)
+  currency       String    @default("USD")
+  totalAmount    Decimal?  @db.Decimal(20, 4)
+  lastBalanceDue Decimal?  @db.Decimal(20, 4)
   lastPolledAt   DateTime?
   // Attribution + provenance.
   createdByUcUid String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   customer  Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -437,33 +463,33 @@ model CustomerInvoiceLink {
 // no-GUC read returns zero rows (fail-closed), and a write into another
 // workspace is blocked by the WITH CHECK. ENABLE + FORCE, identical policy.
 model CustomerOutreachLink {
-  id          String  @id @default(uuid())
-  workspaceId String
-  customerId  String
+  id             String    @id @default(uuid())
+  workspaceId    String
+  customerId     String
   // The federated Contact-Ops contact id the enrollment targets (a thin
   // reference; the contact record is NEVER copied — golden rule).
-  contactId   String
+  contactId      String
   // 'email' (Listmonk campaign/sequence) | 'social' (Postiz scheduled post).
-  channel     String  @default("email")
+  channel        String    @default("email")
   // The deterministic idempotency key the Outreach app is idempotent on.
   // external_source is always 'customer-ops' for links this app creates.
-  externalSource String @default("customer-ops")
+  externalSource String    @default("customer-ops")
   externalRef    String
   // The Outreach campaign/sequence (email) or Postiz channel (social) this
   // enrollment/touch ran against (the app's id; carried through, never owned).
-  campaignId  String?
+  campaignId     String?
   // The Outreach enrollment/touch id once known (returned by enroll_contact /
   // schedule_social_touch). Null only between a trigger attempt and the first
   // successful round-trip.
-  outreachId  String?
+  outreachId     String?
   // ── Cached Outreach projection (render convenience; the app is authoritative) ──
-  campaignName String?
-  lastStatus   String? // queued|scheduled|sent|delivered|opened|clicked|replied|bounced|failed
-  lastPolledAt DateTime?
+  campaignName   String?
+  lastStatus     String? // queued|scheduled|sent|delivered|opened|clicked|replied|bounced|failed
+  lastPolledAt   DateTime?
   // Attribution + provenance.
   createdByUcUid String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   customer  Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -500,31 +526,31 @@ model CustomerOutreachLink {
 // RLS-fenced on workspaceId exactly like the other scoped tables. ENABLE +
 // FORCE, identical policy.
 model CustomerEmailLink {
-  id          String  @id @default(uuid())
-  workspaceId String
-  customerId  String
+  id             String    @id @default(uuid())
+  workspaceId    String
+  customerId     String
   // The federated Contact-Ops contact id the message is to (thin reference;
   // never copied).
-  contactId   String
+  contactId      String
   // 'send' (queued for delivery) | 'draft' (staged for agent-inbox approval).
-  mode        String  @default("send")
+  mode           String    @default("send")
   // The deterministic idempotency key the Email-Ops app is idempotent on.
-  externalSource String @default("customer-ops")
+  externalSource String    @default("customer-ops")
   externalRef    String
   // The Email-Ops thread the message landed in (new or the replied-to thread),
   // once known. The message id once known (returned by compose_email).
-  threadId    String?
-  messageId   String?
+  threadId       String?
+  messageId      String?
   // A short subject kept for cheap list rendering (NOT the body — the body lives
   // in Email-Ops/Stalwart; Customer-Ops never persists message content).
-  subject     String?
+  subject        String?
   // ── Cached Email-Ops projection (render convenience; the app is authoritative) ──
-  lastStatus  String? // queued|sent|delivered|draft|pending_approval|failed
-  lastPolledAt DateTime?
+  lastStatus     String? // queued|sent|delivered|draft|pending_approval|failed
+  lastPolledAt   DateTime?
   // Attribution + provenance.
   createdByUcUid String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   customer  Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -535,6 +561,106 @@ model CustomerEmailLink {
   // The customer-360 email panel reads a customer's outbound links newest-first.
   @@index([workspaceId, customerId, createdAt])
   @@map("customer_email_links")
+}
+
+// ============================================================
+// LEAD INTAKE BUFFER (Customer-Ops OWNS this — tenant-scoped)
+// ============================================================
+//
+// PHASE 6 — the leadgen → Customer-Ops ingestion front door (the `ingest_lead`
+// keystone). A leadgen app (Northwind, Magic Unicorn Outreach, LoopNet, multistate,
+// …) or an agent pushes a graduated, enriched lead here; this is the durable
+// staging buffer that lands it, idempotently, BEFORE identity is centralized.
+//
+// WHY A BUFFER (not a direct Customer insert): identity belongs to Contact-Ops
+// (the person system-of-record; CONTACT-OPS-INGEST-CONTRACT.md). The clean
+// pipeline is push → resolve identity in Contact-Ops → project a LEAD. But the
+// Contact-Ops `/ingest` seam (P-00059) may not be reachable at push time. This
+// table makes that timing safe: the lead is NEVER lost — it lands PENDING and a
+// reconciler promotes it the moment Contact-Ops is reachable. It is also the
+// idempotency + audit + observability surface (what's pending / failed / by
+// source). When P-00059 lands, NOTHING here changes — the resolver just starts
+// succeeding.
+//
+// IDENTITY-vs-PROJECTION SPLIT (the golden rule, honored): the relationship
+// projection is the `Customer` row, and the ONLY contact field it persists is
+// the resolved `contactId`. THIS buffer row legitimately holds the raw inbound
+// identity (displayName/email/phone/orgName) because it is the ingestion record
+// — the thing that EXISTS to be resolved — not the relationship. Once resolved,
+// the canonical person lives in Contact-Ops; this row keeps its raw payload only
+// as the audit/replay trail + the provisional-label fallback for the cockpit
+// while Contact-Ops is dormant.
+//
+// RLS-fenced on workspaceId exactly like the other scoped tables (ENABLE +
+// FORCE, identical workspace_isolation policy). A NULL/again-workspace row is
+// invisible + un-writable (fail-closed).
+model LeadIntake {
+  id                String               @id @default(uuid())
+  workspaceId       String
+  // The leadgen source that pushed this lead (the SKU/app slug): 'northwind',
+  // 'magic-unicorn-outreach', 'loopnet', 'multistate', 'manual', 'agent', …
+  source            String
+  // The source app's STABLE id for this lead — the idempotency key. A re-push of
+  // the same (source, sourceDedupKey) UPSERTS this row, never duplicates it, so
+  // a leadgen connector can retry safely. Unique per workspace.
+  sourceDedupKey    String
+  status            LeadIntakeStatus     @default(PENDING)
+  // ── Raw inbound identity (the ingestion buffer; resolved INTO Contact-Ops) ──
+  // Allowed here (this is the intake record, not the relationship projection).
+  // At least one identity key (email > phone > displayName+orgName) must be
+  // present for a lead to be resolvable; enforced at the DTO/service layer.
+  displayName       String?
+  email             String?
+  phone             String?
+  orgName           String?
+  // ── Rollup / enrichment the leadgen app computed (the "rollup tag" the ingest
+  // contract says to push to Contact-Ops + carry onto the projection) ──
+  tags              String[]             @default([])
+  // Lead score 0–100 (the leadgen app's qualification signal), if any.
+  score             Int?
+  // The full inbound envelope, verbatim — the audit/replay trail (the same
+  // raw_payload idempotency-stamp pattern as the Meeting-Ops→Project-Ops bridge).
+  rawPayload        Json?
+  // ── Optional projection seeds (the funnel hints the leadgen app suggests) ──
+  // Money is DECIMAL(20,4) — the suite money shape; never float.
+  expectedValue     Decimal?             @db.Decimal(20, 4)
+  currency          String?              @default("USD")
+  priority          RelationshipPriority @default(MEDIUM)
+  // The rep to assign on graduation (uchub sub), if the source knows it.
+  ownerUserKey      String?
+  notes             String?
+  // ── Resolution outcome ──
+  // The resolved identity: a Contact-Ops person_id, or a deterministic
+  // provisional id ('prov:<hash>') minted while Contact-Ops is dormant (swapped
+  // for the canonical id by reconciliation). Null while PENDING.
+  resolvedContactId String?
+  // Whether resolvedContactId is provisional (a local placeholder) vs a real
+  // Contact-Ops person_id. Drives reconciliation + the cockpit label source.
+  provisional       Boolean              @default(false)
+  // The Customer LEAD projection this intake graduated into (null until RESOLVED;
+  // SET NULL if that projection is later deleted — the audit row outlives it).
+  customerId        String?
+  // Human/operator detail on the current status (why pending, the failure, …).
+  statusDetail      String?
+  // Attribution + provenance + timing.
+  createdByUcUid    String?
+  resolvedAt        DateTime?
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+
+  customer  Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  // One intake per (source, sourceDedupKey), per workspace — the idempotency key.
+  @@unique([workspaceId, source, sourceDedupKey])
+  @@index([workspaceId])
+  // The reconciler scans PENDING/FAILED oldest-first.
+  @@index([workspaceId, status, createdAt])
+  // Reconciliation looks up by the resolved/provisional contactId.
+  @@index([workspaceId, resolvedContactId])
+  // The cockpit's provisional-label fallback resolves a batch of prov: ids.
+  @@index([workspaceId, customerId])
+  @@map("lead_intakes")
 }
 
 // NOTE: The Workspace↔Customer / Workspace↔CustomerActivity /
