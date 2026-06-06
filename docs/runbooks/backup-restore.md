@@ -1,6 +1,6 @@
 # Customer-Ops — Backup & Restore (Disaster Recovery)
 
-Scope: the **`customerops` Postgres database** on **commander** (the only durable
+Scope: the **`customerops` Postgres database** on **centerdeep** (the only durable
 state Customer-Ops owns). Everything else is rebuildable from the repo + the env
 file. Customer-Ops federates — it does NOT own contact / invoice / meeting truth,
 so a Customer-Ops restore never has to reconcile those (they live in their own
@@ -9,7 +9,7 @@ activity, agent-run records, and the workspace/membership rows.
 
 | Property | Value |
 | --- | --- |
-| Host | commander (Tailscale `100.79.41.137`, user `muut`) |
+| Host | centerdeep (Tailscale `100.87.46.87`, user `muut`) |
 | Container | `customer-ops-postgres` (compose project `customer-ops`) |
 | Database | `customerops` |
 | Dump role | `customer_ops_admin` (object owner, BYPASSRLS — captures ALL workspaces) |
@@ -42,19 +42,20 @@ cluster where the role grants are re-applied by the init script + migrations.
 
 ## 2. Install the scheduled backup (one-time)
 
-Backups run from the deployed repo on commander (`~/Production/customer-ops`).
+Backups run from the deployed repo on centerdeep (`~/Production/customer-ops`).
 The script reads `deploy/.env` for the `BACKUP_*` / `LISTMONK_*` config (see
 `deploy/.env.prod.example`).
 
 ```bash
-# On commander, as muut:
+# On centerdeep, as muut:
 mkdir -p /home/muut/backups/customer-ops-db
 
 # Dry-run once, by hand, to confirm it produces a verified dump:
 /home/muut/Production/customer-ops/scripts/backup.sh
 
-# Then schedule it. 02:30 is deliberately staggered off the existing
-# 02:00 (ops-center) and 03:00 (majiks) cron jobs on this host.
+# Then schedule it. 02:30 is deliberately staggered off the existing centerdeep
+# cron jobs (02:00 loopnet-leads backup; 03:15 Sun the UC snapshot tar) — verify
+# with `crontab -l` before committing to a slot.
 crontab -e
 # add:
 30 2 * * * /home/muut/Production/customer-ops/scripts/backup.sh >> /home/muut/backups/customer-ops-backup.log 2>&1
@@ -198,8 +199,8 @@ docker exec customer-ops-postgres psql -U customer_ops_admin -d customerops -c \
 docker exec customer-ops-postgres psql -U customer_ops_admin -d customerops -c \
   "select (select count(*) from workspaces) workspaces, (select count(*) from customers) customers;"
 
-# App healthy through Traefik:
-curl -fsS https://customer-ops.unicorncommander.ai/api/v1/health | jq .
+# App healthy through Traefik (backend is on the api. host on centerdeep):
+curl -fsS https://api.customer-ops.unicorncommander.ai/api/v1/health | jq .
 
 # Tenant fence actually enforcing (app role sees only GUC-scoped rows): sign in
 # and confirm the cockpit shows your workspace's data and nothing cross-tenant.
