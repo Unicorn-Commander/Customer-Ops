@@ -1,25 +1,48 @@
 /**
  * UcRegistryClient — the workspace-id MINT seam for self-serve onboarding.
  *
- * uc-registry is the suite's authority for workspace ids (SUITE-IDENTITY §0.1 /
- * §4): Customer-Ops CONSUMES workspace ids, it does NOT authoritatively mint
+ * uc-registry (uc-ops-center, commander) is the suite's sole minter +
+ * system-of-record for workspace ids (SUITE-IDENTITY §4 / handoff-uc-registry):
+ * Customer-Ops CONSUMES + mirrors workspace ids, it does NOT authoritatively own
  * them. When a brand-new SSO user provisions their own workspace (open signup
- * mode), the canonical id must come from uc-registry so every app in the suite
- * agrees on the same uuidv7 for that tenant.
+ * mode), the registry must agree on the canonical uuidv7 so every app in the
+ * suite keys that tenant identically.
  *
- * DEGRADE-CLEAN (the hard rule): uc-registry is an OPTIONAL dependency. When
- * UC_REGISTRY_URL is unset, or uc-registry is unreachable / errors / returns an
- * unusable id, this client falls back to a locally-generated uuidv7 and logs ONE
- * WARN — it NEVER throws. That keeps self-serve onboarding working in the dogfood
- * (where uc-registry isn't wired yet) and during a registry outage; the locally
- * minted id is still a valid canonical-shape v7, and a later reconciliation can
- * register it upstream if/when uc-registry comes online. The `source` on the
- * result says which path produced the id, so the call site can log it honestly.
+ * THE REAL CONTRACT (verified against uc-ops-center/uc-registry source + the live
+ * service on commander, 2026-06-06):
+ *   - `POST {UC_REGISTRY_URL}/workspaces`  (NOTE: no `/api/v1` prefix — that
+ *     prefix belongs to each app's OWN mirror-read surface, not the registry).
+ *   - The suite-preferred flow (handoff-uc-registry §"uuidv7 minting") is
+ *     MINT-APP-SIDE: the caller supplies its own canonical uuidv7 as
+ *     `workspace_id` and the registry records it IDEMPOTENTLY (201 fresh / 200
+ *     re-hit, returning the same id). The registry only mints one itself when
+ *     `workspace_id` is omitted. Supplying it makes the id stable across a
+ *     registry outage — the mirror row we write next carries the same id either
+ *     way, which is exactly what degrade-clean needs.
+ *   - Body (`WorkspaceCreate`): `{workspace_id, slug, display_name,
+ *     isolation_mode, isolation_tier, status, members:[{user_key, role,
+ *     is_default}]}`. Self-serve defaults per SUITE-IDENTITY §5:
+ *     isolation_mode=standard, isolation_tier=shared; status=active (the CO
+ *     mirror lands active). Owner attribution is a `members[]` row
+ *     (role=owner) — the registry has NO scalar owner field.
+ *   - Response (`WorkspaceFull`): the canonical `workspace_id` (echoes the
+ *     supplied id on idempotent re-hit).
  *
- * AUTH: the mint is a server-to-server call. When UC_REGISTRY_TOKEN is set it is
- * forwarded as a bearer; the endpoint is otherwise called unauthenticated (a
- * dev/registry that gates by network). The token is referenced by env-var name
- * only and never logged.
+ * DEGRADE-CLEAN (the hard rule): uc-registry is an OPTIONAL dependency. The
+ * client generates the canonical uuidv7 FIRST, then tries to register it. When
+ * UC_REGISTRY_URL is unset, or the registry is unreachable / errors / returns an
+ * unusable id, the client returns THAT SAME locally-generated id (with a WARN)
+ * and NEVER throws — so self-serve onboarding works in the dogfood (registry not
+ * wired) and during a registry outage, and a later reconciliation can register
+ * the id upstream. The `source` says which path confirmed it, so the call site
+ * can log it honestly.
+ *
+ * AUTH: the registry's `POST /workspaces` is service-internal + UNAUTHENTICATED
+ * by design (network-gated — bound to localhost / a trusted Tailscale iface; see
+ * uc-ops-center .env.example). This client therefore sends no auth by default,
+ * but forwards UC_REGISTRY_TOKEN as a bearer when set (forward-compat for a
+ * future authenticating proxy). The token is referenced by env-var name only and
+ * never logged.
  */
 
 import { Injectable, Logger } from '@nestjs/common';
@@ -38,11 +61,28 @@ export interface MintedWorkspaceId {
 
 /** What the caller knows about the workspace being created (mint hints). */
 export interface MintWorkspaceRequest {
+  /**
+   * An OPTIONAL caller-minted canonical uuidv7 to register (and to keep on the
+   * degrade path). Supply this when the caller needs the id BEFORE the mint
+   * round-trip — e.g. to derive a slug from it, or to write a mirror row whose id
+   * matches regardless of registry reachability. When omitted, the client mints
+   * one itself. A non-v7 value is ignored (the client mints a fresh one) so a bad
+   * hint can never produce an invalid id.
+   */
+  workspaceId?: string | null;
   /** A human label for the new workspace (e.g. derived from the owner's email). */
   displayName: string;
-  /** A url-safe slug suggestion; uc-registry may canonicalize/ignore it. */
+  /**
+   * The globally-unique, url-safe slug. The registry treats slug as IMMUTABLE +
+   * UNIQUE (a conflicting re-hit is a 409), so this must be the final slug the
+   * caller will also write to its mirror row — not a throwaway suggestion.
+   */
   slug: string;
-  /** The acting user's uchub `sub` — the workspace owner, for registry attribution. */
+  /**
+   * The acting user's uchub `sub`. When present, it is sent as the workspace
+   * OWNER membership row (`members:[{user_key, role:'owner', is_default:true}]`)
+   * — the registry has no scalar owner field; ownership is coarse membership.
+   */
   ownerUcUid?: string | null;
 }
 
@@ -77,71 +117,110 @@ export class UcRegistryClient {
   // --- the mint ------------------------------------------------------------
 
   /**
-   * Mint a NEW canonical workspace id for `req`. Prefers uc-registry; falls back
-   * to a local uuidv7 (with a WARN) whenever the registry is unconfigured or the
-   * round-trip can't yield a usable id. NEVER throws.
+   * Mint a NEW canonical workspace id for `req`. Generates a local uuidv7 FIRST,
+   * then registers THAT id with uc-registry (`POST /workspaces`, idempotent on the
+   * supplied id). Returns the same id whether the registry confirms it
+   * (source='uc-registry') or is unconfigured/unreachable/unusable
+   * (source='local-fallback', with a WARN). NEVER throws — the id is stable
+   * across a registry outage, so the mirror row written next is always consistent.
    */
   async mintWorkspaceId(req: MintWorkspaceRequest): Promise<MintedWorkspaceId> {
+    // Mint app-side first (handoff-uc-registry: "Mint app-side is preferred …
+    // POST /workspaces is idempotent on a supplied UUID"). This is the canonical
+    // id regardless of whether the registry is reachable. Honour a caller-minted
+    // v7 (so the caller can derive its slug / mirror row from the same id); a
+    // missing/invalid hint => mint a fresh one here.
+    const workspaceId = isUuidV7(req.workspaceId) ? (req.workspaceId as string) : uuidv7();
+
     const base = this.baseUrl;
     if (!base) {
-      // Unconfigured: the constructor already warned once; just fall back quietly
-      // so we don't log per-signup noise.
-      return { workspaceId: uuidv7(), source: 'local-fallback' };
+      // Unconfigured: the constructor already warned once; fall back quietly so we
+      // don't log per-signup noise. The id is still a valid canonical v7.
+      return { workspaceId, source: 'local-fallback' };
     }
 
-    const registryId = await this.requestRegistryId(base, req);
-    if (registryId) {
-      return { workspaceId: registryId, source: 'uc-registry' };
+    const confirmed = await this.registerWorkspace(base, workspaceId, req);
+    if (confirmed) {
+      return { workspaceId: confirmed, source: 'uc-registry' };
     }
 
-    // Reachable-but-unusable, or transport error: degrade to a local v7. The
-    // requestRegistryId() path already logged the specific reason.
-    const local = uuidv7();
+    // Reachable-but-unusable, or transport error: keep OUR id (degrade-clean).
+    // registerWorkspace() already logged the specific reason.
     this.logger.warn(
-      `uc-registry mint unavailable — using locally-generated workspace id ${local}`,
+      `uc-registry registration unavailable — using locally-minted workspace id ${workspaceId} ` +
+        '(not yet confirmed upstream; a reconciliation can register it later).',
     );
-    return { workspaceId: local, source: 'local-fallback' };
+    return { workspaceId, source: 'local-fallback' };
   }
 
   /**
-   * POST the create-workspace request to uc-registry and pull the canonical id
-   * out of the response. Returns null (so the caller falls back) on any
-   * transport error, non-2xx, unparseable body, or a missing/non-v7 id.
+   * Register `workspaceId` with uc-registry via `POST /workspaces` (idempotent on
+   * the supplied id) and confirm the canonical id it echoes back. Returns null
+   * (so the caller keeps the locally-minted id) on any transport error, non-2xx,
+   * unparseable body, or an id that doesn't match what we supplied.
    */
-  private async requestRegistryId(base: string, req: MintWorkspaceRequest): Promise<string | null> {
+  private async registerWorkspace(
+    base: string,
+    workspaceId: string,
+    req: MintWorkspaceRequest,
+  ): Promise<string | null> {
     let res: Response;
     try {
-      res = await this.fetchWithTimeout(`${base}/api/v1/workspaces`, {
+      res = await this.fetchWithTimeout(`${base}/workspaces`, {
         method: 'POST',
         headers: this.authHeaders(),
-        body: JSON.stringify({
-          display_name: req.displayName,
-          slug: req.slug,
-          owner_uc_uid: req.ownerUcUid ?? null,
-        }),
+        body: JSON.stringify(this.createBody(workspaceId, req)),
       });
     } catch (err) {
-      this.logger.warn(`uc-registry mint transport error: ${(err as Error).message}`);
+      this.logger.warn(`uc-registry register transport error: ${(err as Error).message}`);
       return null;
     }
     if (!res.ok) {
-      this.logger.warn(`uc-registry mint HTTP ${res.status}`);
+      // 409 == a slug/immutable-field conflict (a genuinely unexpected collision
+      // for a fresh v7 + unique slug); any non-2xx degrades to our local id.
+      this.logger.warn(`uc-registry register HTTP ${res.status}`);
       return null;
     }
     let raw: Record<string, unknown>;
     try {
       raw = (await res.json()) as Record<string, unknown>;
     } catch {
-      this.logger.warn('uc-registry mint returned an unparseable body');
+      this.logger.warn('uc-registry register returned an unparseable body');
       return null;
     }
-    // Accept either the snake_case suite wire field or a bare `id`.
+    // WorkspaceFull echoes `workspace_id` (== the id we supplied on a re-hit).
+    // Accept a bare `id` too for resilience. It MUST be a usable v7; we don't
+    // require an exact string match (the registry is the authority on the id),
+    // but for a supplied id it will be identical.
     const id = (raw['workspace_id'] ?? raw['id']) as unknown;
     if (typeof id !== 'string' || !isUuidV7(id)) {
-      this.logger.warn('uc-registry mint returned no usable uuidv7 workspace id');
+      this.logger.warn('uc-registry register returned no usable uuidv7 workspace id');
       return null;
     }
     return id;
+  }
+
+  /**
+   * The `WorkspaceCreate` body for `POST /workspaces`. Supplies our minted id,
+   * the final (immutable+unique) slug, the self-serve isolation defaults
+   * (SUITE-IDENTITY §5), an active status (the CO mirror lands active), and — when
+   * we know the owner — an OWNER membership row (the registry's only ownership
+   * surface; there is no scalar owner field).
+   */
+  private createBody(workspaceId: string, req: MintWorkspaceRequest): Record<string, unknown> {
+    const body: Record<string, unknown> = {
+      workspace_id: workspaceId,
+      slug: req.slug,
+      display_name: req.displayName,
+      isolation_mode: 'standard',
+      isolation_tier: 'shared',
+      status: 'active',
+    };
+    const owner = req.ownerUcUid?.trim();
+    if (owner) {
+      body['members'] = [{ user_key: owner, role: 'owner', is_default: true }];
+    }
+    return body;
   }
 
   private authHeaders(): Record<string, string> {

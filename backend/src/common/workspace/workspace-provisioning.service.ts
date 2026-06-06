@@ -78,18 +78,22 @@ export class WorkspaceProvisioningService {
     const username = identity.username?.trim() || email;
     const displayName = this.deriveDisplayName(identity, email);
 
-    // 1. Mint the canonical workspace id OUTSIDE the tx (degrade-clean; never throws).
+    // 1. Mint the canonical workspace id OUTSIDE the tx (degrade-clean; never
+    // throws). We mint the uuidv7 app-side FIRST so the slug + the mirror row are
+    // derived from the SAME id whether or not uc-registry confirms it (the
+    // suite-preferred "supply the UUID; the registry records it idempotently"
+    // flow — handoff-uc-registry §"uuidv7 minting"). The slug must be globally
+    // unique (Workspace.slug @unique) AND it is immutable at the registry, so it
+    // is finalized here, before the round-trip — never a throwaway suggestion.
+    const candidateId = uuidv7();
+    const slug = this.deriveSlug(email, candidateId);
     const minted = await this.registry.mintWorkspaceId({
+      workspaceId: candidateId,
       displayName,
-      slug: this.deriveSlug(email, /* placeholder; finalized below */ ''),
+      slug,
       ownerUcUid: identity.keycloakId,
     });
     const workspaceId = minted.workspaceId;
-    // The slug must be globally unique (Workspace.slug @unique). Derive it from
-    // the email local-part + a short suffix of the (now-known) workspace id so
-    // two users with the same local-part on different domains never collide and
-    // we need no retry loop.
-    const slug = this.deriveSlug(email, workspaceId);
 
     // 2. Materialize the tenant atomically. uc_uid attribution = the new owner.
     let result: ProvisionResult;
@@ -191,9 +195,10 @@ export class WorkspaceProvisioningService {
   /**
    * A globally-unique, url-safe slug. Base = the email local-part lowercased to
    * `[a-z0-9-]` (so it reads nicely); suffix = the last 8 hex of the workspace
-   * id (uniqueness guarantee — Workspace.slug is @unique). When the workspace id
-   * isn't known yet (the mint-hint call), the suffix is a throwaway local v7
-   * tail; the authoritative slug is recomputed once the id is final.
+   * id (uniqueness guarantee — Workspace.slug is @unique). The id is minted
+   * app-side before this is called, so the suffix is always the real workspace
+   * id's tail (the slug + id + mirror row are all coherent). The `|| uuidv7()`
+   * guard is a belt-and-suspenders fallback only.
    */
   private deriveSlug(email: string, workspaceId: string): string {
     const local = (email.split('@')[0] || 'workspace')
