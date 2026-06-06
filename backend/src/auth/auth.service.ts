@@ -1,8 +1,10 @@
-import { Injectable, UnauthorizedException, Logger } from '@nestjs/common';
+import { ConflictException, Injectable, UnauthorizedException, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma/prisma.service';
 import { User } from '@prisma/client';
 import { resolveUserAccess, describeAccessList } from './access-list';
+import { signupMode } from '../common/workspace/feature-flags';
+import { WorkspaceProvisioningService } from '../common/workspace/workspace-provisioning.service';
 
 export interface JwtPayload {
   sub: string;
@@ -21,6 +23,13 @@ export interface JwtPayload {
  * policy, and resolves by `keycloakId`/`sub` FIRST (email is a linking fallback
  * only). A valid token still grants ZERO workspace access until a Membership
  * row exists — that gate lives in MembershipService.
+ *
+ * SIGNUP MODE (CUSTOMER_OPS_SIGNUP_MODE): the JIT gate for a user the access
+ * list does NOT match. Default 'invite' == today's behavior exactly (reject the
+ * stranger — invite-only). 'open' == self-serve: the stranger instead
+ * auto-provisions their OWN workspace (a new uc-registry workspace id + an OWNER
+ * membership) via WorkspaceProvisioningService. An allow-list match ALWAYS wins
+ * first, in both modes — open mode only adds a fallback for the uncovered user.
  */
 @Injectable()
 export class AuthService {
@@ -29,6 +38,7 @@ export class AuthService {
   constructor(
     private readonly jwtService: JwtService,
     private readonly prisma: PrismaService,
+    private readonly provisioning: WorkspaceProvisioningService,
   ) {
     const meta = describeAccessList();
     this.logger.log(
@@ -58,30 +68,40 @@ export class AuthService {
       }
     }
 
-    // 3. JIT-provision, access-list gated.
+    // 3. JIT-provision. The access-list match ALWAYS wins first (unchanged in
+    //    both signup modes); the not-matched case is what the signup mode gates.
     if (!user) {
       const access = resolveUserAccess(email);
-      if (!access.allowed) {
+      if (access.allowed) {
+        // Allow-listed: seed into the bootstrap/default workspace exactly as
+        // before (MembershipService.ensureSeededMembership does the membership
+        // seed when tenancy is live). Behavior is identical in invite + open.
+        // Username uniqueness: prefer preferred_username, else email; the unique
+        // constraint guarantees we never silently collide.
+        const username = profile?.preferred_username || profile?.username || email!;
+        user = await this.prisma.user.create({
+          data: {
+            email: email!,
+            username,
+            firstName: profile?.given_name || profile?.firstName || '',
+            lastName: profile?.family_name || profile?.lastName || '',
+            keycloakId,
+          },
+        });
+        this.logger.log(
+          `Created user from Keycloak SSO: ${email} (role-on-seed ${access.role}; ${access.reason})`,
+        );
+      } else if (signupMode() === 'open' && email) {
+        // Self-serve (open mode): not on the allow-list → auto-provision the
+        // user their OWN workspace + OWNER membership in one transaction.
+        user = await this.provisionSelfServe(keycloakId, profile, email);
+      } else {
+        // Invite-only (default): a uchub account does not by itself grant access.
         this.logger.warn(`Rejected SSO JIT for ${email || '(no email)'} — ${access.reason}`);
         throw new UnauthorizedException(
           'You are not authorized for Customer-Ops. Contact your administrator.',
         );
       }
-      // Username uniqueness: prefer preferred_username, else email; the unique
-      // constraint guarantees we never silently collide.
-      const username = profile?.preferred_username || profile?.username || email!;
-      user = await this.prisma.user.create({
-        data: {
-          email: email!,
-          username,
-          firstName: profile?.given_name || profile?.firstName || '',
-          lastName: profile?.family_name || profile?.lastName || '',
-          keycloakId,
-        },
-      });
-      this.logger.log(
-        `Created user from Keycloak SSO: ${email} (role-on-seed ${access.role}; ${access.reason})`,
-      );
     }
 
     if (!user.isActive) {
@@ -90,6 +110,31 @@ export class AuthService {
 
     await this.prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
     return user;
+  }
+
+  /**
+   * Open-signup path: provision a self-serve user (their own workspace + OWNER
+   * membership). If two callbacks for the same brand-new sub race, the loser
+   * gets a ConflictException from the unique constraints — we recover by
+   * re-reading the row the winner just created, so both callers succeed.
+   */
+  private async provisionSelfServe(keycloakId: string, profile: any, email: string): Promise<User> {
+    try {
+      const result = await this.provisioning.provisionSelfServeUser({
+        keycloakId,
+        email,
+        username: profile?.preferred_username || profile?.username,
+        firstName: profile?.given_name || profile?.firstName,
+        lastName: profile?.family_name || profile?.lastName,
+      });
+      return result.user;
+    } catch (err) {
+      if (err instanceof ConflictException) {
+        const existing = await this.prisma.user.findUnique({ where: { keycloakId } });
+        if (existing) return existing;
+      }
+      throw err;
+    }
   }
 
   /** Mint a local HS256 session token for a resolved user (post OIDC callback). */
@@ -116,8 +161,10 @@ export class AuthService {
    * Disambiguate a verified JWT payload by its `iss` claim and resolve the
    * Customer-Ops User (SUITE-IDENTITY §D6):
    *   - Keycloak realm token (`iss` has `/realms/`) OR Brigade federation token
-   *     (`iss` in BRIGADE_TRUSTED_ISSUERS) → reuse the access-list-gated
-   *     validateKeycloakUser path. No path auto-provisions outside the gate.
+   *     (`iss` in BRIGADE_TRUSTED_ISSUERS) → reuse the validateKeycloakUser path,
+   *     so the SAME JIT policy applies (the access list, plus — when
+   *     CUSTOMER_OPS_SIGNUP_MODE=open — self-serve provisioning). No path
+   *     provisions OUTSIDE that policy.
    *   - Locally-signed session token (no/foreign `iss`) → resolve by local id.
    */
   async validateJwtPayload(payload: any): Promise<User> {
