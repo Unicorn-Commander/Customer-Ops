@@ -1,35 +1,47 @@
 # =============================================================================
-# Customer-Ops — PRODUCTION deploy (host: commander / Tailscale 100.79.41.137)
+# Customer-Ops — PRODUCTION deploy (host: centerdeep / Tailscale 100.87.46.87)
 # =============================================================================
-# Public host : customer-ops.unicorncommander.ai
-#               The Cloudflare wildcard `*.unicorncommander.ai` already resolves
-#               (orange-cloud / proxied) to the edge — verified `dig` returns the
-#               CF anycast IPs and a live 2-level sibling (projectops.unicorn...)
-#               serves Cloudflare's Universal-SSL edge cert. So NO new DNS record
-#               is required (the wildcard covers it). See production-deploy.md.
+# Public hosts:
+#   FRONTEND : customer-ops.unicorncommander.ai      (2-level, ORANGE-cloud / CF proxied)
+#   BACKEND  : api.customer-ops.unicorncommander.ai  (3-level, GRAY-cloud / DNS-only)
+#
+#   The 2-level frontend host is covered by Cloudflare's Universal-SSL wildcard
+#   `*.unicorncommander.ai` (verified: `dig` returns the CF anycast IPs
+#   104.21.x / 172.67.x and the live 2-level sibling projectops.unicorn... serves
+#   the CF edge cert CN=unicorncommander.ai). NO new DNS record needed for it.
+#
+#   The 3-level `api.` backend host is NOT covered by Universal SSL (that wildcard
+#   is one level only). On centerdeep this is SOLVED — not avoided — by Traefik's
+#   `cloudflare` DNS-01 cert resolver, which issues a real per-host LE cert for
+#   the 3-level name (verified live: the sibling api.projectops.unicorncommander.ai
+#   presents a real LE origin cert CN=api.projectops.unicorncommander.ai). That
+#   `api.` record is GRAY-clouded (DNS-only) at the centerdeep origin IP
+#   72.61.2.67 so the DNS-01 origin cert is served directly with no CF edge in
+#   front. ONE new gray-cloud A record is required (see production-deploy.md §5).
 #
 # Reverse proxy: Traefik v3.6 (container `traefik`), external network `web`,
-#               entrypoint `https` (:443), file+docker providers, certresolvers
-#               `letsencrypt` (HTTP-01) and `letsencrypt-cf` (DNS-01). Matched
-#               1:1 from the commander siblings (brigade, ops-center, search) and
-#               the accounting-ops same-host `/api` split.
+#               entrypoint `websecure` (:443), file+docker providers, single
+#               cert resolver `cloudflare` (DNS-01, CF_DNS_API_TOKEN-backed).
+#               Matched 1:1 from the centerdeep siblings project-ops-customer /
+#               contact-ops (websecure + cloudflare + the api.* subdomain split).
 #
-# ROUTING (same-host `/api` path split — the exact match to the app's own config:
-# NEXT_PUBLIC_API_URL=https://customer-ops.unicorncommander.ai/api/v1 and the
-# Keycloak callback /api/v1/auth/keycloak/callback are SAME-HOST path routes):
-#   customer-ops.unicorncommander.ai/api/**  -> customer-ops-backend  :3211  (priority 100)
-#   customer-ops.unicorncommander.ai/**      -> customer-ops-frontend :3000  (catch-all, priority 10)
+# ROUTING (api.* subdomain split — MATCHES the centerdeep sibling shape; the app
+# bakes NEXT_PUBLIC_API_URL=https://api.customer-ops.unicorncommander.ai/api/v1
+# and the Keycloak callback at that same api. host):
+#   api.customer-ops.unicorncommander.ai/**  -> customer-ops-backend  :3211
+#   customer-ops.unicorncommander.ai/**      -> customer-ops-frontend :3000
 #
-# >> WHY NOT an `api.` subdomain here <<
-#   project-ops puts its API on api.projectops.unicorncommander.ai — a *3-level*
-#   host. Cloudflare Universal SSL only covers ONE wildcard level
-#   (`*.unicorncommander.ai`), so a 3-level host has NO edge cert behind the
-#   proxy (verified: the TLS handshake to api.brigade.unicorncommander.ai returns
-#   nothing). project-ops works around this with the `cloudflare` DNS-01 resolver
-#   + a gray-cloud. Customer-Ops avoids the whole gap by routing the API on the
-#   SAME 2-level host under `/api`, which the frontend already bakes — zero app
-#   rebuild, no second cert. (The subdomain alternative is documented in
-#   production-deploy.md for completeness.)
+# >> WHY the `api.` subdomain HERE (vs commander's same-host /api split) <<
+#   The closest centerdeep sibling — project-ops-customer (NestJS + Next.js,
+#   dedicated PG17, the public customer instance) — puts its API on
+#   api.projectops.unicorncommander.ai and proves the 3-level cert works because
+#   centerdeep HAS a DNS-01 resolver (`cloudflare`). Commander did NOT (its only
+#   resolver was HTTP-01 `letsencrypt`, which can't issue a 3-level cert behind
+#   the CF proxy) — that is the ONLY reason the commander artifact used a 2-level
+#   same-host /api split. On centerdeep that constraint is gone, so we MATCH the
+#   sibling: cleaner separation, and the frontend build-arg + KC callback are the
+#   only deltas (no app source change). The same-host /api alternative is kept in
+#   production-deploy.md for completeness.
 #
 # ---------------------------------------------------------------------------
 # PRODUCTION POSTURE (the deltas from docker-compose.dogfood.yml):
@@ -122,7 +134,7 @@ services:
   #       all runtime queries. PrismaService.withWorkspace() then sets the
   #       `app.current_workspace` GUC (SET LOCAL) per request, which RLS enforces.
   #
-  # Routed by Traefik on the SAME host under /api (priority 100).
+  # Routed by Traefik on the dedicated api. host (api.customer-ops...).
   # ---------------------------------------------------------------------------
   customer-ops-backend:
     build:
@@ -179,19 +191,18 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=web"
-      # API on the SAME host, higher priority than the SPA catch-all. Prefix is
-      # forwarded intact (NestJS global prefix = api/v1). 2-level host => the
-      # Cloudflare Universal-SSL wildcard covers it; `letsencrypt` (HTTP-01) is
-      # the origin resolver the commander siblings use. (If the host is left
-      # orange-cloud, set Cloudflare SSL mode to Full(strict) and keep this
-      # resolver so the origin presents a real cert for the edge pull. To pin the
-      # origin cert via DNS-01 instead — e.g. if Cloudflare intercepts the HTTP-01
-      # challenge — swap to `letsencrypt-cf`; see production-deploy.md.)
-      - "traefik.http.routers.customer-ops-backend.rule=Host(`customer-ops.unicorncommander.ai`) && PathPrefix(`/api`)"
-      - "traefik.http.routers.customer-ops-backend.priority=100"
-      - "traefik.http.routers.customer-ops-backend.entrypoints=https"
+      # API on its OWN 3-level host (matches the centerdeep sibling
+      # project-ops-customer: api.projectops.unicorncommander.ai). NestJS keeps
+      # its global prefix api/v1, so the public path is
+      # https://api.customer-ops.unicorncommander.ai/api/v1/**. The 3-level host
+      # is GRAY-clouded (DNS-only) and the cert is minted by the `cloudflare`
+      # DNS-01 resolver — Universal SSL does NOT cover a 3-level name, and DNS-01
+      # is exactly how the sibling api.projectops gets its real LE origin cert.
+      # No PathPrefix / priority needed (dedicated host, no catch-all to lose to).
+      - "traefik.http.routers.customer-ops-backend.rule=Host(`api.customer-ops.unicorncommander.ai`)"
+      - "traefik.http.routers.customer-ops-backend.entrypoints=websecure"
       - "traefik.http.routers.customer-ops-backend.tls=true"
-      - "traefik.http.routers.customer-ops-backend.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.customer-ops-backend.tls.certresolver=cloudflare"
       - "traefik.http.routers.customer-ops-backend.middlewares=customer-ops-security"
       - "traefik.http.services.customer-ops-backend.loadbalancer.server.port=3211"
 
@@ -206,7 +217,7 @@ services:
       context: ../frontend
       dockerfile: Dockerfile
       args:
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-https://customer-ops.unicorncommander.ai/api/v1}
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-https://api.customer-ops.unicorncommander.ai/api/v1}
     image: customer-ops-frontend:prod
     container_name: customer-ops-frontend
     restart: unless-stopped
@@ -244,15 +255,18 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=web"
+      # SPA on the 2-level host (ORANGE-cloud / CF edge). Covered by Universal
+      # SSL; the `cloudflare` DNS-01 resolver also mints the origin cert behind
+      # the proxy (CF SSL mode Full(strict)). No PathPrefix/priority — the api.*
+      # backend lives on a separate host now, so there is no same-host split.
       - "traefik.http.routers.customer-ops-frontend.rule=Host(`customer-ops.unicorncommander.ai`)"
-      - "traefik.http.routers.customer-ops-frontend.priority=10"
-      - "traefik.http.routers.customer-ops-frontend.entrypoints=https"
+      - "traefik.http.routers.customer-ops-frontend.entrypoints=websecure"
       - "traefik.http.routers.customer-ops-frontend.tls=true"
-      - "traefik.http.routers.customer-ops-frontend.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.customer-ops-frontend.tls.certresolver=cloudflare"
       - "traefik.http.routers.customer-ops-frontend.middlewares=customer-ops-security"
       - "traefik.http.services.customer-ops-frontend.loadbalancer.server.port=3000"
       # Shared security-headers middleware (HSTS + clickjacking + nosniff),
-      # mirrored from the commander `security-headers` file-provider middleware.
+      # mirrored from the centerdeep file-provider middleware convention.
       - "traefik.http.middlewares.customer-ops-security.headers.stsSeconds=31536000"
       - "traefik.http.middlewares.customer-ops-security.headers.stsIncludeSubdomains=true"
       - "traefik.http.middlewares.customer-ops-security.headers.stsPreload=true"
@@ -267,9 +281,10 @@ volumes:
     name: customer-ops-pgdata
 
 networks:
-  # The EXISTING external Traefik ingress network on commander (the docker
-  # provider is configured with `network: web`; all suite siblings join it).
-  # Must already exist — `docker network inspect web` on commander.
+  # The EXISTING external Traefik ingress network on centerdeep (traefik.yml's
+  # docker provider is configured with `network: web`; all suite siblings —
+  # project-ops, contact-ops, meeting-ops — join it). Must already exist:
+  # `docker network inspect web` on centerdeep.
   web:
     external: true
   # App-private network for backend <-> postgres. Created by this compose.

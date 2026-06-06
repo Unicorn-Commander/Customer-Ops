@@ -1,26 +1,41 @@
-# Customer-Ops — Production Deploy Runbook (commander / unicorncommander.ai)
+# Customer-Ops — Production Deploy Runbook (centerdeep / unicorncommander.ai)
 
-Target: **customer-ops.unicorncommander.ai** on **commander** (Tailscale
-`100.79.41.137`, user `muut`, Docker, Traefik v3.6).
+Target: frontend **customer-ops.unicorncommander.ai** + backend
+**api.customer-ops.unicorncommander.ai** on **centerdeep** (Tailscale
+`100.87.46.87`, public origin IP `72.61.2.67`, user `muut`, Docker, Traefik v3.6).
+
+> **Why centerdeep (not commander).** Decision (Aaron, 2026-06): the public
+> Customer-Ops SaaS runs on **centerdeep**, where the other customer-facing suite
+> apps already live (project-ops-customer, contact-ops, meeting-ops). Commander
+> remains the suite's shared identity/billing/inference plane (Keycloak `auth.`,
+> Brigade, uc-registry, Lago, the litellm gateway) — those cross-app seams below
+> still point at commander on purpose.
 
 This is the **public production** posture — the deltas from the dogfood bring-up
 (`deploy/DEPLOY.md`, host bigboy) are:
 
-| | Dogfood (bigboy) | **Production (commander)** |
+| | Dogfood (bigboy) | **Production (centerdeep)** |
 | --- | --- | --- |
-| Host | customer-ops.magicunicorn.dev | **customer-ops.unicorncommander.ai** |
+| Frontend host | customer-ops.magicunicorn.dev | **customer-ops.unicorncommander.ai** |
+| Backend host | (same host /api) | **api.customer-ops.unicorncommander.ai** |
 | Tenancy | OFF (runtime = owner) | **ON (runtime = NOBYPASSRLS `customer_ops_app`)** |
 | Entitlements | `open` (warn) | **`enforce`** |
 | Federation | all seams blank | **wired one app at a time** |
 | Compose | `docker-compose.dogfood.yml` | **`docker-compose.prod.yml`** |
 | Env | `.env.dogfood.example` | **`.env.prod.example`** |
-| Traefik provider | docker labels (bigboy) | **docker labels, network `web` (commander)** |
-| Cert resolver | `letsencrypt` (HTTP-01) | `letsencrypt` (+ `letsencrypt-cf` DNS-01 fallback) |
+| Traefik provider | docker labels (bigboy) | **docker labels, network `web` (centerdeep)** |
+| Traefik entrypoint | `web`/`websecure` | **`websecure`** |
+| Cert resolver | `letsencrypt` (HTTP-01) | **`cloudflare` (DNS-01)** |
+| API routing | same-host `/api` | **api.* subdomain (matches the centerdeep sibling)** |
 
 > Read `deploy/DEPLOY.md` first — the app-level mechanics (KC client shape, the
-> same-host `/api` routing rationale, the `prisma migrate deploy` boot sequence)
-> are identical; this runbook only layers on the production host + the security
-> flips + the cross-app dependency order.
+> `prisma migrate deploy` boot sequence) are identical; this runbook layers on the
+> production host + the security flips + the cross-app dependency order. **Note:**
+> DEPLOY.md describes the same-host `/api` routing rationale (the commander/dogfood
+> shape). On **centerdeep** the API is on a dedicated `api.` host instead, to match
+> the centerdeep sibling **project-ops-customer** (which puts its API on
+> `api.projectops.unicorncommander.ai`) — see §5 for why that 3-level host works
+> here (DNS-01) when it didn't on commander (HTTP-01 only).
 
 ---
 
@@ -48,16 +63,21 @@ deploy itself (§5–6) can proceed in `open` entitlement mode the moment 1–3 
 ## 1. Keycloak `customer-ops` client (realm `uchub`)
 
 Identical to the dogfood client (`deploy/DEPLOY.md` §a.1) **except the redirect
-URIs use the prod host**. On **auth.unicorncommander.ai**, realm **uchub**:
+URIs use the prod hosts**. On **auth.unicorncommander.ai**, realm **uchub**:
 
 - **Client ID:** `customer-ops`  (confidential, OIDC, **RS256**)
 - **Standard flow:** ON. Direct access grants: off.
-- **Valid redirect URIs:**
-  - `https://customer-ops.unicorncommander.ai/*`
-  - `https://customer-ops.unicorncommander.ai/api/v1/auth/keycloak/callback`
+- **Valid redirect URIs** (NOTE the OIDC callback is on the **api.** host on
+  centerdeep, because the backend — which serves `/api/v1/auth/keycloak/callback`
+  — is on that host):
+  - `https://api.customer-ops.unicorncommander.ai/api/v1/auth/keycloak/callback`
     (the exact `KEYCLOAK_CALLBACK_URL`)
+  - `https://customer-ops.unicorncommander.ai/*` (the frontend host, for the
+    post-login return to the SPA)
 - **Valid post-logout redirect URIs:** `https://customer-ops.unicorncommander.ai/*`
-- **Web origins:** `https://customer-ops.unicorncommander.ai`
+- **Web origins:** `https://customer-ops.unicorncommander.ai` (the SPA origin)
+  — and add `https://api.customer-ops.unicorncommander.ai` if you see CORS
+  preflight rejections on the auth callback.
 - **Audience:** issued tokens must carry `aud=customer-ops` (matches
   `BRIGADE_EXPECTED_AUDIENCE`). Add an **Audience** mapper if the realm doesn't by
   default.
@@ -92,14 +112,16 @@ see the Brigade federation runbook, not this repo.
 ## 3. uc-registry workspace
 
 Under live tenancy, the membership gate resolves the acting user → a workspace via
-uc-registry (uc-ops-center on commander). Ensure the prod workspace exists and the
-OWNER users (from `CUSTOMER_OPS_ACCESS_LIST`) are members. `DEFAULT_WORKSPACE_ID`
-in `.env` is the seeded bootstrap/owner workspace
-(`0190a000-7e57-7000-8000-00000000c007`); for a public multi-tenant posture,
-new tenants' workspaces come from uc-registry at sign-in.
+uc-registry (uc-ops-center on **commander** — the shared identity plane, NOT on
+centerdeep). Ensure the prod workspace exists and the OWNER users (from
+`CUSTOMER_OPS_ACCESS_LIST`) are members. `DEFAULT_WORKSPACE_ID` in `.env` is the
+seeded bootstrap/owner workspace (`0190a000-7e57-7000-8000-00000000c007`); for a
+public multi-tenant posture, new tenants' workspaces come from uc-registry at
+sign-in.
 
-*Read-only check:* `uc-ops-center-uc-registry-1` is healthy (`docker ps`). The
-workspace/membership provisioning is a **uc-registry operation (Aaron lever)**.
+*Read-only check (run on commander):* `uc-ops-center-uc-registry-1` is healthy
+(`ssh commander docker ps`). The workspace/membership provisioning is a
+**uc-registry operation (Aaron lever)**.
 
 ---
 
@@ -114,53 +136,66 @@ before the claim exists 402s legitimate users.
 
 ---
 
-## 5. DNS (Cloudflare)
+## 5. DNS (Cloudflare) + TLS posture (centerdeep)
 
-**No new DNS record is required.** The Cloudflare wildcard `*.unicorncommander.ai`
-already resolves `customer-ops.unicorncommander.ai` to the Cloudflare edge
-(verified: `dig +short customer-ops.unicorncommander.ai` returns the CF anycast
-IPs `104.21.x` / `172.67.x`, exactly like the live sibling
-`projectops.unicorncommander.ai`).
+Centerdeep splits the app across **two** hosts, with two different Cloudflare
+postures — this MATCHES the live sibling `project-ops-customer` exactly.
 
-TLS posture — **why customer-ops uses the SAME-HOST `/api` split and a 2-level
-host** (the moat detail):
-- `customer-ops.unicorncommander.ai` is a **2-level** subdomain → covered by
-  Cloudflare's **Universal SSL** wildcard `*.unicorncommander.ai`. A live 2-level
-  sibling serves Cloudflare's edge cert (`CN=unicorncommander.ai`, Google Trust
-  Services) and returns 200.
-- An `api.` **3-level** subdomain (e.g. `api.customer-ops.unicorncommander.ai`)
-  is **NOT** covered by Universal SSL — verified: the TLS handshake to the live
-  3-level `api.brigade.unicorncommander.ai` returns nothing (broken edge cert).
-  project-ops works around this with the `cloudflare` DNS-01 resolver + a
-  gray-cloud. **Customer-Ops avoids the gap entirely** by routing its API on the
-  same 2-level host under `/api`, which the frontend already bakes
-  (`NEXT_PUBLIC_API_URL=.../api/v1`) — zero app rebuild, no second cert.
+**Frontend — `customer-ops.unicorncommander.ai` (2-level, ORANGE-cloud / proxied):**
+No new DNS record needed. The Cloudflare wildcard `*.unicorncommander.ai` already
+resolves it to the CF edge (verified: `dig +short customer-ops.unicorncommander.ai`
+→ CF anycast `104.21.34.94` / `172.67.203.72`, identical to the live 2-level
+sibling `projectops.unicorncommander.ai`, which serves the CF edge cert
+`CN=unicorncommander.ai`, Google Trust Services). Universal SSL covers this
+2-level name at the edge. Keep the zone SSL mode at **Full (strict)**; the
+`cloudflare` DNS-01 resolver also mints a real origin cert behind the proxy so the
+CF→origin pull validates.
 
-Cloudflare proxy + origin cert:
-- If the record stays **orange-cloud (proxied)**: set the zone SSL mode to
-  **Full (strict)** and keep `certresolver=letsencrypt` so the origin presents a
-  real LE cert for Cloudflare's origin pull. If Cloudflare intercepts the HTTP-01
-  challenge at the origin (it can, for proxied hosts), switch the two routers in
-  `docker-compose.prod.yml` to `certresolver=letsencrypt-cf` (the DNS-01 resolver
-  already configured in commander's `traefik.yml`, `CF_DNS_API_TOKEN`-backed) so
-  the origin cert is minted via DNS and never needs an HTTP path. *(Aaron lever:
-  the Cloudflare zone SSL-mode setting + any gray/orange toggle.)*
-- If you prefer **gray-cloud (DNS-only)** like `brigade.unicorncommander.ai`:
-  point an A record at commander's origin IP and `letsencrypt` (HTTP-01) just
-  works (gray-cloud lets the ACME challenge through). This bypasses the CF edge.
+**Backend — `api.customer-ops.unicorncommander.ai` (3-level, GRAY-cloud / DNS-only):**
+**ONE new DNS record is required (Aaron lever):**
+> Add an **A record** `api.customer-ops` → **`72.61.2.67`** (centerdeep's origin
+> IP), **gray-cloud (Proxy status: DNS only)** in the `unicorncommander.ai` zone.
+
+Why gray-cloud + DNS-01 (the moat detail, VERIFIED on the sibling):
+- A **3-level** name is **NOT** covered by Cloudflare Universal SSL (the wildcard
+  `*.unicorncommander.ai` is one level only). Behind the orange-cloud proxy a
+  3-level host therefore has no valid edge cert.
+- On **centerdeep this is solved, not avoided**: Traefik's `cloudflare` cert
+  resolver uses the **DNS-01** challenge (`CF_DNS_API_TOKEN`-backed, configured in
+  `/home/muut/Production/traefik/traefik.yml`) to mint a real per-host Let's
+  Encrypt cert for the 3-level name. VERIFIED LIVE on the sibling: the TLS
+  handshake to `api.projectops.unicorncommander.ai` presents a real LE origin cert
+  `CN=api.projectops.unicorncommander.ai` (issuer Let's Encrypt). `dig` confirms
+  that sibling is gray-clouded — it resolves to the bare origin `72.61.2.67`, not
+  the CF anycast range.
+- Commander could NOT do this (its only resolver was HTTP-01 `letsencrypt`, which
+  cannot answer the ACME challenge for a proxied 3-level host), which is the only
+  reason the commander artifact used a same-host `/api` split. Centerdeep's DNS-01
+  resolver removes that constraint, so we match the sibling's `api.` shape.
+
+No Cloudflare zone SSL-mode change is needed for the gray-cloud `api.` host — it
+bypasses the CF edge entirely; clients hit the centerdeep origin and Traefik
+serves the DNS-01 cert directly.
+
+> The same-host `/api` alternative (the commander shape) is preserved in the
+> Appendix for reference, but the **api.* subdomain is the centerdeep default**
+> because it matches the sibling and the DNS-01 resolver makes it free.
 
 ---
 
 ## 6. First deploy
 
-All commands on **commander** as `muut`.
+All commands on **centerdeep** as `muut` (`ssh centerdeep`). The deploy root
+convention here is `~/Production/<app>` (siblings: `~/Production/project-ops-customer`,
+`~/Production/contact-ops`). Compose is invoked with `-f deploy/docker-compose.prod.yml`
+from the repo root.
 
 ```bash
 # 1. Get the repo next to the siblings:
 cd ~/Production
 git clone <customer-ops repo URL> customer-ops
 cd ~/Production/customer-ops
-git checkout <release ref>        # the reviewed prod commit/tag
+git checkout <release ref>        # the reviewed prod commit/tag (deploy/centerdeep-prod)
 
 # 2. Env file:
 cp deploy/.env.prod.example deploy/.env
@@ -236,12 +271,17 @@ runbook before filling.
 ## 8. Smoke test (through Traefik + Cloudflare)
 
 ```bash
-# Backend health (proves same-host /api routing + TLS + DB up):
-curl -fsS https://customer-ops.unicorncommander.ai/api/v1/health | jq .       # status:"ok", database:up
-curl -fsS https://customer-ops.unicorncommander.ai/api/v1/health/live          # {"status":"ok",...}
+# Backend health (proves the api. host + DNS-01 TLS + DB up):
+curl -fsS https://api.customer-ops.unicorncommander.ai/api/v1/health | jq .       # status:"ok", database:up
+curl -fsS https://api.customer-ops.unicorncommander.ai/api/v1/health/live          # {"status":"ok",...}
 
-# Frontend at the root:
+# Frontend at the root (2-level host, CF edge):
 curl -fsS -o /dev/null -w "%{http_code}\n" https://customer-ops.unicorncommander.ai/   # 200
+
+# Confirm the api. host presents a REAL LE cert (DNS-01), like the sibling:
+echo | openssl s_client -connect api.customer-ops.unicorncommander.ai:443 \
+  -servername api.customer-ops.unicorncommander.ai 2>/dev/null \
+  | openssl x509 -noout -issuer -subject   # issuer=Let's Encrypt, CN=api.customer-ops...
 
 # Roles + RLS in the DB:
 docker exec customer-ops-postgres psql -U customer_ops_admin -d customerops -c \
@@ -256,9 +296,15 @@ docker exec customer-ops-backend npx prisma migrate status
 #   data and nothing cross-tenant (the live tenant fence).
 ```
 
-If `/api/v1/health` returns the SPA HTML instead of JSON, the `/api` router lost
-to the catch-all — confirm `priority=100` + `PathPrefix(/api)` on the backend
-router in `docker compose -f deploy/docker-compose.prod.yml config`.
+If `https://api.customer-ops.unicorncommander.ai/api/v1/health` does not resolve
+or the TLS handshake fails: (a) confirm the **gray-cloud A record** for
+`api.customer-ops` → `72.61.2.67` exists and is **DNS-only** (orange-cloud would
+break the DNS-01 origin cert — `dig +short api.customer-ops.unicorncommander.ai`
+must return the bare origin `72.61.2.67`, NOT the CF anycast range); (b) confirm
+the backend router rule + `certresolver=cloudflare` + `entrypoints=websecure` in
+`docker compose -f deploy/docker-compose.prod.yml config`; (c) Traefik mints the
+DNS-01 cert on first request — give it ~30s and check `docker logs traefik` for
+an ACME error if it doesn't appear.
 
 If the backend **crash-loops with a password/authentication failure** right after
 first boot: a migration reset the `customer_ops_app` password to its placeholder
@@ -313,20 +359,25 @@ live in **`docs/runbooks/backup-restore.md`**. Install the scheduled backup
 
 ---
 
-## Appendix: API on an `api.` subdomain (the project-ops shape — NOT default)
+## Appendix: API on the SAME 2-level host under `/api` (the commander shape — NOT the centerdeep default)
 
-If you ever prefer the project-ops shape
-(`api.customer-ops.unicorncommander.ai`), you MUST handle the 3-level Universal
-SSL gap (see §5):
+The **default on centerdeep is the `api.` subdomain** (this runbook + the compose
+labels), because it matches the live sibling `project-ops-customer` and the
+`cloudflare` DNS-01 resolver mints the 3-level cert for free. If you ever prefer to
+collapse onto the single 2-level host under `/api` instead (the commander shape —
+e.g. to skip the gray-cloud `api.` DNS record entirely):
 1. Rebuild the frontend with
-   `NEXT_PUBLIC_API_URL=https://api.customer-ops.unicorncommander.ai/api/v1`.
-2. Set `KEYCLOAK_CALLBACK_URL` to that subdomain + add it to the KC client.
+   `NEXT_PUBLIC_API_URL=https://customer-ops.unicorncommander.ai/api/v1`.
+2. Set `KEYCLOAK_CALLBACK_URL=https://customer-ops.unicorncommander.ai/api/v1/auth/keycloak/callback`
+   + update the KC client redirect URI to that host.
 3. Replace the backend router rule with
-   `Host(\`api.customer-ops.unicorncommander.ai\`)` (drop `&& PathPrefix(/api)`
-   + the priority) and set **`certresolver=letsencrypt-cf`** (DNS-01) — HTTP-01
-   cannot work behind the Cloudflare proxy for a 3-level host.
-4. Gray-cloud the `api.` record OR rely on the DNS-01 origin cert; either way the
-   2-level Universal SSL does NOT cover it.
+   `Host(\`customer-ops.unicorncommander.ai\`) && PathPrefix(\`/api\`)` and add
+   `priority=100` (so it beats the SPA catch-all on the same host); set the
+   frontend router `priority=10`. Keep `entrypoints=websecure` +
+   `certresolver=cloudflare` (centerdeep has no `letsencrypt`/HTTP-01 resolver).
+4. No new DNS record needed — the 2-level host is already orange-cloud + covered by
+   Universal SSL.
 
-The same-host `/api` split in `docker-compose.prod.yml` is the supported default
-precisely because it sidesteps all of this.
+The `api.` subdomain split in `docker-compose.prod.yml` is the supported default
+precisely because it matches the centerdeep sibling and the DNS-01 resolver makes
+the 3-level cert a non-issue.
