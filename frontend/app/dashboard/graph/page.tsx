@@ -59,7 +59,7 @@ export default function GraphPage() {
   // Loading / empty / error all share the explorer's framed glass canvas so the
   // page chrome never jumps when data arrives.
   return (
-    <div className="mx-auto flex h-[calc(100vh-118px)] max-w-[1320px] animate-fade-up">
+    <div className="mx-auto flex h-[calc(100dvh-148px)] max-w-[1320px] animate-fade-up sm:h-[calc(100dvh-128px)] lg:h-[calc(100vh-118px)]">
       <section className="co-glass co-glass-edge relative flex flex-1 items-center justify-center overflow-hidden">
         <div aria-hidden className="co-glow co-glow-cyan absolute -right-24 -top-28 h-72 w-96 opacity-50" />
         <div aria-hidden className="co-glow absolute -left-24 bottom-0 h-72 w-80 opacity-35" />
