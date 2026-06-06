@@ -4,32 +4,15 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import {
-  LayoutDashboard, Users, Filter, Receipt, Megaphone, Mail, Video, Bot, Waypoints,
-  Inbox, Search, Plus, LogOut, Radar, PanelLeftClose, PanelLeftOpen, type LucideIcon,
+  Search, Plus, LogOut, Radar, PanelLeftClose, PanelLeftOpen, Menu,
 } from 'lucide-react';
 import { getToken, getStoredUser, clearSession, type CustomerOpsUser } from '@/lib/api';
+import { NAV, FEDERATED, isNavActive } from '@/lib/nav';
 import { ThemeToggle } from './ThemeToggle';
 import { CommandPalette } from './CommandPalette';
+import { MobileNav } from './MobileNav';
 import { IconTile } from './ui/IconTile';
 import { cn } from './ui/cn';
-
-interface NavItem { href: string; label: string; icon: LucideIcon; exact?: boolean; gradient: string; bar: string }
-
-const NAV: NavItem[] = [
-  { href: '/dashboard', label: 'Overview', icon: LayoutDashboard, exact: true, gradient: 'from-indigo-500 to-violet-500', bar: 'bg-violet-400' },
-  { href: '/dashboard/leads', label: 'Ingestion', icon: Inbox, gradient: 'from-lime-400 to-emerald-500', bar: 'bg-emerald-400' },
-  { href: '/dashboard/customers', label: 'Relationships', icon: Users, gradient: 'from-violet-500 to-fuchsia-500', bar: 'bg-fuchsia-400' },
-  { href: '/dashboard/pipeline', label: 'Pipeline', icon: Filter, gradient: 'from-amber-400 to-orange-500', bar: 'bg-amber-400' },
-  { href: '/dashboard/graph', label: 'Graph', icon: Waypoints, gradient: 'from-cyan-400 to-blue-500', bar: 'bg-cyan-400' },
-];
-
-const FEDERATED: { label: string; icon: LucideIcon; gradient: string }[] = [
-  { label: 'Invoices', icon: Receipt, gradient: 'from-emerald-400 to-teal-500' },
-  { label: 'Outreach', icon: Megaphone, gradient: 'from-fuchsia-500 to-pink-500' },
-  { label: 'Email', icon: Mail, gradient: 'from-sky-400 to-blue-500' },
-  { label: 'Meetings', icon: Video, gradient: 'from-teal-400 to-cyan-500' },
-  { label: 'Agents', icon: Bot, gradient: 'from-violet-500 to-cyan-500' },
-];
 
 const DEMO_USER: CustomerOpsUser = { id: 'demo', email: 'aaron@magicunicorn.tech', username: 'aaron', firstName: 'Aaron', lastName: 'Stransky' };
 
@@ -48,6 +31,7 @@ export function AppShell({ children, demo = false }: { children: React.ReactNode
   const [user, setUser] = useState<CustomerOpsUser | null>(demo ? DEMO_USER : null);
   const [collapsed, setCollapsed] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   useEffect(() => {
     try { setCollapsed(localStorage.getItem('co-sidebar') === 'collapsed'); } catch { /* ignore */ }
@@ -70,6 +54,9 @@ export function AppShell({ children, demo = false }: { children: React.ReactNode
     return () => window.removeEventListener('keydown', onKey);
   }, []);
   const closePalette = useCallback(() => setPaletteOpen(false), []);
+  const closeMobileNav = useCallback(() => setMobileNavOpen(false), []);
+  // Dismiss the mobile drawer on navigation (a tap that changes the route).
+  useEffect(() => { setMobileNavOpen(false); }, [pathname]);
   useEffect(() => {
     if (demo) return;
     if (!getToken()) { router.replace('/auth/login'); return; }
@@ -120,7 +107,7 @@ export function AppShell({ children, demo = false }: { children: React.ReactNode
         {/* Primary nav */}
         <nav className={cn('flex flex-col gap-1', collapsed && 'w-full items-center')}>
           {NAV.map((item) => {
-            const active = item.exact ? pathname === item.href : pathname.startsWith(item.href);
+            const active = isNavActive(item, pathname);
             return (
               <Link
                 key={item.href}
@@ -194,10 +181,22 @@ export function AppShell({ children, demo = false }: { children: React.ReactNode
 
       {/* ---- Main column ---- */}
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="sticky top-0 z-20 flex items-center justify-between gap-4 border-b border-subtle bg-surface-base/80 px-5 py-3 backdrop-blur-xl">
-          <div className="min-w-0">
-            <h1 className="truncate text-[15px] font-semibold text-primary">{title}</h1>
-            <p className="truncate text-xs text-tertiary">{sub}</p>
+        <header className="sticky top-0 z-20 flex items-center justify-between gap-3 border-b border-subtle bg-surface-base/80 px-4 py-3 backdrop-blur-xl sm:px-5 sm:gap-4">
+          <div className="flex min-w-0 items-center gap-2.5">
+            {/* Mobile: open the nav drawer (the rail is hidden below md). */}
+            <button
+              type="button"
+              onClick={() => setMobileNavOpen(true)}
+              aria-label="Open navigation"
+              aria-haspopup="dialog"
+              className="-ml-1 grid h-9 w-9 shrink-0 place-items-center rounded-token border border-subtle bg-surface-raised text-tertiary transition-colors duration-fast ease-token hover:text-primary hover:bg-surface-overlay focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 md:hidden"
+            >
+              <Menu className="h-[18px] w-[18px]" strokeWidth={2.25} />
+            </button>
+            <div className="min-w-0">
+              <h1 className="truncate text-[15px] font-semibold text-primary">{title}</h1>
+              <p className="truncate text-xs text-tertiary">{sub}</p>
+            </div>
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -211,18 +210,32 @@ export function AppShell({ children, demo = false }: { children: React.ReactNode
               <kbd className="ml-1 rounded border border-subtle bg-surface-overlay px-1.5 py-0.5 font-mono text-[10px] text-muted">⌘K</kbd>
             </button>
             <ThemeToggle />
-            <Link href="/dashboard/customers" className="inline-flex items-center gap-1.5 rounded-token bg-accent px-3 py-2 text-xs font-semibold text-accent-contrast shadow-glow transition-colors hover:bg-accent-hover">
-              <Plus className="h-4 w-4" strokeWidth={2.5} /> New
+            <Link
+              href="/dashboard/customers"
+              aria-label="New relationship"
+              className="inline-flex items-center gap-1.5 rounded-token bg-accent px-2.5 py-2 text-xs font-semibold text-accent-contrast shadow-glow transition-colors hover:bg-accent-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 sm:px-3"
+            >
+              <Plus className="h-4 w-4" strokeWidth={2.5} /> <span className="hidden sm:inline">New</span>
             </Link>
           </div>
         </header>
 
-        <main className="co-ambient co-ambient-grid flex-1 px-5 py-6">{children}</main>
+        <main className="co-ambient co-ambient-grid flex-1 px-4 py-5 sm:px-5 sm:py-6">{children}</main>
       </div>
 
       {/* ⌘K command palette — portaled to <body>, opened from the topbar search
           button or the global keyboard shortcut. */}
       <CommandPalette open={paletteOpen} onClose={closePalette} />
+
+      {/* Mobile navigation drawer — the rail is hidden below md, so this is the
+          only way to move between cockpit sections on a phone. */}
+      <MobileNav
+        open={mobileNavOpen}
+        onClose={closeMobileNav}
+        pathname={pathname}
+        user={user}
+        onSignOut={signOut}
+      />
     </div>
   );
 }
