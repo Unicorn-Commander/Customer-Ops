@@ -52,11 +52,44 @@ describe('JwtStrategy.readEntitlements', () => {
     ]);
   });
 
+  it('reads the suite-namespaced uc_skus claim (array OR string)', () => {
+    expect(JwtStrategy.readEntitlements({ uc_skus: ['customer-ops', 'ai-metered'] })).toEqual([
+      'customer-ops',
+      'ai-metered',
+    ]);
+    expect(JwtStrategy.readEntitlements({ uc_skus: 'customer-ops ai-metered' })).toEqual([
+      'customer-ops',
+      'ai-metered',
+    ]);
+  });
+
+  it('reads the singular entitlement claim as a fallback', () => {
+    expect(JwtStrategy.readEntitlements({ entitlement: 'customer-ops' })).toEqual(['customer-ops']);
+    expect(JwtStrategy.readEntitlements({ entitlement: ['customer-ops'] })).toEqual(['customer-ops']);
+  });
+
   it('falls back to products, then nested subscription.products', () => {
     expect(JwtStrategy.readEntitlements({ products: ['accounting-ops'] })).toEqual(['accounting-ops']);
     expect(
       JwtStrategy.readEntitlements({ subscription: { products: ['customer-ops', 'accounting-ops'] } }),
     ).toEqual(['customer-ops', 'accounting-ops']);
+  });
+
+  it('honors claim precedence: entitlements wins over uc_skus/products/entitlement', () => {
+    // First non-empty wins — a token that (transitionally) carries more than one
+    // shape must resolve deterministically to the canonical `entitlements` claim.
+    expect(
+      JwtStrategy.readEntitlements({
+        entitlements: ['customer-ops'],
+        uc_skus: ['ai-metered'],
+        products: ['email-ops'],
+        entitlement: 'accounting-ops',
+      }),
+    ).toEqual(['customer-ops']);
+    // ...and uc_skus wins over the later fallbacks when `entitlements` is absent.
+    expect(
+      JwtStrategy.readEntitlements({ uc_skus: ['customer-ops'], products: ['email-ops'] }),
+    ).toEqual(['customer-ops']);
   });
 
   it('handles object items {code, active} and drops inactive', () => {

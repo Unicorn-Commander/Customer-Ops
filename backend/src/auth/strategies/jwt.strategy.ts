@@ -177,12 +177,23 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   /**
    * Extract the flat entitlement SKU list from a verified token, tolerant of how
    * the claim eventually lands (mirrors AO's `_read_entitlements` shapes, first
-   * non-empty wins):
-   *   1. `entitlements` — array OR space/comma-separated string of SKUs.
-   *   2. `products`     — same idea under a different key.
-   *   3. `subscription.products` / `subscription.entitlements` (nested).
+   * non-empty wins). The Lago -> Keycloak -> token SKU claim name is not frozen
+   * yet (it is an Aaron lever before flipping UC_ENTITLEMENT_MODE=enforce; see
+   * docs/runbooks/entitlement-enforce.md), so the reader accepts every name we
+   * are likely to emit rather than betting on one:
+   *   1. `entitlements`       — array OR space/comma-separated string of SKUs.
+   *   2. `uc_skus`            — the suite-namespaced spelling, same two shapes.
+   *   3. `products`           — same idea under a different key.
+   *   4. `entitlement`        — singular fallback (a single-SKU mapper emits this).
+   *   5. `subscription.products` / `subscription.entitlements` (nested).
    * Items may be plain strings or `{code|product|sku, active?}` objects. Returns
    * a de-duplicated string[] (raw — the federation client normalizes/aliases).
+   *
+   * DEGRADE-CLEAN: an absent/empty/malformed claim yields `[]`, which the gates
+   * read as "no entitlements" — enforce then DENIES, open allows+WARN. This is
+   * the keystone of enforce-readiness: every entitlement gate in Customer-Ops
+   * (agents, email, accounting, outreach) consumes the list this one method
+   * produces, so claim-name tolerance is centralized HERE, not in each gate.
    */
   static readEntitlements(payload: any): string[] {
     const coerce = (value: unknown): string[] => {
@@ -212,7 +223,9 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     };
 
     let codes = coerce(payload?.entitlements);
+    if (codes.length === 0) codes = coerce(payload?.uc_skus);
     if (codes.length === 0) codes = coerce(payload?.products);
+    if (codes.length === 0) codes = coerce(payload?.entitlement);
     if (codes.length === 0 && payload?.subscription && typeof payload.subscription === 'object') {
       codes = coerce(payload.subscription.products ?? payload.subscription.entitlements);
     }
@@ -246,8 +259,9 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       };
       augmented.__workspaceClaim = payload?.workspace_id ?? payload?.tenant_id ?? null;
       augmented.__ucUid = typeof payload?.sub === 'string' ? payload.sub : null;
-      // The verified entitlement SKUs (Phase-3 Accounting-Ops dual-SKU gate).
-      // Read from the flat `entitlements`/`products` claim (or nested
+      // The verified entitlement SKUs (the suite entitlement gate: agents,
+      // email, accounting, outreach). Read from the flat entitlement claim
+      // (`entitlements`/`uc_skus`/`products`/`entitlement`, or nested
       // subscription.products) and normalized to a string[]; never an HTTP
       // header — this rides only on the cryptographically-verified token.
       augmented.__entitlements = JwtStrategy.readEntitlements(payload);
