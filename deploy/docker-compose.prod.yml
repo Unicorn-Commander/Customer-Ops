@@ -1,0 +1,278 @@
+# =============================================================================
+# Customer-Ops — PRODUCTION deploy (host: commander / Tailscale 100.79.41.137)
+# =============================================================================
+# Public host : customer-ops.unicorncommander.ai
+#               The Cloudflare wildcard `*.unicorncommander.ai` already resolves
+#               (orange-cloud / proxied) to the edge — verified `dig` returns the
+#               CF anycast IPs and a live 2-level sibling (projectops.unicorn...)
+#               serves Cloudflare's Universal-SSL edge cert. So NO new DNS record
+#               is required (the wildcard covers it). See production-deploy.md.
+#
+# Reverse proxy: Traefik v3.6 (container `traefik`), external network `web`,
+#               entrypoint `https` (:443), file+docker providers, certresolvers
+#               `letsencrypt` (HTTP-01) and `letsencrypt-cf` (DNS-01). Matched
+#               1:1 from the commander siblings (brigade, ops-center, search) and
+#               the accounting-ops same-host `/api` split.
+#
+# ROUTING (same-host `/api` path split — the exact match to the app's own config:
+# NEXT_PUBLIC_API_URL=https://customer-ops.unicorncommander.ai/api/v1 and the
+# Keycloak callback /api/v1/auth/keycloak/callback are SAME-HOST path routes):
+#   customer-ops.unicorncommander.ai/api/**  -> customer-ops-backend  :3211  (priority 100)
+#   customer-ops.unicorncommander.ai/**      -> customer-ops-frontend :3000  (catch-all, priority 10)
+#
+# >> WHY NOT an `api.` subdomain here <<
+#   project-ops puts its API on api.projectops.unicorncommander.ai — a *3-level*
+#   host. Cloudflare Universal SSL only covers ONE wildcard level
+#   (`*.unicorncommander.ai`), so a 3-level host has NO edge cert behind the
+#   proxy (verified: the TLS handshake to api.brigade.unicorncommander.ai returns
+#   nothing). project-ops works around this with the `cloudflare` DNS-01 resolver
+#   + a gray-cloud. Customer-Ops avoids the whole gap by routing the API on the
+#   SAME 2-level host under `/api`, which the frontend already bakes — zero app
+#   rebuild, no second cert. (The subdomain alternative is documented in
+#   production-deploy.md for completeness.)
+#
+# ---------------------------------------------------------------------------
+# PRODUCTION POSTURE (the deltas from docker-compose.dogfood.yml):
+#   * Tenant fence LIVE: the app runs as the NOBYPASSRLS `customer_ops_app` role
+#     (DATABASE_URL), and CUSTOMER_OPS_TENANCY_ENABLED=true. Migrations run as the
+#     owner `customer_ops_admin` (ADMIN_DATABASE_URL) — the backend `command`
+#     points `prisma migrate deploy` at ADMIN_DATABASE_URL explicitly, because the
+#     app role is NOBYPASSRLS / NOCREATEDB / NOCREATEROLE and cannot apply DDL.
+#   * Entitlements ENFORCE (UC_ENTITLEMENT_MODE=enforce) — set once Lago emits the
+#     claim; see .env.prod.example.
+#   * Federation seams wired one app at a time (see .env.prod.example) — all
+#     degrade-clean while a `*_BASE_URL` is blank.
+#   * Hardening: read-only root FS + explicit tmpfs, no-new-privileges, resource
+#     limits, log rotation. Postgres stays PRIVATE (internal net only).
+#
+# Bring up:  docker compose -f deploy/docker-compose.prod.yml up -d --build
+# (run from the repo ROOT so the ../backend / ../frontend build contexts resolve)
+# See deploy/.env.prod.example and docs/runbooks/production-deploy.md.
+# =============================================================================
+
+# Pin the project name so container/network/volume names are stable regardless
+# of the directory the command is run from (sibling-style determinism).
+name: customer-ops
+
+# Shared logging policy — bound disk so a chatty container can't fill the host.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  # ---------------------------------------------------------------------------
+  # Postgres 17 — DEDICATED + PRIVATE (NOT on web). Matches the sibling shape:
+  # project-ops / contact-ops each run their own Postgres rather than sharing a
+  # cluster (per-app blast-radius + independent backup/restore). First boot runs
+  # infrastructure/database/init/*.sql as superuser, which pre-creates the
+  # customer_ops_* role split (incl. the NOBYPASSRLS customer_ops_app role this
+  # prod posture connects as) and the shared extensions. Prisma `migrate deploy`
+  # (run by the backend on start, as the owner) owns the actual schema + RLS +
+  # grants.
+  # ---------------------------------------------------------------------------
+  customer-ops-postgres:
+    image: postgres:17
+    container_name: customer-ops-postgres
+    restart: unless-stopped
+    environment:
+      # The object-owner / admin role. Migrations + first-boot init run as this
+      # role (it is a member of customer_ops_owner, which is BYPASSRLS). The
+      # RUNTIME app connects as the separate NOBYPASSRLS customer_ops_app role
+      # (set its password out-of-band — see .env.prod.example / production-deploy.md).
+      POSTGRES_USER: customer_ops_admin
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: customerops
+      # Deterministic locale/encoding for a fresh cluster (sibling convention).
+      POSTGRES_INITDB_ARGS: "-E UTF8 --locale=C"
+    volumes:
+      - customer-ops-pgdata:/var/lib/postgresql/data
+      # First-boot init (role split + extensions). Idempotent; ignored if the
+      # data volume already exists. Read-only mount.
+      - ../infrastructure/database/init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U customer_ops_admin -d customerops"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1g
+        reservations:
+          memory: 256m
+    logging: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # Backend — NestJS (port 3211). On start: migrate (as OWNER) then boot (as APP).
+  #
+  #   `DATABASE_URL="$ADMIN_DATABASE_URL" npx prisma migrate deploy`
+  #       runs DDL as customer_ops_admin (owner / BYPASSRLS). REQUIRED in prod:
+  #       the runtime DATABASE_URL is the NOBYPASSRLS customer_ops_app role, which
+  #       is NOCREATEDB/NOCREATEROLE and cannot apply migrations.
+  #   `node dist/main`
+  #       boots the app, which reads the ambient DATABASE_URL (the app role) for
+  #       all runtime queries. PrismaService.withWorkspace() then sets the
+  #       `app.current_workspace` GUC (SET LOCAL) per request, which RLS enforces.
+  #
+  # Routed by Traefik on the SAME host under /api (priority 100).
+  # ---------------------------------------------------------------------------
+  customer-ops-backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    image: customer-ops-backend:prod
+    container_name: customer-ops-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    # Migrate as the OWNER, then boot as the APP role (see block comment above).
+    # ADMIN_DATABASE_URL MUST be set in prod (.env.prod.example) or this falls
+    # back to the app role and the migrate step fails closed (loud), which is the
+    # correct safety behavior — it will not silently run DDL as the wrong role.
+    command:
+      - "sh"
+      - "-c"
+      - 'DATABASE_URL="$${ADMIN_DATABASE_URL:?ADMIN_DATABASE_URL required in prod}" npx prisma migrate deploy && node dist/main'
+    expose:
+      - "3211"
+    depends_on:
+      customer-ops-postgres:
+        condition: service_healthy
+    networks:
+      - internal
+      - web
+    healthcheck:
+      # Node 20-alpine has neither curl nor wget by default; use a tiny node probe.
+      test:
+        - "CMD"
+        - "node"
+        - "-e"
+        - "require('http').get('http://127.0.0.1:3211/api/v1/health/live',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    # Hardening. Root FS read-only; Prisma's query engine + npx need writable
+    # scratch, so mount tmpfs for the few writable paths.
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /app/.npm
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1g
+        reservations:
+          memory: 256m
+    logging: *default-logging
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=web"
+      # API on the SAME host, higher priority than the SPA catch-all. Prefix is
+      # forwarded intact (NestJS global prefix = api/v1). 2-level host => the
+      # Cloudflare Universal-SSL wildcard covers it; `letsencrypt` (HTTP-01) is
+      # the origin resolver the commander siblings use. (If the host is left
+      # orange-cloud, set Cloudflare SSL mode to Full(strict) and keep this
+      # resolver so the origin presents a real cert for the edge pull. To pin the
+      # origin cert via DNS-01 instead — e.g. if Cloudflare intercepts the HTTP-01
+      # challenge — swap to `letsencrypt-cf`; see production-deploy.md.)
+      - "traefik.http.routers.customer-ops-backend.rule=Host(`customer-ops.unicorncommander.ai`) && PathPrefix(`/api`)"
+      - "traefik.http.routers.customer-ops-backend.priority=100"
+      - "traefik.http.routers.customer-ops-backend.entrypoints=https"
+      - "traefik.http.routers.customer-ops-backend.tls=true"
+      - "traefik.http.routers.customer-ops-backend.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.customer-ops-backend.middlewares=customer-ops-security"
+      - "traefik.http.services.customer-ops-backend.loadbalancer.server.port=3211"
+
+  # ---------------------------------------------------------------------------
+  # Frontend — Next.js standalone (port 3000). SPA catch-all on the host root.
+  # NEXT_PUBLIC_API_URL is inlined at BUILD time (Next bakes NEXT_PUBLIC_*), so
+  # it is passed as a build arg, sourced from the env file (MUST be set before
+  # --build — production-deploy.md calls this out).
+  # ---------------------------------------------------------------------------
+  customer-ops-frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-https://customer-ops.unicorncommander.ai/api/v1}
+    image: customer-ops-frontend:prod
+    container_name: customer-ops-frontend
+    restart: unless-stopped
+    expose:
+      - "3000"
+    depends_on:
+      - customer-ops-backend
+    networks:
+      - web
+    healthcheck:
+      test:
+        - "CMD"
+        - "node"
+        - "-e"
+        - "require('http').get('http://127.0.0.1:3000/',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))"
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    # Next standalone writes its server cache under .next/cache at runtime.
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /app/.next/cache
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512m
+        reservations:
+          memory: 128m
+    logging: *default-logging
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=web"
+      - "traefik.http.routers.customer-ops-frontend.rule=Host(`customer-ops.unicorncommander.ai`)"
+      - "traefik.http.routers.customer-ops-frontend.priority=10"
+      - "traefik.http.routers.customer-ops-frontend.entrypoints=https"
+      - "traefik.http.routers.customer-ops-frontend.tls=true"
+      - "traefik.http.routers.customer-ops-frontend.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.customer-ops-frontend.middlewares=customer-ops-security"
+      - "traefik.http.services.customer-ops-frontend.loadbalancer.server.port=3000"
+      # Shared security-headers middleware (HSTS + clickjacking + nosniff),
+      # mirrored from the commander `security-headers` file-provider middleware.
+      - "traefik.http.middlewares.customer-ops-security.headers.stsSeconds=31536000"
+      - "traefik.http.middlewares.customer-ops-security.headers.stsIncludeSubdomains=true"
+      - "traefik.http.middlewares.customer-ops-security.headers.stsPreload=true"
+      - "traefik.http.middlewares.customer-ops-security.headers.forceSTSHeader=true"
+      - "traefik.http.middlewares.customer-ops-security.headers.frameDeny=true"
+      - "traefik.http.middlewares.customer-ops-security.headers.contentTypeNosniff=true"
+      - "traefik.http.middlewares.customer-ops-security.headers.browserXssFilter=true"
+      - "traefik.http.middlewares.customer-ops-security.headers.referrerPolicy=strict-origin-when-cross-origin"
+
+volumes:
+  customer-ops-pgdata:
+    name: customer-ops-pgdata
+
+networks:
+  # The EXISTING external Traefik ingress network on commander (the docker
+  # provider is configured with `network: web`; all suite siblings join it).
+  # Must already exist — `docker network inspect web` on commander.
+  web:
+    external: true
+  # App-private network for backend <-> postgres. Created by this compose.
+  internal:
+    name: customer-ops-internal
+    driver: bridge
