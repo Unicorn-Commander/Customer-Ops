@@ -180,21 +180,41 @@ docker network inspect web >/dev/null && echo "web OK"
 docker compose -f deploy/docker-compose.prod.yml up -d customer-ops-postgres
 until docker exec customer-ops-postgres pg_isready -U customer_ops_admin -d customerops >/dev/null 2>&1; do sleep 2; done
 
-# 5. Set the REAL customer_ops_app password ON THE ROLE (the init script seeds a
-#    placeholder). This MUST equal CUSTOMER_OPS_APP_DB_PASSWORD in DATABASE_URL:
+# 5. Run the schema migration ONCE as a one-shot, as the OWNER (the app role is
+#    NOBYPASSRLS/NOCREATEDB and cannot apply DDL). Do this BEFORE setting the real
+#    app password (step 6): the RLS-roles migration carries an `ALTER ROLE
+#    customer_ops_app … PASSWORD '<placeholder>'` that overwrites the role password
+#    on its first run, so the real password MUST be set after this, not before:
+docker compose -f deploy/docker-compose.prod.yml run --rm --entrypoint sh \
+  customer-ops-backend -c 'DATABASE_URL="$ADMIN_DATABASE_URL" npx prisma migrate deploy'
+
+# 6. NOW set the REAL customer_ops_app password ON THE ROLE. This MUST equal
+#    CUSTOMER_OPS_APP_DB_PASSWORD in DATABASE_URL. Migrations are already applied,
+#    so the backend's own boot-migrate (step 7) is a no-op and will NOT reset it:
 docker exec customer-ops-postgres psql -U customer_ops_admin -d customerops -c \
   "ALTER ROLE customer_ops_app PASSWORD '<CUSTOMER_OPS_APP_DB_PASSWORD>';"
 
-# 6. Bring up the rest (build images + start backend+frontend):
+# 7. Bring up the rest (build images + start backend+frontend):
 docker compose -f deploy/docker-compose.prod.yml up -d --build
 ```
 
-What happens on backend start (see the compose `command`):
-`DATABASE_URL="$ADMIN_DATABASE_URL" npx prisma migrate deploy` runs the schema +
-RLS + grants + seed **as the owner** (the app role is NOBYPASSRLS/NOCREATEDB and
-cannot apply DDL), then `node dist/main` boots the app reading the runtime
-`DATABASE_URL` (the **app** role). RLS is now live and enforced per request via
-the `app.current_workspace` GUC.
+What happens on backend start (see the compose `command`): the boot re-runs
+`DATABASE_URL="$ADMIN_DATABASE_URL" npx prisma migrate deploy` — now a **no-op**
+because step 5 already applied every migration (so it neither re-runs the
+placeholder-password migration nor clobbers step 6's real password) — then
+`node dist/main` boots the app reading the runtime `DATABASE_URL` (the **app**
+role). RLS is live and enforced per request via the `app.current_workspace` GUC.
+
+> **Why migrate is a one-shot BEFORE the password (step 5 → 6).** The
+> `…_suite_tenancy_rls_roles` migration carries `ALTER ROLE customer_ops_app …
+> PASSWORD '<placeholder>'`, which overwrites the role's password on its FIRST
+> run. If you set the real password first and then let the backend's boot-migrate
+> run it, the role password reverts to the placeholder while `DATABASE_URL` still
+> holds the real one → the backend crash-loops on password auth. Migrating first
+> (placeholder harmless) and setting the real password after (migrate will never
+> run again) closes that window. The migration file is immutable history — editing
+> it breaks Prisma's applied checksum on the already-migrated dogfood DB — so the
+> **ordering** is the fix, not a migration change.
 
 ---
 
@@ -240,9 +260,20 @@ If `/api/v1/health` returns the SPA HTML instead of JSON, the `/api` router lost
 to the catch-all — confirm `priority=100` + `PathPrefix(/api)` on the backend
 router in `docker compose -f deploy/docker-compose.prod.yml config`.
 
+If the backend **crash-loops with a password/authentication failure** right after
+first boot: a migration reset the `customer_ops_app` password to its placeholder
+(the step 5 → 6 ordering exists to prevent this — it means the real password was
+set before the first migrate ran). Re-assert the real password and recreate:
+```bash
+docker exec customer-ops-postgres psql -U customer_ops_admin -d customerops -c \
+  "ALTER ROLE customer_ops_app PASSWORD '<CUSTOMER_OPS_APP_DB_PASSWORD>';"
+docker compose -f deploy/docker-compose.prod.yml up -d customer-ops-backend
+```
+Migrations are already applied, so it won't recur.
+
 If the app boots but every list is empty: the runtime is connecting with the
-wrong role or `DATABASE_URL`'s `customer_ops_app` password ≠ the role password
-(step 5). Re-assert it and `up -d customer-ops-backend`.
+wrong role or `DATABASE_URL`'s `customer_ops_app` password ≠ the role password.
+Re-assert it (above) and `up -d customer-ops-backend`.
 
 ---
 

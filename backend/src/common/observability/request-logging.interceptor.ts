@@ -38,7 +38,11 @@ export class RequestLoggingInterceptor implements NestInterceptor {
     // Strip the query string up front — it can carry tokens/PII and must never
     // reach a log line.
     const path = (req?.originalUrl ?? req?.url ?? '').split('?')[0];
-    if (SILENT_PATH_SUFFIXES.includes(path)) return next.handle();
+    // Match by SUFFIX: the running app mounts under a global prefix (api/v1), so
+    // the real probe paths are `/api/v1/health…`, not `/health`. An exact-equality
+    // check silenced nothing in production; endsWith catches both the prefixed and
+    // bare forms (the leading slash prevents matching e.g. `/foohealth`).
+    if (SILENT_PATH_SUFFIXES.some((suffix) => path.endsWith(suffix))) return next.handle();
 
     const method = req?.method ?? '-';
     const requestId = req?.id ?? '-';

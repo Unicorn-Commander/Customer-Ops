@@ -131,6 +131,14 @@ docker exec customer-ops-postgres psql -U customer_ops_admin -d customerops -tA 
 `01-init.sql`, or `verify_app` from the RLS migration's dev default). Set a real
 one **before** repointing `DATABASE_URL` at it.
 
+> **Migrate-ordering caveat (read if any migration is pending).** The RLS-roles
+> migration re-sets that placeholder password every time it APPLIES. On this
+> dogfood DB every migration is already applied, so setting the password here is
+> safe and a later boot-migrate is a no-op. But on any node where migrations are
+> still pending, apply them as a one-shot FIRST and set the password AFTER — else
+> the first migrate clobbers it and the backend crash-loops on auth. See
+> `production-deploy.md` step 5 → 6.
+
 ```bash
 # AARON: pick a strong app password OUT OF BAND (do not paste it anywhere it is
 # logged). Then, on bigboy:

@@ -22,6 +22,15 @@ async function bootstrap() {
   const configService = app.get(ConfigService);
   const logger = new Logger('Bootstrap');
 
+  // Trust the reverse proxy in front of us (Traefik/nginx in every deploy) so
+  // req.ip resolves from X-Forwarded-For. Without this, every request behind the
+  // proxy keys to the proxy's own IP — which would make the rate limiter throttle
+  // all clients as one and defeat per-IP protection. Tunable via TRUST_PROXY
+  // (hops); default 1 (a single proxy hop). A non-numeric value (e.g. a subnet) is
+  // passed through verbatim for advanced setups.
+  const trustProxy = (configService.get<string>('TRUST_PROXY') ?? '1').trim();
+  app.set('trust proxy', /^\d+$/.test(trustProxy) ? Number(trustProxy) : trustProxy);
+
   // Security — CSP + HSTS tuned for a JSON API + its Swagger UI (see
   // common/security/security.config). Defaults to a safe production posture.
   app.use(helmet(helmetOptions()));

@@ -78,14 +78,35 @@ describe('RequestLoggingInterceptor — one PII-safe line per request', () => {
     expect(log).toHaveBeenCalledTimes(1);
   });
 
-  it('skips the health probes entirely', async () => {
+  it('skips the health probes entirely — bare AND under the global api/v1 prefix', async () => {
     const interceptor = new RequestLoggingInterceptor();
     const { log, error } = spies(interceptor);
-    for (const path of ['/health', '/health/live', '/health/ready']) {
+    // The running app mounts under API_PREFIX (api/v1), so probes actually arrive
+    // as `/api/v1/health…`. Both the bare and prefixed forms must be silenced.
+    for (const path of [
+      '/health',
+      '/health/live',
+      '/health/ready',
+      '/api/v1/health',
+      '/api/v1/health/live',
+      '/api/v1/health/ready',
+    ]) {
       const ctx = makeContext({ method: 'GET', originalUrl: path, id: 'r' }, 200);
       await lastValueFrom(interceptor.intercept(ctx, { handle: () => of(1) }));
     }
     expect(log).not.toHaveBeenCalled();
     expect(error).not.toHaveBeenCalled();
+  });
+
+  it('still logs a non-probe path that merely contains "health" as a substring', async () => {
+    const interceptor = new RequestLoggingInterceptor();
+    const { log } = spies(interceptor);
+    // `/api/v1/healthz` and `/api/v1/customers/health-score` must NOT be silenced
+    // (the leading-slash suffix guards against substring false-positives).
+    for (const path of ['/api/v1/healthz', '/api/v1/customers/health-score']) {
+      const ctx = makeContext({ method: 'GET', originalUrl: path, id: 'r' }, 200);
+      await lastValueFrom(interceptor.intercept(ctx, { handle: () => of(1) }));
+    }
+    expect(log).toHaveBeenCalledTimes(2);
   });
 });
