@@ -1,0 +1,16 @@
+# Secrets — NEVER commit. (Y4: this repo had no .gitignore; a `git add .` would
+# have committed deploy/.env. Mirrors the Contact-Ops guard.)
+.env
+.env.*
+.env.bak*
+*.env.bak*
+
+# Node / build
+node_modules/
+dist/
+.next/
+*.log
+coverage/
+
+# OS
+.DS_Store

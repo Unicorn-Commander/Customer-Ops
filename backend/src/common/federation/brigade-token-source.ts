@@ -76,9 +76,16 @@ export class BrigadeTokenSource {
 
   /** The customer-ops client-credentials subject token, cached by exp. The scope
    *  is requested on the subject too so the exchange's least-privilege
-   *  intersection (requested ∩ subject) can grant it. */
+   *  intersection (requested ∩ subject) can grant it.
+   *
+   *  The cache key MUST include the scope: contacts:* are KC *optional* scopes
+   *  (present only when requested) while meetings:read is a *default* scope
+   *  (always present). A scope-agnostic key would let a meetings:read-only
+   *  subject (minted by the Meeting-Ops path) satisfy a later contacts:write
+   *  exchange, whose requested ∩ subject = ∅ → Brigade 403 → the lead→contact
+   *  write silently no-ops. Keying by scope gives each path its own subject. */
   private async clientCredentialsSubject(scope: string): Promise<string | null> {
-    const key = 'cc:subject';
+    const key = `cc:subject:${scope}`;
     const hit = this.cache.get(key);
     if (hit && hit.expMs - 30_000 > Date.now()) return hit.token;
 
