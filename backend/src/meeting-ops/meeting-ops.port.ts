@@ -42,6 +42,7 @@ import {
   ListMeetingsFilter,
   MeetingSignal,
 } from './meeting-ops.types';
+import { SeamHealth } from '../health/seam-health';
 
 /** The per-call federation identity: which workspace + who is acting. Meeting
  *  reads are viewer-level, so there is no entitlement list here (unlike the
@@ -54,6 +55,14 @@ export interface FederationContext {
 }
 
 export abstract class MeetingOpsPort {
+  /**
+   * Probe this seam's transport + auth with a lightweight, side-effect-free MCP
+   * `tools/list` and report a SeamHealth (so a silent 401/403 becomes visible via
+   * `GET /health/integrations` rather than hiding behind a degrade-clean panel).
+   * Never throws — every failure is folded into the returned SeamHealth.
+   */
+  abstract ping(): Promise<SeamHealth>;
+
   /**
    * Is a Meeting-Ops target configured at all (MEETING_OPS_BASE_URL set)? When
    * false the cockpit shows "connect Meeting-Ops" and NO federation call is made

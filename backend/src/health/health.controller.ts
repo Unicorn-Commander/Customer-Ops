@@ -3,6 +3,13 @@ import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { SkipThrottle } from '@nestjs/throttler';
 import { HealthCheck, HealthCheckService, MemoryHealthIndicator } from '@nestjs/terminus';
 import { PrismaHealthIndicator } from './prisma.health';
+import { SeamHealth } from './seam-health';
+import { ContactOpsPort } from '../contact-ops/contact-ops.port';
+import { AccountingOpsPort } from '../accounting-ops/accounting-ops.port';
+import { OutreachPort } from '../outreach-ops/outreach-ops.port';
+import { EmailOpsPort } from '../email-ops/email-ops.port';
+import { MeetingOpsPort } from '../meeting-ops/meeting-ops.port';
+import { ProjectOpsPort } from '../project-ops/project-ops.port';
 
 @ApiTags('health')
 // Named throttlers ('short' + 'long') require an explicit map in
@@ -15,6 +22,12 @@ export class HealthController {
     private health: HealthCheckService,
     private memory: MemoryHealthIndicator,
     private prismaHealth: PrismaHealthIndicator,
+    private contactOps: ContactOpsPort,
+    private accountingOps: AccountingOpsPort,
+    private outreach: OutreachPort,
+    private emailOps: EmailOpsPort,
+    private meetingOps: MeetingOpsPort,
+    private projectOps: ProjectOpsPort,
   ) {}
 
   @Get()
@@ -44,5 +57,28 @@ export class HealthController {
   @ApiResponse({ status: 503, description: 'Service is not ready' })
   readiness() {
     return this.health.check([() => this.prismaHealth.isHealthy('database')]);
+  }
+
+  /**
+   * Per-seam federation health. Probes EACH of the 6 sibling-app seams with a
+   * lightweight, side-effect-free MCP `tools/list` (via the same transport/auth a
+   * real read uses) so a SILENT auth failure (a 401/403 that otherwise hides
+   * behind a degrade-clean empty panel) becomes visible. Unauthenticated like the
+   * other `/health` routes — it exposes only seam up/down + a short probe detail,
+   * never tenant data. Each `ping()` never throws, so this always returns 200.
+   */
+  @Get('integrations')
+  @ApiOperation({ summary: 'Federation seam health (per sibling-app integration)' })
+  @ApiResponse({ status: 200, description: 'Per-seam probe results' })
+  async integrations(): Promise<{ seams: SeamHealth[]; checkedAt: string }> {
+    const seams = await Promise.all([
+      this.contactOps.ping(),
+      this.accountingOps.ping(),
+      this.outreach.ping(),
+      this.emailOps.ping(),
+      this.meetingOps.ping(),
+      this.projectOps.ping(),
+    ]);
+    return { seams, checkedAt: new Date().toISOString() };
   }
 }

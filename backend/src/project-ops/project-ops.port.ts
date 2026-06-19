@@ -22,6 +22,7 @@
  */
 
 import { FederatedProject } from './project-ops.types';
+import { SeamHealth } from '../health/seam-health';
 
 /** The per-call federation identity: which workspace and who is acting. Mirrors
  *  the other ops ports so the service builds ONE context object for all seams. */
@@ -46,6 +47,14 @@ export interface ProjectLookup {
 }
 
 export abstract class ProjectOpsPort {
+  /**
+   * Probe this seam's transport + auth with a lightweight, side-effect-free MCP
+   * `tools/list` and report a SeamHealth (so a silent 401/403 becomes visible via
+   * `GET /health/integrations` rather than hiding behind a degrade-clean panel).
+   * Never throws — every failure is folded into the returned SeamHealth.
+   */
+  abstract ping(): Promise<SeamHealth>;
+
   /**
    * Is a Project-Ops target configured at all (PROJECT_OPS_BASE_URL set)? When
    * false the cockpit shows "connect Project-Ops" and NO federation call is made

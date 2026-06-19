@@ -46,6 +46,8 @@ import {
   FederatedWorkspaceProjection,
   ListContactsFilter,
 } from './contact-ops.types';
+import { SeamHealth } from '../health/seam-health';
+import { shortBody } from '../health/probe-util';
 
 interface JsonRpcResult {
   structuredContent?: Record<string, unknown>;
@@ -228,6 +230,53 @@ export class ContactOpsClient extends ContactOpsPort {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  // --- health probe ------------------------------------------------------
+
+  /**
+   * Probe the Contact-Ops seam with a side-effect-free MCP `tools/list` over the
+   * SAME transport/auth a real read uses (so a silent 401/403 surfaces as an
+   * `auth-error` rather than placeholder contact rows). Never throws.
+   */
+  async ping(): Promise<SeamHealth> {
+    const seam = 'contact-ops';
+    if (!this.baseUrl) {
+      return { seam, configured: false, ok: false, status: null, detail: 'not-configured', latencyMs: null };
+    }
+    const base = this.baseUrl;
+    const ws = this.workspaceOverride ?? this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ?? '';
+    // Contact-Ops' FederationContext is the read-only (no-entitlements) shape.
+    const ctx: FederationContext = { workspaceId: ws, ucUid: null };
+    const body = { jsonrpc: '2.0', id: ++this.rpcId, method: 'tools/list', params: {} };
+
+    const startedAt = Date.now();
+    let res: Response;
+    try {
+      res = await this.fetchWithTimeout(`${base}/mcp`, {
+        method: 'POST',
+        headers: await this.authHeaders(ctx),
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      return {
+        seam,
+        configured: true,
+        ok: false,
+        status: null,
+        detail: `unreachable: ${(err as Error).message}`,
+        latencyMs: Date.now() - startedAt,
+      };
+    }
+    const latencyMs = Date.now() - startedAt;
+    if (res.status === 200) {
+      return { seam, configured: true, ok: true, status: 200, detail: 'ok', latencyMs };
+    }
+    const detail =
+      res.status === 401 || res.status === 403
+        ? `auth-error: ${await shortBody(res)}`
+        : `unreachable: HTTP ${res.status} ${await shortBody(res)}`.trim();
+    return { seam, configured: true, ok: false, status: res.status, detail, latencyMs };
   }
 
   // --- mapping: CO wire shapes -> Customer-Ops federation projections -----

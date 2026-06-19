@@ -63,6 +63,8 @@ import {
   OutreachTouch,
   SocialTouchRequest,
 } from './outreach-ops.types';
+import { SeamHealth } from '../health/seam-health';
+import { shortBody } from '../health/probe-util';
 
 interface JsonRpcResult {
   structuredContent?: Record<string, unknown>;
@@ -291,6 +293,53 @@ export class OutreachClient extends OutreachPort {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  // --- health probe ------------------------------------------------------
+
+  /**
+   * Probe the Outreach seam with a side-effect-free MCP `tools/list` over the
+   * SAME transport/auth a real read uses (so a silent 401/403 surfaces as an
+   * `auth-error` rather than an empty outreach slot). Never throws.
+   */
+  async ping(): Promise<SeamHealth> {
+    const seam = 'outreach-ops';
+    if (!this.baseUrl) {
+      return { seam, configured: false, ok: false, status: null, detail: 'not-configured', latencyMs: null };
+    }
+    const base = this.baseUrl;
+    // Outreach has no workspace override; fall back to the shared health-probe id.
+    const ws = this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ?? '';
+    const ctx: FederationContext = { workspaceId: ws, ucUid: null, entitlements: [] };
+    const body = { jsonrpc: '2.0', id: ++this.rpcId, method: 'tools/list', params: {} };
+
+    const startedAt = Date.now();
+    let res: Response;
+    try {
+      res = await this.fetchWithTimeout(`${base}/mcp`, {
+        method: 'POST',
+        headers: this.authHeaders(ctx),
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      return {
+        seam,
+        configured: true,
+        ok: false,
+        status: null,
+        detail: `unreachable: ${(err as Error).message}`,
+        latencyMs: Date.now() - startedAt,
+      };
+    }
+    const latencyMs = Date.now() - startedAt;
+    if (res.status === 200) {
+      return { seam, configured: true, ok: true, status: 200, detail: 'ok', latencyMs };
+    }
+    const detail =
+      res.status === 401 || res.status === 403
+        ? `auth-error: ${await shortBody(res)}`
+        : `unreachable: HTTP ${res.status} ${await shortBody(res)}`.trim();
+    return { seam, configured: true, ok: false, status: res.status, detail, latencyMs };
   }
 
   // --- mapping: Outreach wire shape -> Customer-Ops federation projection --

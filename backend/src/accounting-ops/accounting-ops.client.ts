@@ -50,6 +50,8 @@ import { ConfigService } from '@nestjs/config';
 import { BrigadeTokenSource } from '../common/federation/brigade-token-source';
 import { AccountingOpsPort, FederationContext } from './accounting-ops.port';
 import { EntitlementDecision, FederatedInvoice, InvoiceDraft } from './accounting-ops.types';
+import { SeamHealth } from '../health/seam-health';
+import { shortBody } from '../health/probe-util';
 
 interface JsonRpcResult {
   structuredContent?: Record<string, unknown>;
@@ -151,11 +153,24 @@ export class AccountingOpsClient extends AccountingOpsPort {
    */
   private async authHeaders(ctx: FederationContext): Promise<Record<string, string>> {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    const bearer = await this.bearerFor(ctx.workspaceId);
+    // Workspace addressing. AO_WORKSPACE_OVERRIDE maps this app's local workspace
+    // onto Accounting-Ops' uc-registry tenant for the single-workspace dogfood
+    // (until the suite shares one uc-registry id — SUITE-IDENTITY §0.1). Both the
+    // bearer claim and the X-Workspace-Id hint use it; AO re-gates membership.
+    const ws = this.workspaceOverride ?? ctx.workspaceId;
+    const bearer = await this.bearerFor(ws);
     if (bearer) headers['Authorization'] = `Bearer ${bearer}`;
-    headers['X-Workspace-Id'] = ctx.workspaceId;
+    headers['X-Workspace-Id'] = ws;
     if (ctx.ucUid) headers['X-Uc-Uid'] = ctx.ucUid;
     return headers;
+  }
+
+  /** Optional override mapping CO's local workspace id to the canonical id
+   *  Accounting-Ops recognizes (AO_WORKSPACE_OVERRIDE). Null = pass through the
+   *  resolved workspace id unchanged. */
+  private get workspaceOverride(): string | null {
+    const w = this.config.get<string>('AO_WORKSPACE_OVERRIDE');
+    return w && w.trim() ? w.trim() : null;
   }
 
   /** The auth mode: `static` forwards AO_SERVICE_TOKEN (legacy / dev); `brigade-sts`
@@ -249,7 +264,7 @@ export class AccountingOpsClient extends AccountingOpsPort {
 
     let res: Response;
     try {
-      res = await this.fetchWithTimeout(`${base}/mcp`, {
+      res = await this.fetchWithTimeout(`${base}/mcp/`, {
         method: 'POST',
         headers: await this.authHeaders(ctx),
         body: JSON.stringify(body),
@@ -304,6 +319,52 @@ export class AccountingOpsClient extends AccountingOpsPort {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  // --- health probe ------------------------------------------------------
+
+  /**
+   * Probe the AO seam with a side-effect-free MCP `tools/list` over the SAME
+   * transport/auth a real read uses (so a silent 401/403 surfaces as an
+   * `auth-error` rather than an empty invoice slot). Never throws.
+   */
+  async ping(): Promise<SeamHealth> {
+    const seam = 'accounting-ops';
+    if (!this.isConfigured()) {
+      return { seam, configured: false, ok: false, status: null, detail: 'not-configured', latencyMs: null };
+    }
+    const base = this.baseUrl as string;
+    const ws = this.workspaceOverride ?? this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ?? '';
+    const ctx: FederationContext = { workspaceId: ws, ucUid: null, entitlements: [] };
+    const body = { jsonrpc: '2.0', id: ++this.rpcId, method: 'tools/list', params: {} };
+
+    const startedAt = Date.now();
+    let res: Response;
+    try {
+      res = await this.fetchWithTimeout(`${base}/mcp/`, {
+        method: 'POST',
+        headers: await this.authHeaders(ctx),
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      return {
+        seam,
+        configured: true,
+        ok: false,
+        status: null,
+        detail: `unreachable: ${(err as Error).message}`,
+        latencyMs: Date.now() - startedAt,
+      };
+    }
+    const latencyMs = Date.now() - startedAt;
+    if (res.status === 200) {
+      return { seam, configured: true, ok: true, status: 200, detail: 'ok', latencyMs };
+    }
+    const detail =
+      res.status === 401 || res.status === 403
+        ? `auth-error: ${await shortBody(res)}`
+        : `unreachable: HTTP ${res.status} ${await shortBody(res)}`.trim();
+    return { seam, configured: true, ok: false, status: res.status, detail, latencyMs };
   }
 
   // --- mapping: AO wire shape -> Customer-Ops federation projection -------

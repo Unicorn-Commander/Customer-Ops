@@ -27,6 +27,7 @@ import {
   FederatedWorkspaceProjection,
   ListContactsFilter,
 } from './contact-ops.types';
+import { SeamHealth } from '../health/seam-health';
 
 /** The per-call federation identity: which workspace + who is acting. */
 export interface FederationContext {
@@ -37,6 +38,14 @@ export interface FederationContext {
 }
 
 export abstract class ContactOpsPort {
+  /**
+   * Probe this seam's transport + auth with a lightweight, side-effect-free MCP
+   * `tools/list` and report a SeamHealth (so a silent 401/403 becomes visible via
+   * `GET /health/integrations` rather than hiding behind a degrade-clean panel).
+   * Never throws — every failure is folded into the returned SeamHealth.
+   */
+  abstract ping(): Promise<SeamHealth>;
+
   /**
    * Resolve ONE contact's full detail by id (CO `get_person`). Returns null
    * when the contact is not visible in the workspace (CO `PERSON_NOT_FOUND` /
