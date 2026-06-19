@@ -213,6 +213,8 @@ Customer-Ops/
 
 | | |
 |---|---|
+| 📖 User guide | [`docs/USER-GUIDE.md`](docs/USER-GUIDE.md) — the cockpit, surface by surface |
+| 🏗️ Architecture | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — federation · graph · tenancy · agents |
 | 🏛️ Architecture foundation | [`docs/PHASE-1-FOUNDATION.md`](docs/PHASE-1-FOUNDATION.md) |
 | 🪪 Identity & tenancy contract | [`docs/SUITE-IDENTITY.md`](docs/SUITE-IDENTITY.md) |
 | 📓 Runbooks | [`docs/runbooks/`](docs/runbooks/) — deploy · backup/restore · tenancy · inference · entitlements |
