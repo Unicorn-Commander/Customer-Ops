@@ -31,3 +31,32 @@ function truthy(value: string | undefined | null, fallback: boolean): boolean {
 export function tenancyEnabled(getEnv: EnvGetter = defaultGetter): boolean {
   return truthy(getEnv('CUSTOMER_OPS_TENANCY_ENABLED'), false);
 }
+
+/**
+ * Self-serve signup mode (CUSTOMER_OPS_SIGNUP_MODE) — the JIT-provisioning
+ * policy for a verified SSO user who is NOT matched by the access list.
+ *
+ *   'invite' (DEFAULT) == today's behavior exactly: a uchub account does NOT by
+ *     itself grant a Customer-Ops account. A stranger (no User row, no allow-list
+ *     match) is rejected — invite-only (SUITE-IDENTITY §D5). Allow-list users
+ *     still JIT into the bootstrap/default workspace as before.
+ *
+ *   'open' == self-serve: the same stranger instead auto-provisions THEIR OWN
+ *     workspace (a new uc-registry workspace id + an OWNER membership). Allow-list
+ *     users are UNCHANGED (the allow-list match still wins, in both modes) — open
+ *     mode only adds a fallback for users the allow-list does not cover.
+ *
+ * Anything other than a case-insensitive 'open' resolves to 'invite', so a typo
+ * or an empty value fails safe to today's invite-only posture.
+ */
+export type SignupMode = 'invite' | 'open';
+
+export function signupMode(getEnv: EnvGetter = defaultGetter): SignupMode {
+  const raw = getEnv('CUSTOMER_OPS_SIGNUP_MODE');
+  return (raw ?? '').trim().toLowerCase() === 'open' ? 'open' : 'invite';
+}
+
+/** Convenience: true iff self-serve open signup is enabled. */
+export function selfServeSignupEnabled(getEnv: EnvGetter = defaultGetter): boolean {
+  return signupMode(getEnv) === 'open';
+}
