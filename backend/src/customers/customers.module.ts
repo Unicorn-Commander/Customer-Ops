@@ -8,6 +8,7 @@ import { EmailOpsModule } from '../email-ops/email-ops.module';
 import { MeetingOpsModule } from '../meeting-ops/meeting-ops.module';
 import { ProjectOpsModule } from '../project-ops/project-ops.module';
 import { LeadIntakeModule } from '../lead-intake/lead-intake.module';
+import { GraphModule } from '../graph/graph.module';
 import { CustomersService } from './customers.service';
 import { CustomersController } from './customers.controller';
 
@@ -47,6 +48,10 @@ import { CustomersController } from './customers.controller';
     // Phase 6: provides LeadLabelResolver (provisional cockpit labels). @Optional
     // in the service, but wired here so the dogfood renders ingested leads.
     LeadIntakeModule,
+    // Provides GraphIngestService for the post-commit, fire-and-forget graph
+    // refresh hook (CustomersService.refreshGraph). @Optional in the service; no
+    // circular dep — GraphModule does not import CustomersModule.
+    GraphModule,
   ],
   providers: [CustomersService],
   controllers: [CustomersController],

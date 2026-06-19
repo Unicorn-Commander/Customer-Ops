@@ -75,6 +75,7 @@ import {
 } from '../project-ops/project-ops.port';
 import { ProjectPanel } from '../project-ops/project-ops.types';
 import { LeadLabelResolver, isProvisionalContactId } from '../lead-intake/lead-label.port';
+import { GraphIngestService } from '../graph/graph-ingest.service';
 import { checkTransition, engagementAdvance, STAGE_ORDER } from './funnel';
 import {
   AddNoteDto,
@@ -171,6 +172,13 @@ export class CustomersService {
     @Optional()
     @Inject(LeadLabelResolver)
     private readonly leadLabels?: LeadLabelResolver,
+    // Post-commit, fire-and-forget graph refresh (CHANGE 1). @Optional so the
+    // relationship layer has no hard dependency on the knowledge-graph module
+    // (and the existing spec's positional 7-arg construction still compiles —
+    // both trailing params are @Optional).
+    @Optional()
+    @Inject(GraphIngestService)
+    private readonly graphIngest?: GraphIngestService,
   ) {}
 
   // ========================================================================
@@ -339,6 +347,7 @@ export class CustomersService {
       (tx) => this.createInTx(tx, dto, ucUid),
       requestedWorkspaceId,
     );
+    this.refreshGraph(user, row.id, requestedWorkspaceId);
     return this.serialize(row);
   }
 
@@ -354,6 +363,7 @@ export class CustomersService {
       (tx) => this.updateInTx(tx, id, dto, ucUid),
       requestedWorkspaceId,
     );
+    this.refreshGraph(user, id, requestedWorkspaceId);
     return this.serialize(row);
   }
 
@@ -369,6 +379,7 @@ export class CustomersService {
       (tx) => this.transitionInTx(tx, id, dto.toStage, dto.note, ucUid),
       requestedWorkspaceId,
     );
+    this.refreshGraph(user, id, requestedWorkspaceId);
     return this.serialize(row);
   }
 
@@ -384,6 +395,7 @@ export class CustomersService {
       (tx) => this.markLostInTx(tx, id, dto.reason, ucUid),
       requestedWorkspaceId,
     );
+    this.refreshGraph(user, id, requestedWorkspaceId);
     return this.serialize(row);
   }
 
@@ -398,6 +410,7 @@ export class CustomersService {
       (tx) => this.reopenInTx(tx, id, ucUid),
       requestedWorkspaceId,
     );
+    this.refreshGraph(user, id, requestedWorkspaceId);
     return this.serialize(row);
   }
 
@@ -1856,6 +1869,22 @@ export class CustomersService {
   // ========================================================================
   // HELPERS
   // ========================================================================
+
+  /** Post-commit, fire-and-forget graph refresh for one customer. Best-effort:
+   *  resolves the workspace, then MERGEs that customer's subgraph. upsertCustomer
+   *  swallows its own errors + no-ops when the graph is dormant; the .catch guards
+   *  the workspace resolve so a floating rejection can never surface. */
+  private refreshGraph(
+    user: User & Partial<WithWorkspaceClaim>,
+    customerId: string,
+    requestedWorkspaceId?: string | null,
+  ): void {
+    if (!this.graphIngest) return;
+    void this.workspaces
+      .resolveAuthorized(user, requestedWorkspaceId)
+      .then((ws) => this.graphIngest!.upsertCustomer(ws, customerId))
+      .catch(() => undefined);
+  }
 
   /** The workspace id the current RLS transaction is bound to (GUC read). */
   private async boundWorkspaceId(tx: WorkspaceTxClient): Promise<string> {
