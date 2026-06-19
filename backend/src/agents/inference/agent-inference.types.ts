@@ -54,7 +54,12 @@ export interface AgentMessage {
  */
 export interface AgentInferenceRequest {
   /** The agent identity (metering dimension + routing policy key). */
-  task: 'lead-triage' | 'follow-up-draft' | 'collections-nudge';
+  task:
+    | 'lead-triage'
+    | 'follow-up-draft'
+    | 'collections-nudge'
+    | 'next-best-action'
+    | 'meeting-prep';
   /** The workload tier hint (bundled by default; metered requires ai-metered). */
   tier: InferenceTier;
   messages: AgentMessage[];

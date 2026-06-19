@@ -37,6 +37,7 @@ import { ContactOpsPort } from '../contact-ops/contact-ops.port';
 import { CustomersService } from '../customers/customers.service';
 import { AgentInferencePort, InferenceContext } from './inference/agent-inference.port';
 import { AgentInferenceEcho, CollectionsNudgeResult, OverdueInvoiceView } from './agents.types';
+import { InferenceTier } from './inference/agent-inference.types';
 import { safeJsonObject, strOrNull } from './agent-parse.util';
 
 @Injectable()
@@ -55,6 +56,7 @@ export class CollectionsNudgeAgent {
     user: User & Partial<WithWorkspaceClaim>,
     customerId: string,
     requestedWorkspaceId?: string | null,
+    tier: InferenceTier = 'bundled',
   ): Promise<CollectionsNudgeResult> {
     const ucUid = ucUidOf(user);
     const workspaceId = await this.workspaces.resolveAuthorized(user, requestedWorkspaceId);
@@ -100,7 +102,7 @@ export class CollectionsNudgeAgent {
       ucUid: ucUid || null,
       entitlements: entitlementsOf(user),
     };
-    const gate = this.inference.checkEntitlement(infCtx, 'bundled');
+    const gate = this.inference.checkEntitlement(infCtx, tier);
     const configured = this.inference.isConfigured();
 
     let subject: string | null = null;
@@ -119,7 +121,7 @@ export class CollectionsNudgeAgent {
     } else {
       const result = await this.inference.complete(infCtx, {
         task: 'collections-nudge',
-        tier: 'bundled',
+        tier,
         responseFormat: 'json',
         temperature: 0.3,
         maxOutputTokens: 800,

@@ -42,7 +42,12 @@ export interface AgentResultBase {
   /** The federated contact the relationship is keyed on (thin reference). */
   contactId: string;
   /** Which agent produced this. */
-  agent: 'lead-triage' | 'follow-up-draft' | 'collections-nudge';
+  agent:
+    | 'lead-triage'
+    | 'follow-up-draft'
+    | 'collections-nudge'
+    | 'next-best-action'
+    | 'meeting-prep';
   /** Was the inference gateway configured/reachable? When false the agent
    *  degraded clean: it assembled context but produced no model output. */
   inferenceConfigured: boolean;
@@ -141,4 +146,77 @@ export interface OverdueInvoiceView {
   balanceDue: string | null;
   currency: string;
   dueDate: string | null;
+}
+
+/** The next-best-action agent's structured recommendation (no side effects). */
+export interface NextBestActionResult extends AgentResultBase {
+  agent: 'next-best-action';
+  /** The single concrete next step the agent recommends (prose; a human decides). */
+  nextAction: string | null;
+  /** The agent's rationale (2-3 sentences). */
+  rationale: string | null;
+  /** low|medium|high — how urgent the agent thinks the action is. */
+  priority: 'low' | 'medium' | 'high' | null;
+  /** 0-1 — the agent's confidence in the recommendation (null when not parsed). */
+  confidence: number | null;
+  /** The composed signal the agent reasoned over (echoed for transparency). */
+  signals: NextBestActionSignals;
+}
+
+/** The compact, federated signal snapshot the next-best-action agent reasoned over. */
+export interface NextBestActionSignals {
+  stage: string;
+  priority: string;
+  isLost: boolean;
+  daysSinceLastStageChange: number | null;
+  expectedValue: string | null;
+  nextActionAt: string | null;
+  /** From Contact-Ops (federated; null when dormant). */
+  contactDisplayName: string | null;
+  communicationStrength: number | null;
+  lastInteractionAt: string | null;
+  /** From Meeting-Ops (federated signal; zeros when dormant). */
+  meetingCount: number;
+  lastMeetingAt: string | null;
+  openActionItemCount: number;
+  latestSummaryHeadline: string | null;
+  /** From Outreach (federated; null/zero when dormant). */
+  lastEngagementKind: string | null;
+  outreachTouchCount: number;
+}
+
+/** The meeting-prep agent's structured prep brief (no side effects). */
+export interface MeetingPrepResult extends AgentResultBase {
+  agent: 'meeting-prep';
+  /** Bullet talking points to raise (empty when inference didn't run). */
+  talkingPoints: string[];
+  /** Open items / loose threads to close (empty when inference didn't run). */
+  openItems: string[];
+  /** A suggested agenda (ordered; empty when inference didn't run). */
+  suggestedAgenda: string[];
+  /** A 2-3 sentence prep summary (null when inference didn't run). */
+  summary: string | null;
+  /** The composed signal the agent reasoned over (echoed for transparency). */
+  signals: MeetingPrepSignals;
+}
+
+/** The compact, federated signal snapshot the meeting-prep agent reasoned over. */
+export interface MeetingPrepSignals {
+  stage: string;
+  contactDisplayName: string | null;
+  relationshipNotes: string | null;
+  /** From Meeting-Ops (federated signal; zeros/nulls when dormant). */
+  meetingCount: number;
+  lastMeetingAt: string | null;
+  lastMeetingTitle: string | null;
+  openActionItemCount: number;
+  latestSummaryHeadline: string | null;
+  /** A few open action-item texts (Meeting-Ops; capped). */
+  openActionItems: string[];
+  /** From Accounting-Ops (federated; live-status invoice context). */
+  openInvoiceCount: number;
+  totalOpenBalance: string | null;
+  /** From Outreach (federated; the last touch's subject/engagement). */
+  lastOutreachSubject: string | null;
+  lastEngagementKind: string | null;
 }

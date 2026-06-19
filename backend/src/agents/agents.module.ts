@@ -9,15 +9,18 @@ import { AgentInferenceModule } from './inference/agent-inference.module';
 import { LeadTriageAgent } from './lead-triage.agent';
 import { FollowUpDrafterAgent } from './follow-up-drafter.agent';
 import { CollectionsNudgeAgent } from './collections-nudge.agent';
+import { NextBestActionAgent } from './next-best-action.agent';
+import { MeetingPrepAgent } from './meeting-prep.agent';
 import { AgentsController } from './agents.controller';
 
 /**
  * The relationship AGENTS module (Phase 5).
  *
- * Wires the three DRAFT-ONLY relationship agents (lead-triage, follow-up drafter,
- * collections nudge) + their cockpit-action REST surface. Each agent COMPOSES the
- * existing federation ports + the local relationship and calls the 4-lane
- * inference seam. Depends on:
+ * Wires the five DRAFT-ONLY relationship agents (lead-triage, follow-up drafter,
+ * collections nudge, next-best-action, meeting-prep) + their cockpit-action REST
+ * surface. Each agent COMPOSES the existing federation ports + the local
+ * relationship and calls the 4-lane inference seam (on a SELECTABLE tier — request
+ * override > AGENT_<NAME>_TIER env > 'bundled'; see agent-tier.util.ts). Depends on:
  *   - WorkspaceModule — the GUC chokepoint + membership guard (RLS tenancy + RBAC).
  *   - AuthModule — the JwtAuthGuard for the workspace-scoped routes.
  *   - ContactOpsModule — the contact federation port (read-time contact resolve).
@@ -32,8 +35,8 @@ import { AgentsController } from './agents.controller';
  *     SEND.
  *
  * The agents are exported so the MCP agent tools (triage_customer / draft_followup
- * / draft_collections_nudge) run the SAME agent logic the REST cockpit hits — one
- * implementation, two surfaces.
+ * / draft_collections_nudge / next_best_action / meeting_prep) run the SAME agent
+ * logic the REST cockpit hits — one implementation, two surfaces.
  */
 @Module({
   imports: [
@@ -45,8 +48,20 @@ import { AgentsController } from './agents.controller';
     AgentInferenceModule,
     CustomersModule,
   ],
-  providers: [LeadTriageAgent, FollowUpDrafterAgent, CollectionsNudgeAgent],
+  providers: [
+    LeadTriageAgent,
+    FollowUpDrafterAgent,
+    CollectionsNudgeAgent,
+    NextBestActionAgent,
+    MeetingPrepAgent,
+  ],
   controllers: [AgentsController],
-  exports: [LeadTriageAgent, FollowUpDrafterAgent, CollectionsNudgeAgent],
+  exports: [
+    LeadTriageAgent,
+    FollowUpDrafterAgent,
+    CollectionsNudgeAgent,
+    NextBestActionAgent,
+    MeetingPrepAgent,
+  ],
 })
 export class AgentsModule {}

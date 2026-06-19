@@ -2,6 +2,14 @@ import { ConfigService } from '@nestjs/config';
 import { AccountingOpsClient } from './accounting-ops.client';
 import { FederationContext } from './accounting-ops.port';
 import { InvoiceDraft } from './accounting-ops.types';
+import { BrigadeTokenSource } from '../common/federation/brigade-token-source';
+
+/** These tests exercise STATIC auth mode (AO_SERVICE_TOKEN forwarded), so the
+ *  Brigade source is never reached; a stub that returns null suffices. The
+ *  brigade-sts path is proven live, not unit-mocked (mirrors Contact-Ops). */
+function makeBrigade(): BrigadeTokenSource {
+  return { exchangedToken: jest.fn().mockResolvedValue(null) } as unknown as BrigadeTokenSource;
+}
 
 /**
  * The Accounting-Ops federation client speaks JSON-RPC 2.0 to AO's `POST /mcp`
@@ -106,7 +114,7 @@ describe('AccountingOpsClient (Accounting-Ops MOCKED)', () => {
   });
 
   describe('degrade-clean: AO_BASE_URL unset (dormant)', () => {
-    const client = new AccountingOpsClient(makeConfig({}));
+    const client = new AccountingOpsClient(makeConfig({}), makeBrigade());
 
     it('isConfigured() is false', () => {
       expect(client.isConfigured()).toBe(false);
@@ -132,27 +140,27 @@ describe('AccountingOpsClient (Accounting-Ops MOCKED)', () => {
 
   describe('dual-SKU entitlement gate', () => {
     it('PASS only when BOTH customer-ops AND accounting-ops are present (enforce)', () => {
-      const client = new AccountingOpsClient(makeConfig(CONFIGURED_ENFORCE));
+      const client = new AccountingOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade());
       const pass = client.checkEntitlement(ENTITLED);
       expect(pass).toMatchObject({ allowed: true, mode: 'enforce' });
     });
 
     it('DENY when accounting-ops is missing (enforce)', () => {
-      const client = new AccountingOpsClient(makeConfig(CONFIGURED_ENFORCE));
+      const client = new AccountingOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade());
       const deny = client.checkEntitlement(HALF_ENTITLED);
       expect(deny.allowed).toBe(false);
       expect(deny.mode).toBe('enforce');
     });
 
     it('DENY when no entitlements at all (enforce)', () => {
-      const client = new AccountingOpsClient(makeConfig(CONFIGURED_ENFORCE));
+      const client = new AccountingOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade());
       expect(client.checkEntitlement(NOT_ENTITLED).allowed).toBe(false);
     });
 
     it('a denied createInvoice makes NO fetch (defense-in-depth)', async () => {
       const fetchSpy = jest.fn();
       global.fetch = fetchSpy as any;
-      const client = new AccountingOpsClient(makeConfig(CONFIGURED_ENFORCE));
+      const client = new AccountingOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade());
       await expect(client.createInvoice(HALF_ENTITLED, DRAFT)).resolves.toBeNull();
       expect(fetchSpy).not.toHaveBeenCalled();
     });
@@ -160,6 +168,7 @@ describe('AccountingOpsClient (Accounting-Ops MOCKED)', () => {
     it('OPEN bootstrap (UC_ENTITLEMENT_MODE=open) bypasses the dual-SKU check', () => {
       const client = new AccountingOpsClient(
         makeConfig({ ...CONFIGURED_ENFORCE, UC_ENTITLEMENT_MODE: 'open' }),
+        makeBrigade(),
       );
       const decision = client.checkEntitlement(NOT_ENTITLED);
       expect(decision).toMatchObject({ allowed: true, mode: 'open' });
@@ -171,12 +180,13 @@ describe('AccountingOpsClient (Accounting-Ops MOCKED)', () => {
           AO_BASE_URL: 'https://acct.example.test',
           AO_CROSS_APP_ENTITLEMENT_MODE: 'open',
         }),
+        makeBrigade(),
       );
       expect(client.checkEntitlement(NOT_ENTITLED)).toMatchObject({ allowed: true, mode: 'open' });
     });
 
     it('accepts SKU aliases (e.g. accounting_ops / AO) on read', () => {
-      const client = new AccountingOpsClient(makeConfig(CONFIGURED_ENFORCE));
+      const client = new AccountingOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade());
       const aliased: FederationContext = {
         workspaceId: 'ws-aaaa',
         ucUid: 'u',
@@ -190,7 +200,7 @@ describe('AccountingOpsClient (Accounting-Ops MOCKED)', () => {
     it('posts create_invoice_from_draft with the mapped args (money as STRINGS) and maps the view', async () => {
       const fetchSpy = jest.fn().mockResolvedValue(jsonResponse(rpcOk(aoInvoiceView())));
       global.fetch = fetchSpy as any;
-      const client = new AccountingOpsClient(makeConfig(CONFIGURED_ENFORCE));
+      const client = new AccountingOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade());
 
       const invoice = await client.createInvoice(ENTITLED, DRAFT);
 
@@ -245,7 +255,7 @@ describe('AccountingOpsClient (Accounting-Ops MOCKED)', () => {
       // and AO returns the SAME view. The client must surface it stably.
       const fetchSpy = jest.fn().mockResolvedValue(jsonResponse(rpcOk(aoInvoiceView())));
       global.fetch = fetchSpy as any;
-      const client = new AccountingOpsClient(makeConfig(CONFIGURED_ENFORCE));
+      const client = new AccountingOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade());
 
       const first = await client.createInvoice(ENTITLED, DRAFT);
       const second = await client.createInvoice(ENTITLED, DRAFT);
@@ -262,7 +272,7 @@ describe('AccountingOpsClient (Accounting-Ops MOCKED)', () => {
 
     it('returns null (never throws) on a transport error — link persists upstream', async () => {
       global.fetch = jest.fn().mockRejectedValue(new Error('ECONNREFUSED')) as any;
-      const client = new AccountingOpsClient(makeConfig(CONFIGURED_ENFORCE));
+      const client = new AccountingOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade());
       await expect(client.createInvoice(ENTITLED, DRAFT)).resolves.toBeNull();
     });
 
@@ -272,7 +282,7 @@ describe('AccountingOpsClient (Accounting-Ops MOCKED)', () => {
         .mockResolvedValue(
           jsonResponse({ jsonrpc: '2.0', id: 1, error: { code: -32000, message: 'denied' } }),
         ) as any;
-      const client = new AccountingOpsClient(makeConfig(CONFIGURED_ENFORCE));
+      const client = new AccountingOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade());
       await expect(client.createInvoice(ENTITLED, DRAFT)).resolves.toBeNull();
     });
 
@@ -284,7 +294,7 @@ describe('AccountingOpsClient (Accounting-Ops MOCKED)', () => {
           result: { isError: true, content: [{ type: 'text', text: 'invoice not found' }] },
         }),
       ) as any;
-      const client = new AccountingOpsClient(makeConfig(CONFIGURED_ENFORCE));
+      const client = new AccountingOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade());
       await expect(client.createInvoice(ENTITLED, DRAFT)).resolves.toBeNull();
     });
   });
@@ -295,7 +305,7 @@ describe('AccountingOpsClient (Accounting-Ops MOCKED)', () => {
         .fn()
         .mockResolvedValue(jsonResponse(rpcOk(aoInvoiceView({ status: 'partial', balance_due: '1000.0000' }))));
       global.fetch = fetchSpy as any;
-      const client = new AccountingOpsClient(makeConfig(CONFIGURED_ENFORCE));
+      const client = new AccountingOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade());
 
       const inv = await client.getInvoiceByRef(ENTITLED, 'customer-ops', 'cust:cust-1:idem-key-123');
       const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
@@ -311,7 +321,7 @@ describe('AccountingOpsClient (Accounting-Ops MOCKED)', () => {
     it('getInvoiceById polls by AO invoice id', async () => {
       const fetchSpy = jest.fn().mockResolvedValue(jsonResponse(rpcOk(aoInvoiceView({ status: 'paid', balance_due: '0.0000' }))));
       global.fetch = fetchSpy as any;
-      const client = new AccountingOpsClient(makeConfig(CONFIGURED_ENFORCE));
+      const client = new AccountingOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade());
 
       const inv = await client.getInvoiceById(ENTITLED, 'inv-1');
       const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
@@ -323,7 +333,7 @@ describe('AccountingOpsClient (Accounting-Ops MOCKED)', () => {
       // A workspace with no entitlement claim can still poll existing invoices.
       const fetchSpy = jest.fn().mockResolvedValue(jsonResponse(rpcOk(aoInvoiceView())));
       global.fetch = fetchSpy as any;
-      const client = new AccountingOpsClient(makeConfig(CONFIGURED_ENFORCE));
+      const client = new AccountingOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade());
       const inv = await client.getInvoiceByRef(NOT_ENTITLED, 'customer-ops', 'cust:cust-1:idem-key-123');
       expect(inv?.id).toBe('inv-1');
       expect(fetchSpy).toHaveBeenCalledTimes(1);
@@ -331,8 +341,62 @@ describe('AccountingOpsClient (Accounting-Ops MOCKED)', () => {
 
     it('returns null (never throws) on HTTP 500', async () => {
       global.fetch = jest.fn().mockResolvedValue(jsonResponse({}, false, 500)) as any;
-      const client = new AccountingOpsClient(makeConfig(CONFIGURED_ENFORCE));
+      const client = new AccountingOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade());
       await expect(client.getInvoiceById(ENTITLED, 'inv-1')).resolves.toBeNull();
+    });
+  });
+
+  describe('auth mode (AO_AUTH_MODE)', () => {
+    it('STATIC (default / unset): forwards AO_SERVICE_TOKEN, never touches Brigade', async () => {
+      const fetchSpy = jest.fn().mockResolvedValue(jsonResponse(rpcOk(aoInvoiceView())));
+      global.fetch = fetchSpy as any;
+      const brigade = makeBrigade();
+      const client = new AccountingOpsClient(makeConfig(CONFIGURED_ENFORCE), brigade);
+
+      await client.getInvoiceById(ENTITLED, 'inv-1');
+
+      expect(fetchSpy.mock.calls[0][1].headers['Authorization']).toBe('Bearer svc-token-ao');
+      expect(brigade.exchangedToken).not.toHaveBeenCalled();
+    });
+
+    it('BRIGADE-STS: mints aud=accounting-ops + forwards the exchanged bearer (not the static token)', async () => {
+      const fetchSpy = jest.fn().mockResolvedValue(jsonResponse(rpcOk(aoInvoiceView())));
+      global.fetch = fetchSpy as any;
+      const brigade = {
+        exchangedToken: jest.fn().mockResolvedValue('brigade-minted-ao'),
+      } as unknown as BrigadeTokenSource;
+      const client = new AccountingOpsClient(
+        makeConfig({ ...CONFIGURED_ENFORCE, AO_AUTH_MODE: 'brigade-sts' }),
+        brigade,
+      );
+
+      await client.getInvoiceById(ENTITLED, 'inv-1');
+
+      expect(brigade.exchangedToken).toHaveBeenCalledWith({
+        audience: 'accounting-ops',
+        scope: 'invoices:read invoices:write',
+        workspaceId: 'ws-aaaa',
+      });
+      expect(fetchSpy.mock.calls[0][1].headers['Authorization']).toBe('Bearer brigade-minted-ao');
+    });
+
+    it('BRIGADE-STS honors AO_AUDIENCE override + degrades clean (no bearer) when the exchange fails', async () => {
+      const fetchSpy = jest.fn().mockResolvedValue(jsonResponse(rpcOk(aoInvoiceView())));
+      global.fetch = fetchSpy as any;
+      const brigade = makeBrigade(); // exchangedToken → null (exchange failed)
+      const client = new AccountingOpsClient(
+        makeConfig({ ...CONFIGURED_ENFORCE, AO_AUTH_MODE: 'brigade-sts', AO_AUDIENCE: 'ao-prod' }),
+        brigade,
+      );
+
+      await client.getInvoiceById(ENTITLED, 'inv-1');
+
+      expect(brigade.exchangedToken).toHaveBeenCalledWith(
+        expect.objectContaining({ audience: 'ao-prod' }),
+      );
+      // Exchange failed → no Authorization header, but the call still went out.
+      expect(fetchSpy.mock.calls[0][1].headers['Authorization']).toBeUndefined();
+      expect(fetchSpy.mock.calls[0][1].headers['X-Workspace-Id']).toBe('ws-aaaa');
     });
   });
 });

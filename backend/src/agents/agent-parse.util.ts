@@ -34,3 +34,16 @@ export function safeJsonObject(text: string): Record<string, unknown> | null {
 export function strOrNull(v: unknown): string | null {
   return typeof v === 'string' && v.trim() ? v.trim() : null;
 }
+
+/** Coerce an unknown model field to an array of trimmed non-empty strings.
+ *  Tolerates a non-array (→ []) and drops empty/non-string entries. Used for the
+ *  list-shaped agent outputs (talking points, agenda, …). */
+export function strArray(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  const out: string[] = [];
+  for (const item of v) {
+    const s = strOrNull(item);
+    if (s) out.push(s);
+  }
+  return out;
+}
