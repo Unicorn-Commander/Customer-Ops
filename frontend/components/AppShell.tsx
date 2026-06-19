@@ -11,6 +11,7 @@ import { NAV, FEDERATED, isNavActive } from '@/lib/nav';
 import { ThemeToggle } from './ThemeToggle';
 import { CommandPalette } from './CommandPalette';
 import { MobileNav } from './MobileNav';
+import { HelpCenter } from './help/HelpCenter';
 import { IconTile } from './ui/IconTile';
 import { cn } from './ui/cn';
 
@@ -209,6 +210,7 @@ export function AppShell({ children, demo = false }: { children: React.ReactNode
               <Search className="h-4 w-4" strokeWidth={2.25} /><span>Search</span>
               <kbd className="ml-1 rounded border border-subtle bg-surface-overlay px-1.5 py-0.5 font-mono text-[10px] text-muted">⌘K</kbd>
             </button>
+            <HelpCenter pathname={pathname} disableFirstRun={demo} />
             <ThemeToggle />
             <Link
               href="/dashboard/customers"
