@@ -75,20 +75,33 @@ export class GraphService {
   // ── indexes ───────────────────────────────────────────────────────────────
 
   /**
-   * Create the indexes the graph relies on (idempotent — `IF NOT EXISTS`). A
-   * range index on `key` per label makes the MERGE-on-`{key}` upserts fast (the
-   * hot path), and a `workspaceId` index supports the defensive tenant-scoped
-   * reads later phases run. Safe to call on every boot / before a batch.
+   * Create the indexes the graph relies on. A range index on `key` per label
+   * makes the MERGE-on-`{key}` upserts fast (the hot path), and a `workspaceId`
+   * index supports the defensive tenant-scoped reads. Safe to call on every boot /
+   * before a batch.
    *
-   * Index DDL is parameter-free + built only from the validated label vocab, so
-   * there is no injection surface.
+   * NOTE: FalkorDB has NO `CREATE INDEX IF NOT EXISTS` (that's Neo4j) — it rejects
+   * the clause outright, and re-creating an existing index throws "Attribute '…'
+   * is already indexed". So each create is best-effort: the already-indexed error
+   * is swallowed (idempotent), and any other index-DDL error is logged but never
+   * allowed to abort a backfill — indexes are a performance optimization, not a
+   * correctness requirement (the MERGE upserts work without them, just slower).
+   * Index DDL is parameter-free + built only from the validated label vocab + the
+   * two literal prop names, so there is no injection surface.
    */
   async ensureIndexes(graphKey: string): Promise<void> {
     const g = this.falkor.graph(graphKey);
     for (const label of indexedLabels()) {
-      // FalkorDB: CREATE INDEX IF NOT EXISTS FOR (n:Label) ON (n.key)
-      await g.query(`CREATE INDEX IF NOT EXISTS FOR (n:${label}) ON (n.key)`);
-      await g.query(`CREATE INDEX IF NOT EXISTS FOR (n:${label}) ON (n.workspaceId)`);
+      for (const prop of ['key', 'workspaceId']) {
+        try {
+          await g.query(`CREATE INDEX FOR (n:${label}) ON (n.${prop})`);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (!/already indexed|already exists/i.test(msg)) {
+            this.logger.debug(`ensureIndexes: ${label}.${prop} skipped: ${msg}`);
+          }
+        }
+      }
     }
   }
 
