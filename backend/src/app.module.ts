@@ -20,6 +20,7 @@ import { AccountingOpsModule } from './accounting-ops/accounting-ops.module';
 import { OutreachOpsModule } from './outreach-ops/outreach-ops.module';
 import { EmailOpsModule } from './email-ops/email-ops.module';
 import { MeetingOpsModule } from './meeting-ops/meeting-ops.module';
+import { ProjectOpsModule } from './project-ops/project-ops.module';
 import { AgentInferenceModule } from './agents/inference/agent-inference.module';
 import { AgentsModule } from './agents/agents.module';
 import { CustomersModule } from './customers/customers.module';
@@ -60,6 +61,8 @@ import { GraphModule } from './graph/graph.module';
     EmailOpsModule,
     // Phase 5 — the Meeting-Ops signal seam + the 4-lane inference port.
     MeetingOpsModule,
+    // The Project-Ops delivery/projects federation seam (customer-360 projects).
+    ProjectOpsModule,
     AgentInferenceModule,
     // Phase 6 — the lead-ingestion front door (the `ingest_lead` keystone).
     // Registered before CustomersModule so its LeadLabelResolver is available

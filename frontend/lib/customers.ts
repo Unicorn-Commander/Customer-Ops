@@ -263,6 +263,41 @@ export interface MeetingPanel {
   actionItems: MeetingActionItem[];
 }
 
+export type ProjectStatus =
+  | 'NEW'
+  | 'IN_PROGRESS'
+  | 'UNDER_REVIEW'
+  | 'COMPLETED'
+  | 'ARCHIVED'
+  | 'ON_HOLD';
+export type ProjectPriority = 'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT';
+
+/** A federated Project-Ops project (delivery header; no tasks copied here). */
+export interface ProjectItem {
+  id: string;
+  projectNumber: string; // 'P-00085'
+  title: string;
+  status: ProjectStatus;
+  priority: ProjectPriority;
+  dueDate: string | null;
+  clientName: string | null;
+  organizationName: string | null;
+  assignedTo: { displayName: string; email: string | null } | null;
+}
+
+/**
+ * The customer-360 project panel: the customer's delivery projects, FEDERATED
+ * from Project-Ops (read-only delivery signal; never copied — Customer-Ops holds
+ * no project or task). Reads are viewer-level, so the only affordance is
+ * `configured` (connect Project-Ops).
+ */
+export interface ProjectPanel {
+  federated: boolean;
+  source: string; // 'project-ops'
+  configured: boolean;
+  projects: ProjectItem[];
+}
+
 export interface Customer360 {
   relationship: CustomerRow;
   contact: {
@@ -282,6 +317,7 @@ export interface Customer360 {
   outreach: OutreachPanel;
   email: EmailPanel;
   meetings: MeetingPanel;
+  projects: ProjectPanel;
 }
 
 // ── Phase 5: the relationship AGENT results (DRAFT-ONLY; human-in-the-loop) ──
@@ -539,6 +575,15 @@ export async function listMeetings(ws: string, id: string): Promise<MeetingPanel
   return apiGet<MeetingPanel>(`${base(ws)}/${encodeURIComponent(id)}/meetings`);
 }
 
+// ── Phase 5: the Project-Ops delivery surface (project & task status) ──
+// Customer-Ops FEDERATES delivery from Project-Ops at read time (never copied;
+// no local store). The UI renders the customer's projects read-only.
+
+/** This customer's projects, federated from Project-Ops. */
+export async function listProjects(ws: string, id: string): Promise<ProjectPanel> {
+  return apiGet<ProjectPanel>(`${base(ws)}/${encodeURIComponent(id)}/projects`);
+}
+
 // ── Phase 5: the relationship AGENTS (DRAFT-ONLY; human-in-the-loop) ──
 // Each agent composes the federation seams + the 4-lane inference and returns a
 // structured result for human approval. The UI renders the output for review; it
@@ -583,6 +628,28 @@ export function meetingStatusLabel(status: string | null): { label: string; tone
       return { label: 'Recording', tone: 'info' };
     case 'failed':
       return { label: 'Failed', tone: 'warn' };
+    case null:
+      return { label: 'Pending', tone: 'muted' };
+    default:
+      return { label: status, tone: 'info' };
+  }
+}
+
+/** A human label + tone for a Project-Ops project status. */
+export function projectStatusLabel(status: ProjectStatus | string | null): { label: string; tone: string } {
+  switch (status) {
+    case 'COMPLETED':
+      return { label: 'Completed', tone: 'ok' };
+    case 'IN_PROGRESS':
+      return { label: 'In progress', tone: 'info' };
+    case 'UNDER_REVIEW':
+      return { label: 'Under review', tone: 'warn' };
+    case 'ON_HOLD':
+      return { label: 'On hold', tone: 'warn' };
+    case 'NEW':
+      return { label: 'New', tone: 'muted' };
+    case 'ARCHIVED':
+      return { label: 'Archived', tone: 'muted' };
     case null:
       return { label: 'Pending', tone: 'muted' };
     default:

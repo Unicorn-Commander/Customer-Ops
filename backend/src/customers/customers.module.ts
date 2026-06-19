@@ -6,6 +6,7 @@ import { AccountingOpsModule } from '../accounting-ops/accounting-ops.module';
 import { OutreachOpsModule } from '../outreach-ops/outreach-ops.module';
 import { EmailOpsModule } from '../email-ops/email-ops.module';
 import { MeetingOpsModule } from '../meeting-ops/meeting-ops.module';
+import { ProjectOpsModule } from '../project-ops/project-ops.module';
 import { LeadIntakeModule } from '../lead-intake/lead-intake.module';
 import { CustomersService } from './customers.service';
 import { CustomersController } from './customers.controller';
@@ -42,6 +43,7 @@ import { CustomersController } from './customers.controller';
     OutreachOpsModule,
     EmailOpsModule,
     MeetingOpsModule,
+    ProjectOpsModule,
     // Phase 6: provides LeadLabelResolver (provisional cockpit labels). @Optional
     // in the service, but wired here so the dogfood renders ingested leads.
     LeadIntakeModule,

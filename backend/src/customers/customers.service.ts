@@ -40,6 +40,7 @@ import { WorkspaceContextService } from '../common/workspace/workspace-context.s
 import { WorkspaceTxClient } from '../prisma/prisma.service';
 import { WithWorkspaceClaim, entitlementsOf, ucUidOf } from '../common/workspace/workspace.util';
 import { ContactOpsPort, FederationContext } from '../contact-ops/contact-ops.port';
+import { FederatedContact } from '../contact-ops/contact-ops.types';
 import {
   AccountingOpsPort,
   FederationContext as InvoiceFederationContext,
@@ -67,6 +68,12 @@ import {
   FederatedMeeting,
   FederatedMeetingSummary,
 } from '../meeting-ops/meeting-ops.types';
+import {
+  ProjectOpsPort,
+  ProjectLookup,
+  FederationContext as ProjectFederationContext,
+} from '../project-ops/project-ops.port';
+import { ProjectPanel } from '../project-ops/project-ops.types';
 import { LeadLabelResolver, isProvisionalContactId } from '../lead-intake/lead-label.port';
 import { checkTransition, engagementAdvance, STAGE_ORDER } from './funnel';
 import {
@@ -157,6 +164,7 @@ export class CustomersService {
     private readonly outreach: OutreachPort,
     private readonly emailOps: EmailOpsPort,
     private readonly meetingOps: MeetingOpsPort,
+    private readonly projectOps: ProjectOpsPort,
     // Phase 6: resolves a real label for a PROVISIONAL contactId ('prov:…') from
     // the lead-intake buffer while Contact-Ops is dormant. @Optional so the
     // relationship layer has no hard dependency on the ingestion module.
@@ -284,6 +292,12 @@ export class CustomersService {
       requestedWorkspaceId,
     );
 
+    // ── Project-Ops federation panel: the projects / delivery work Project-Ops
+    // is running for this account, matched on the (already-federated) contact's
+    // organization / name. Read-only, best-effort + degrade-clean — outside the
+    // DB tx, never holding one open; Customer-Ops persists no project state.
+    const projectPanel = await this.buildProjectPanel(user, contact, requestedWorkspaceId);
+
     return {
       relationship: this.serialize(relationship),
       // The FEDERATED contact half — resolved from Contact-Ops, not stored here.
@@ -309,6 +323,8 @@ export class CustomersService {
       email: emailPanel,
       // ── Phase-5: the Meeting-Ops panel (federated conversation signal) ──
       meetings: meetingPanel,
+      // ── Project-Ops panel (federated delivery / project signal) ──
+      projects: projectPanel,
     };
   }
 
@@ -1356,6 +1372,75 @@ export class CustomersService {
       base.actionItems = actionItems;
     } catch (err) {
       this.logger.warn(`Meeting panel federation failed: ${(err as Error).message}`);
+    }
+    return base;
+  }
+
+  // ---- Project-Ops federation (delivery / projects panel) ----------------
+
+  /** The standalone customer-360 projects slot: GET /customers/:id/projects. */
+  async projectsForUser(
+    user: User & Partial<WithWorkspaceClaim>,
+    customerId: string,
+    requestedWorkspaceId?: string | null,
+  ): Promise<ProjectPanel> {
+    if (!this.projectOps.isConfigured()) {
+      return { federated: false, source: 'project-ops', configured: false, projects: [] };
+    }
+    const fedCtx = await this.federationContext(user, requestedWorkspaceId);
+    const contactId = await this.workspaces.runForUser(
+      user,
+      async (tx) => (await this.getInTx(tx, customerId)).contactId,
+      requestedWorkspaceId,
+    );
+    const contact = await this.contactOps.getContact(fedCtx, contactId);
+    return this.buildProjectPanel(user, contact, requestedWorkspaceId);
+  }
+
+  /** Build the Project-Ops federation identity (workspace + actor; entitlements
+   *  carried for parity — project reads are viewer-level). */
+  private async projectFederationContext(
+    user: User & Partial<WithWorkspaceClaim>,
+    requestedWorkspaceId?: string | null,
+  ): Promise<ProjectFederationContext> {
+    const workspaceId = await this.workspaces.resolveAuthorized(user, requestedWorkspaceId);
+    return { workspaceId, ucUid: ucUidOf(user) || null, entitlements: entitlementsOf(user) };
+  }
+
+  /**
+   * Assemble the customer-360 projects panel: the projects Project-Ops is
+   * delivering for this account, matched on the customer's federated org / contact
+   * name (Project-Ops' search_projects covers client + organization name). Never
+   * throws (best-effort); degrade-clean when Project-Ops is unconfigured or there
+   * is no usable match key. Read-only — Project-Ops owns the lifecycle; nothing is
+   * persisted here.
+   */
+  private async buildProjectPanel(
+    user: User & Partial<WithWorkspaceClaim>,
+    contact: FederatedContact | null,
+    requestedWorkspaceId?: string | null,
+  ): Promise<ProjectPanel> {
+    const configured = this.projectOps.isConfigured();
+    const base: ProjectPanel = {
+      federated: configured,
+      source: 'project-ops',
+      configured,
+      projects: [],
+    };
+    if (!configured) return base;
+
+    const lookup: ProjectLookup = {
+      orgName: contact?.currentOrgName ?? null,
+      contactName: contact?.displayName ?? null,
+    };
+    // No usable match key (e.g. a provisional contact with no org/name) → no call.
+    if (!lookup.orgName && !lookup.contactName) return base;
+
+    const fedCtx = await this.projectFederationContext(user, requestedWorkspaceId);
+    try {
+      base.projects = await this.projectOps.listProjectsForContact(fedCtx, lookup);
+    } catch (err) {
+      this.logger.warn(`Project panel federation failed: ${(err as Error).message}`);
     }
     return base;
   }

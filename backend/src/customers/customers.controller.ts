@@ -293,6 +293,25 @@ export class CustomersController {
     return this.customers.meetingsForUser(user, id, workspaceId);
   }
 
+  // Customer-Ops FEDERATES projects/delivery status from Project-Ops at read time
+  // (never copied; no local table). Degrade-clean when Project-Ops is unconfigured.
+  // Reads are viewer-level.
+
+  @Get(':id/projects')
+  @ApiOperation({
+    summary:
+      "The projects Project-Ops is delivering for this customer's account, matched on the " +
+      'federated org/contact name. Read-only; reports a connect affordance when Project-Ops ' +
+      'is unconfigured.',
+  })
+  async listProjects(
+    @CurrentUser() user: AuthedUser,
+    @Param('workspaceId') workspaceId: string,
+    @Param('id') id: string,
+  ) {
+    return this.customers.projectsForUser(user, id, workspaceId);
+  }
+
   // ── Phase 4: the engagement → funnel-stage hook ──
   // An inbound engagement signal (reply/click from Outreach/Email-Ops; a bounce)
   // advances the customer's funnel stage when positive, with activity logging.

@@ -57,6 +57,7 @@ module.exports = {
           outreach: triplet("--co-feat-outreach"),
           email: triplet("--co-feat-email"),
           meetings: triplet("--co-feat-meetings"),
+          projects: triplet("--co-feat-projects"),
           agents: triplet("--co-feat-agents"),
         },
       },

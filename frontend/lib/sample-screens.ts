@@ -741,4 +741,46 @@ export const SAMPLE_360: Customer360 = {
       },
     ],
   },
+
+  // ── Projects (Project-Ops) — alive ──
+  projects: {
+    federated: true,
+    source: 'project-ops',
+    configured: true,
+    projects: [
+      {
+        id: 'proj-1',
+        projectNumber: 'P-00412',
+        title: 'AR automation rollout',
+        status: 'IN_PROGRESS',
+        priority: 'HIGH',
+        dueDate: days(18),
+        clientName: 'Northwind Remodeling',
+        organizationName: 'Northwind Remodeling',
+        assignedTo: { displayName: 'Aaron Stransky', email: 'aaron@magicunicorn.tech' },
+      },
+      {
+        id: 'proj-2',
+        projectNumber: 'P-00418',
+        title: 'Remodeling-AR benchmark deck',
+        status: 'UNDER_REVIEW',
+        priority: 'MEDIUM',
+        dueDate: days(4),
+        clientName: 'Northwind Remodeling',
+        organizationName: 'Northwind Remodeling',
+        assignedTo: { displayName: 'Aaron Stransky', email: 'aaron@magicunicorn.tech' },
+      },
+      {
+        id: 'proj-3',
+        projectNumber: 'P-00377',
+        title: 'Discovery & SOW',
+        status: 'COMPLETED',
+        priority: 'LOW',
+        dueDate: days(-12),
+        clientName: 'Northwind Remodeling',
+        organizationName: 'Northwind Remodeling',
+        assignedTo: null,
+      },
+    ],
+  },
 };

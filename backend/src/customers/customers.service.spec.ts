@@ -7,6 +7,7 @@ import { AccountingOpsPort } from '../accounting-ops/accounting-ops.port';
 import { OutreachPort } from '../outreach-ops/outreach-ops.port';
 import { EmailOpsPort } from '../email-ops/email-ops.port';
 import { MeetingOpsPort } from '../meeting-ops/meeting-ops.port';
+import { ProjectOpsPort } from '../project-ops/project-ops.port';
 
 /**
  * CustomersService is the relationship logic of the cockpit. These tests pin:
@@ -146,6 +147,7 @@ function makeService(opts?: {
   outreach?: Partial<OutreachPort>;
   email?: Partial<EmailOpsPort>;
   meeting?: Partial<MeetingOpsPort>;
+  project?: Partial<ProjectOpsPort>;
 }) {
   const contact: ContactOpsPort = {
     getContact: jest.fn().mockResolvedValue(null),
@@ -211,6 +213,14 @@ function makeService(opts?: {
     ...(opts?.meeting ?? {}),
   } as any;
 
+  // Default Project-Ops port: DORMANT (degrade-clean). The projects-panel test
+  // passes a configured fake to exercise the federated path.
+  const project: ProjectOpsPort = {
+    isConfigured: jest.fn().mockReturnValue(false),
+    listProjectsForContact: jest.fn().mockResolvedValue([]),
+    ...(opts?.project ?? {}),
+  } as any;
+
   // WorkspaceContextService faked: runForUser invokes fn(tx) directly (the real
   // GUC/RLS is proven in the SQL acceptance, not re-mocked here); resolveAuthorized
   // returns the bootstrap workspace.
@@ -220,8 +230,16 @@ function makeService(opts?: {
     runForUser: jest.fn(async (_user: User, fn: any) => fn(lastTx.current)),
   } as unknown as WorkspaceContextService;
 
-  const svc = new CustomersService(workspaces, contact, accounting, outreach, email, meeting);
-  return { svc, contact, accounting, outreach, email, meeting, workspaces, lastTx };
+  const svc = new CustomersService(
+    workspaces,
+    contact,
+    accounting,
+    outreach,
+    email,
+    meeting,
+    project,
+  );
+  return { svc, contact, accounting, outreach, email, meeting, project, workspaces, lastTx };
 }
 
 describe('CustomersService — relationship logic', () => {

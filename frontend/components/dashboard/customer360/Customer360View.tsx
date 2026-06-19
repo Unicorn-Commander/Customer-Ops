@@ -12,6 +12,7 @@ import { InvoicesPanel } from './InvoicesPanel';
 import { EmailPanel } from './EmailPanel';
 import { OutreachPanel } from './OutreachPanel';
 import { MeetingsPanel } from './MeetingsPanel';
+import { ProjectsPanel } from './ProjectsPanel';
 
 /**
  * Customer360View — the PRESENTATIONAL relationship cockpit. Pure props: the
@@ -42,7 +43,7 @@ export function Customer360View({
   busy: boolean;
   handlers: Customer360Handlers;
 }) {
-  const { relationship: rel, contact, contactFederation, timeline, invoices, outreach, email, meetings } = data;
+  const { relationship: rel, contact, contactFederation, timeline, invoices, outreach, email, meetings, projects } = data;
   const [mobileTab, setMobileTab] = useState<'panels' | 'activity'>('panels');
 
   const customerName = contact?.displayName ?? `Contact ${rel.contactId.slice(0, 8)}`;
@@ -74,6 +75,7 @@ export function Customer360View({
       />
       <OutreachPanel workspaceId={workspaceId} customerId={customerId} panel={outreach} onChanged={handlers.onChanged} />
       <MeetingsPanel panel={meetings} />
+      <ProjectsPanel panel={projects} />
     </div>
   );
 
