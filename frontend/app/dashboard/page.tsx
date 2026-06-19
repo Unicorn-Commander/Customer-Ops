@@ -6,7 +6,7 @@ import {
   resolveWorkspaceId, getPipeline, listCustomers, contactLabel,
   type PipelineBoard, type CustomerRow, type Stage,
 } from '@/lib/customers';
-import { getStoredUser, type CustomerOpsUser } from '@/lib/api';
+import { getStoredUser, ApiError, type CustomerOpsUser } from '@/lib/api';
 import { deriveGraph } from '@/lib/graph';
 
 const STAGE_VERB: Record<Stage, string> = {
@@ -62,7 +62,10 @@ export default function DashboardHome() {
         const [b, c] = await Promise.all([getPipeline(ws), listCustomers(ws)]);
         setBoard(b);
         setRows(c);
-      } catch {
+      } catch (err) {
+        // A 401 means the session expired — the API client is already clearing
+        // it and bouncing to sign-in, so don't flash a "backend down" message.
+        if (err instanceof ApiError && err.status === 401) return;
         setError('Could not load the cockpit. Is the backend reachable?');
       }
     })();

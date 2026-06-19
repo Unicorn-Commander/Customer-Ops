@@ -41,6 +41,32 @@ export function clearSession(): void {
   window.localStorage.removeItem(USER_KEY);
 }
 
+/**
+ * Error that carries the HTTP status, so callers can tell an auth failure (401)
+ * apart from a genuine connectivity/server problem (5xx, network). Without this
+ * a 401 looked identical to "the backend is down".
+ */
+export class ApiError extends Error {
+  constructor(public readonly status: number, message: string) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
+/**
+ * A 401 means the session token is missing or expired — NOT that the backend is
+ * unreachable. A stale `user` can linger in localStorage after the token dies,
+ * so the app still thinks it's signed in and strands the user on a misleading
+ * error. Clear the dead session and bounce to SSO sign-in so they can recover.
+ */
+function handleAuthFailure(): void {
+  if (typeof window === 'undefined') return;
+  clearSession();
+  if (window.location.pathname !== '/auth/login') {
+    window.location.assign('/auth/login');
+  }
+}
+
 /** The backend SSO entry point — redirects the browser to Keycloak. */
 export function ssoLoginUrl(): string {
   return `${API_BASE}/auth/keycloak`;
@@ -53,7 +79,8 @@ export async function apiGet<T = unknown>(path: string, token?: string): Promise
     headers: bearer ? { Authorization: `Bearer ${bearer}` } : {},
   });
   if (!res.ok) {
-    throw new Error(`GET ${path} failed: ${res.status}`);
+    if (res.status === 401) handleAuthFailure();
+    throw new ApiError(res.status, `GET ${path} failed: ${res.status}`);
   }
   return (await res.json()) as T;
 }
@@ -81,7 +108,8 @@ async function apiSend<T = unknown>(
     } catch {
       /* ignore */
     }
-    throw new Error(`${method} ${path} failed: ${res.status}${detail}`);
+    if (res.status === 401) handleAuthFailure();
+    throw new ApiError(res.status, `${method} ${path} failed: ${res.status}${detail}`);
   }
   return (await res.json()) as T;
 }
