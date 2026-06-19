@@ -254,6 +254,10 @@ export class ContactOpsClient extends ContactOpsPort {
   // --- ContactOpsPort implementation -------------------------------------
 
   async getContact(ctx: FederationContext, contactId: string): Promise<FederatedContact | null> {
+    // `prov:` ids are local provisional placeholders (name-only imports that
+    // have no Contact-Ops record yet). get_person expects a UUID and rejects
+    // them with a validation error, so skip the round-trip and degrade clean.
+    if (!contactId || contactId.startsWith('prov:')) return null;
     const raw = await this.callTool(ctx, 'get_person', {
       person_id: contactId,
       include: ['emails', 'phones'],
