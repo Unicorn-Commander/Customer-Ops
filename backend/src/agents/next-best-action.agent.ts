@@ -211,7 +211,11 @@ export class NextBestActionAgent {
       'outside the JSON, matching exactly: {"nextAction": "<one concrete step>", ' +
       '"rationale": "<2-3 sentences>", "priority": "low"|"medium"|"high", "confidence": ' +
       '<number 0-1>}. Weight recent two-way engagement and open action items toward a ' +
-      'higher priority; weight staleness with no engagement toward a re-engagement step.';
+      'higher priority; weight staleness with no engagement toward a re-engagement step. ' +
+      'CONFIDENCE CALIBRATION: confidence reflects your certainty given the available ' +
+      'evidence and is INDEPENDENT of priority — with sparse/cold signal (no interactions, ' +
+      'meetings, or outreach) output a MODERATE confidence (0.5-0.75); reserve >0.85 only ' +
+      'for rich two-way engagement. When a contact name is present, name them in the nextAction.';
     const user =
       'Relationship signal:\n' +
       JSON.stringify(signals, null, 2) +
