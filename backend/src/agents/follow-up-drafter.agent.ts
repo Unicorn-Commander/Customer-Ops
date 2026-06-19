@@ -44,6 +44,7 @@ import { OutreachTouch } from '../outreach-ops/outreach-ops.types';
 import { CustomersService } from '../customers/customers.service';
 import { AgentInferencePort, InferenceContext } from './inference/agent-inference.port';
 import { AgentInferenceEcho, FollowUpDraftResult } from './agents.types';
+import { InferenceTier } from './inference/agent-inference.types';
 import { safeJsonObject, strOrNull } from './agent-parse.util';
 
 /** Options for a follow-up draft. `stageDraft` opts into staging the draft into
@@ -78,6 +79,7 @@ export class FollowUpDrafterAgent {
     customerId: string,
     opts: FollowUpOptions = {},
     requestedWorkspaceId?: string | null,
+    tier: InferenceTier = 'bundled',
   ): Promise<FollowUpDraftResult> {
     const ucUid = ucUidOf(user);
     const workspaceId = await this.workspaces.resolveAuthorized(user, requestedWorkspaceId);
@@ -124,13 +126,13 @@ export class FollowUpDrafterAgent {
       lastEngagement: lastTouch?.lastEngagementKind ?? null,
     };
 
-    // 3) ENTITLEMENT + INFERENCE (bundled tier).
+    // 3) ENTITLEMENT + INFERENCE (the SELECTABLE tier — defaults to 'bundled').
     const infCtx: InferenceContext = {
       workspaceId,
       ucUid: ucUid || null,
       entitlements: entitlementsOf(user),
     };
-    const gate = this.inference.checkEntitlement(infCtx, 'bundled');
+    const gate = this.inference.checkEntitlement(infCtx, tier);
     const configured = this.inference.isConfigured();
 
     let subject: string | null = null;
@@ -146,7 +148,7 @@ export class FollowUpDrafterAgent {
     } else {
       const result = await this.inference.complete(infCtx, {
         task: 'follow-up-draft',
-        tier: 'bundled',
+        tier,
         responseFormat: 'json',
         temperature: 0.5,
         maxOutputTokens: 900,

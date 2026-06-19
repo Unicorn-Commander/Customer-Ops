@@ -6,14 +6,32 @@
  * drafter's `stageDraft` opts into staging into the Email-Ops AGENT INBOX
  * (mode='draft', a human approves) — it is NOT a send.
  *
- * triage + collections-nudge take NO request body (the agents read federated
- * signal), so they have no DTO — like the bodyless `reopen` cockpit action.
+ * Every agent action accepts an OPTIONAL `tier` ('bundled' | 'metered') — the
+ * SELECTABLE inference-lane override (request beats the per-agent env default
+ * beats 'bundled'; see agent-tier.util.ts). It is a hint only; the entitlement
+ * gate still downgrades a metered ask to bundled when `ai-metered` is absent.
+ * The bodyless actions (triage / collections-nudge / next-best-action /
+ * meeting-prep) take the shared `AgentTierDto` so they too can carry `tier`
+ * (also acceptable via the `?tier=` query); a missing body is fine (all fields
+ * optional). An invalid value passes validation but is ignored by the resolver.
  */
 
-import { IsBoolean, IsOptional, IsString, Matches, MaxLength } from 'class-validator';
+import { IsBoolean, IsIn, IsOptional, IsString, Matches, MaxLength } from 'class-validator';
+import { InferenceTier } from '../inference/agent-inference.types';
+
+/** The shared, all-optional body for an agent action — carries only the
+ *  SELECTABLE inference-lane override. The bodyless agents bind this. */
+export class AgentTierDto {
+  /** Override the inference lane for THIS call: 'bundled' (lanes 1-2, in seat
+   *  price) or 'metered' (lanes 3-4, frontier; needs ai-metered). Beats the
+   *  per-agent env default. Omitted → fall through to the env / 'bundled'. */
+  @IsOptional()
+  @IsIn(['bundled', 'metered'])
+  tier?: InferenceTier;
+}
 
 /** Draft a follow-up email for a customer (draft only; optional agent-inbox stage). */
-export class DraftFollowUpDto {
+export class DraftFollowUpDto extends AgentTierDto {
   /** The operator's intent/angle (e.g. "nudge for the signed SOW"). */
   @IsOptional()
   @IsString()

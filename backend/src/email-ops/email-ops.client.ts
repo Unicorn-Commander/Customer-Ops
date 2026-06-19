@@ -26,12 +26,14 @@
  *      JSON-RPC `error` — both handled.
  *
  * AUTH: Customer-Ops calls Email-Ops as a service. The bearer is a federation
- * token carrying the addressed `workspace_id` claim + `aud=email-ops`. Minting
- * that token is Brigade's job (RFC-8693 exchange); until that seam is wired this
- * client forwards a configured service token (EMAIL_OPS_SERVICE_TOKEN) and
- * addresses the workspace via the documented precedence (X-Workspace-Id header,
+ * token carrying the addressed `workspace_id` claim + `aud=email-ops`. The auth
+ * MODE is selectable (mirrors the Contact-Ops / Meeting-Ops clients):
+ *   - `static` (default): forward a configured service token (EMAIL_OPS_SERVICE_TOKEN);
+ *   - `brigade-sts`: mint a customer-ops client-credentials token and exchange it
+ *     at Brigade (RFC-8693) for an `aud=email-ops`, workspace-bound token.
+ * The workspace is addressed via the documented precedence (X-Workspace-Id header,
  * which Email-Ops re-gates against membership). The mint seam is isolated in
- * `authHeaders()` so swapping to Brigade is a one-method change — exactly like
+ * `authHeaders()` / `bearerFor()` so the mode is a one-knob change — exactly like
  * the Contact-Ops / Accounting-Ops clients.
  *
  * ENTITLEMENT (binding): sending/drafting outbound mail requires BOTH
@@ -51,6 +53,7 @@
 
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { BrigadeTokenSource } from '../common/federation/brigade-token-source';
 import { EmailOpsPort, FederationContext } from './email-ops.port';
 import {
   EmailComposeRequest,
@@ -101,7 +104,10 @@ export class EmailOpsClient extends EmailOpsPort {
   private readonly logger = new Logger(EmailOpsClient.name);
   private rpcId = 0;
 
-  constructor(private readonly config: ConfigService) {
+  constructor(
+    private readonly config: ConfigService,
+    private readonly brigade: BrigadeTokenSource,
+  ) {
     super();
     if (!this.baseUrl) {
       this.logger.warn(
@@ -111,7 +117,10 @@ export class EmailOpsClient extends EmailOpsPort {
           'this seam is mockable + degrade-clean until it lands.)',
       );
     } else {
-      this.logger.log(`Email-Ops federation target: ${this.baseUrl} (mode=${this.mode()})`);
+      this.logger.log(
+        `Email-Ops federation target: ${this.baseUrl} ` +
+          `(entitlement=${this.mode()}, auth=${this.authMode})`,
+      );
     }
   }
 
@@ -148,19 +157,46 @@ export class EmailOpsClient extends EmailOpsPort {
 
   /**
    * Build the auth headers for a federation call to Email-Ops. This is the
-   * Brigade token-mint seam: today it forwards a configured service token; the
-   * Brigade change swaps in an RFC-8693 exchange minting a per-request token with
-   * `aud=email-ops` + the addressed `workspace_id` claim. X-Workspace-Id rides
-   * along for Email-Ops's per-request addressing; Email-Ops re-gates membership
-   * server-side, so the header is a hint, never the authz boundary.
+   * Brigade token-mint seam: in `static` mode it forwards a configured service
+   * token; in `brigade-sts` mode it mints a per-request token via an RFC-8693
+   * exchange with `aud=email-ops` + the addressed `workspace_id` claim.
+   * X-Workspace-Id rides along for Email-Ops's per-request addressing; Email-Ops
+   * re-gates membership server-side, so the header is a hint, never the authz
+   * boundary.
    */
-  private authHeaders(ctx: FederationContext): Record<string, string> {
+  private async authHeaders(ctx: FederationContext): Promise<Record<string, string>> {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    const token = this.config.get<string>('EMAIL_OPS_SERVICE_TOKEN');
-    if (token && token.trim()) headers['Authorization'] = `Bearer ${token.trim()}`;
+    const bearer = await this.bearerFor(ctx.workspaceId);
+    if (bearer) headers['Authorization'] = `Bearer ${bearer}`;
     headers['X-Workspace-Id'] = ctx.workspaceId;
     if (ctx.ucUid) headers['X-Uc-Uid'] = ctx.ucUid;
     return headers;
+  }
+
+  /** The auth mode: `static` forwards EMAIL_OPS_SERVICE_TOKEN (legacy / dev);
+   *  `brigade-sts` mints a customer-ops client-credentials token and exchanges it
+   *  at Brigade (RFC-8693) for an email-ops-audience, workspace-bound token.
+   *  DEFAULT `static` so behavior is unchanged when EMAIL_OPS_AUTH_MODE is unset. */
+  private get authMode(): 'static' | 'brigade-sts' {
+    return this.config.get<string>('EMAIL_OPS_AUTH_MODE')?.trim() === 'brigade-sts'
+      ? 'brigade-sts'
+      : 'static';
+  }
+
+  /** Resolve the bearer for a federation call (per the auth mode). `static`
+   *  forwards EMAIL_OPS_SERVICE_TOKEN; `brigade-sts` delegates to the shared
+   *  BrigadeTokenSource (mint customer-ops CC → exchange for aud=email-ops).
+   *  Degrade-clean: a failed exchange returns null and the caller sends no bearer. */
+  private async bearerFor(workspaceId: string): Promise<string | null> {
+    if (this.authMode === 'static') {
+      const t = this.config.get<string>('EMAIL_OPS_SERVICE_TOKEN');
+      return t && t.trim() ? t.trim() : null;
+    }
+    return this.brigade.exchangedToken({
+      audience: this.config.get<string>('EMAIL_OPS_AUDIENCE')?.trim() || 'email-ops',
+      scope: 'mail:read mail:send',
+      workspaceId,
+    });
   }
 
   // --- entitlement gate (pure) -------------------------------------------
@@ -229,7 +265,7 @@ export class EmailOpsClient extends EmailOpsPort {
     try {
       res = await this.fetchWithTimeout(`${base}/mcp`, {
         method: 'POST',
-        headers: this.authHeaders(ctx),
+        headers: await this.authHeaders(ctx),
         body: JSON.stringify(body),
       });
     } catch (err) {

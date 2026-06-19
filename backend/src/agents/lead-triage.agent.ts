@@ -23,9 +23,11 @@
  * never throws and never blocks. Federation reads are individually best-effort.
  *
  * ENTITLEMENT: gated through AgentInferencePort.checkEntitlement (the 4-lane
- * model — `customer-ops` for the bundled lane). Triage defaults to the BUNDLED
- * tier (a relationship agent in the seat price, lanes 1-2; SUITE-ARCHITECTURE-MAP
- * §8), so it does not require `ai-metered`.
+ * model — `customer-ops` for the bundled lane). The inference lane is SELECTABLE
+ * (caller `tier` override > AGENT_LEAD_TRIAGE_TIER env > 'bundled'; see
+ * agent-tier.util.ts); it defaults to the BUNDLED tier (a relationship agent in
+ * the seat price, lanes 1-2; SUITE-ARCHITECTURE-MAP §8), so it does not require
+ * `ai-metered` unless 'metered' is selected (which the gate then gates on it).
  */
 
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
@@ -39,7 +41,7 @@ import { OutreachPort } from '../outreach-ops/outreach-ops.port';
 import { OutreachTouch } from '../outreach-ops/outreach-ops.types';
 import { AgentInferencePort, InferenceContext } from './inference/agent-inference.port';
 import { AgentInferenceEcho, LeadTriageResult, LeadTriageSignals } from './agents.types';
-import { AgentInferenceResult } from './inference/agent-inference.types';
+import { AgentInferenceResult, InferenceTier } from './inference/agent-inference.types';
 import { safeJsonObject, strOrNull } from './agent-parse.util';
 
 @Injectable()
@@ -63,6 +65,7 @@ export class LeadTriageAgent {
     user: User & Partial<WithWorkspaceClaim>,
     customerId: string,
     requestedWorkspaceId?: string | null,
+    tier: InferenceTier = 'bundled',
   ): Promise<LeadTriageResult> {
     const ucUid = ucUidOf(user);
     const workspaceId = await this.workspaces.resolveAuthorized(user, requestedWorkspaceId);
@@ -126,13 +129,15 @@ export class LeadTriageAgent {
       outreachTouchCount: touches.length,
     };
 
-    // 3) ENTITLEMENT + INFERENCE (bundled tier — relationship agent in seat price).
+    // 3) ENTITLEMENT + INFERENCE (the SELECTABLE tier — defaults to 'bundled', a
+    //    relationship agent in the seat price; a caller may select 'metered' for
+    //    the frontier lane, which the gate then requires `ai-metered` for).
     const infCtx: InferenceContext = {
       workspaceId,
       ucUid: ucUid || null,
       entitlements: entitlementsOf(user),
     };
-    const gate = this.inference.checkEntitlement(infCtx, 'bundled');
+    const gate = this.inference.checkEntitlement(infCtx, tier);
     const configured = this.inference.isConfigured();
 
     let assessment: ParsedTriage | null = null;
@@ -147,7 +152,7 @@ export class LeadTriageAgent {
     } else {
       const result = await this.inference.complete(infCtx, {
         task: 'lead-triage',
-        tier: 'bundled',
+        tier,
         responseFormat: 'json',
         temperature: 0.2,
         maxOutputTokens: 700,

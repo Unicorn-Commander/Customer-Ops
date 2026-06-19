@@ -22,11 +22,13 @@
  *
  * AUTH: Customer-Ops calls Accounting-Ops as a service. The bearer is a
  * federation token carrying the addressed `workspace_id` claim + `aud=accounting-ops`.
- * Minting that token is Brigade's job (RFC-8693 exchange); until that seam is
- * wired this client forwards a configured service token (AO_SERVICE_TOKEN) and
- * addresses the workspace via the documented precedence (X-Workspace-Id header,
+ * The auth MODE is selectable (mirrors the Contact-Ops / Meeting-Ops clients):
+ *   - `static` (default): forward a configured service token (AO_SERVICE_TOKEN);
+ *   - `brigade-sts`: mint a customer-ops client-credentials token and exchange it
+ *     at Brigade (RFC-8693) for an `aud=accounting-ops`, workspace-bound token.
+ * The workspace is addressed via the documented precedence (X-Workspace-Id header,
  * which AO re-gates against membership). The mint seam is isolated in
- * `authHeaders()` so swapping to Brigade is a one-method change — exactly like
+ * `authHeaders()` / `bearerFor()` so the mode is a one-knob change — exactly like
  * the Contact-Ops client.
  *
  * ENTITLEMENT (binding): invoicing requires BOTH `customer-ops` AND
@@ -45,6 +47,7 @@
 
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { BrigadeTokenSource } from '../common/federation/brigade-token-source';
 import { AccountingOpsPort, FederationContext } from './accounting-ops.port';
 import { EntitlementDecision, FederatedInvoice, InvoiceDraft } from './accounting-ops.types';
 
@@ -88,7 +91,10 @@ export class AccountingOpsClient extends AccountingOpsPort {
   private readonly logger = new Logger(AccountingOpsClient.name);
   private rpcId = 0;
 
-  constructor(private readonly config: ConfigService) {
+  constructor(
+    private readonly config: ConfigService,
+    private readonly brigade: BrigadeTokenSource,
+  ) {
     super();
     if (!this.baseUrl) {
       this.logger.warn(
@@ -97,7 +103,10 @@ export class AccountingOpsClient extends AccountingOpsPort {
           'invoicing call is made until configured.',
       );
     } else {
-      this.logger.log(`Accounting-Ops federation target: ${this.baseUrl} (mode=${this.mode()})`);
+      this.logger.log(
+        `Accounting-Ops federation target: ${this.baseUrl} ` +
+          `(entitlement=${this.mode()}, auth=${this.authMode})`,
+      );
     }
   }
 
@@ -134,19 +143,45 @@ export class AccountingOpsClient extends AccountingOpsPort {
 
   /**
    * Build the auth headers for a federation call to Accounting-Ops. This is the
-   * Brigade token-mint seam: today it forwards a configured service token; the
-   * Brigade change swaps in an RFC-8693 exchange minting a per-request token with
-   * `aud=accounting-ops` + the addressed `workspace_id` claim. X-Workspace-Id
-   * rides along for AO's per-request addressing; AO re-gates membership
-   * server-side, so the header is a hint, never the authz boundary.
+   * Brigade token-mint seam: in `static` mode it forwards a configured service
+   * token; in `brigade-sts` mode it mints a per-request token via an RFC-8693
+   * exchange with `aud=accounting-ops` + the addressed `workspace_id` claim.
+   * X-Workspace-Id rides along for AO's per-request addressing; AO re-gates
+   * membership server-side, so the header is a hint, never the authz boundary.
    */
-  private authHeaders(ctx: FederationContext): Record<string, string> {
+  private async authHeaders(ctx: FederationContext): Promise<Record<string, string>> {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    const token = this.config.get<string>('AO_SERVICE_TOKEN');
-    if (token && token.trim()) headers['Authorization'] = `Bearer ${token.trim()}`;
+    const bearer = await this.bearerFor(ctx.workspaceId);
+    if (bearer) headers['Authorization'] = `Bearer ${bearer}`;
     headers['X-Workspace-Id'] = ctx.workspaceId;
     if (ctx.ucUid) headers['X-Uc-Uid'] = ctx.ucUid;
     return headers;
+  }
+
+  /** The auth mode: `static` forwards AO_SERVICE_TOKEN (legacy / dev); `brigade-sts`
+   *  mints a customer-ops client-credentials token and exchanges it at Brigade
+   *  (RFC-8693) for an accounting-ops-audience, workspace-bound token. DEFAULT
+   *  `static` so behavior is unchanged when AO_AUTH_MODE is unset. */
+  private get authMode(): 'static' | 'brigade-sts' {
+    return this.config.get<string>('AO_AUTH_MODE')?.trim() === 'brigade-sts'
+      ? 'brigade-sts'
+      : 'static';
+  }
+
+  /** Resolve the bearer for a federation call (per the auth mode). `static`
+   *  forwards AO_SERVICE_TOKEN; `brigade-sts` delegates to the shared
+   *  BrigadeTokenSource (mint customer-ops CC → exchange for aud=accounting-ops).
+   *  Degrade-clean: a failed exchange returns null and the caller sends no bearer. */
+  private async bearerFor(workspaceId: string): Promise<string | null> {
+    if (this.authMode === 'static') {
+      const t = this.config.get<string>('AO_SERVICE_TOKEN');
+      return t && t.trim() ? t.trim() : null;
+    }
+    return this.brigade.exchangedToken({
+      audience: this.config.get<string>('AO_AUDIENCE')?.trim() || 'accounting-ops',
+      scope: 'invoices:read invoices:write',
+      workspaceId,
+    });
   }
 
   // --- entitlement gate (pure) -------------------------------------------
@@ -216,7 +251,7 @@ export class AccountingOpsClient extends AccountingOpsPort {
     try {
       res = await this.fetchWithTimeout(`${base}/mcp`, {
         method: 'POST',
-        headers: this.authHeaders(ctx),
+        headers: await this.authHeaders(ctx),
         body: JSON.stringify(body),
       });
     } catch (err) {
