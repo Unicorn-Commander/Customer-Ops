@@ -4,44 +4,64 @@ import { useEffect, useState } from 'react';
 import { Waypoints, Network } from 'lucide-react';
 import { GraphExplorer } from '@/components/dashboard/GraphExplorer';
 import { deriveGraph } from '@/lib/graph';
-import { resolveWorkspaceId, listCustomers, type CustomerRow } from '@/lib/customers';
+import { fetchWorkspaceGraph } from '@/lib/graph-api';
+import { resolveWorkspaceId, listCustomers } from '@/lib/customers';
 import type { GraphData } from '@/components/dashboard/KnowledgeGraph';
 
 type Status = 'loading' | 'ready' | 'empty' | 'error';
 
+/** A graph is "empty" when it carries no relationships beyond the hub node. */
+function hasRelationships(g: GraphData): boolean {
+  return g.nodes.some((n) => n.type !== 'hub');
+}
+
 /**
  * The full-screen 3D relationship explorer, bound to live data.
  *
- * Resolves the caller's workspace (membership-derived; CO never mints one),
- * fetches the customer rows, and projects them into the root book graph via
- * deriveGraph. The interactive explorer + double-click drill-down then run on
- * top of that root. /graph-preview keeps the sample graph (GraphExplorer's
- * default root), so this route is the only live-data surface.
+ * Resolves the caller's workspace (membership-derived; CO never mints one), then
+ * loads the workspace's relationship graph from the backend FalkorDB surface
+ * (`fetchWorkspaceGraph`). If the graph store is dormant (503) or unreachable,
+ * it FALLS BACK to the client-side `deriveGraph` projection of the customer rows
+ * so the page still renders. The interactive explorer + drill-down then run on
+ * top of that root, hitting the live graph for neighborhoods + node detail.
+ * /graph-preview keeps the sample graph (GraphExplorer's default root, no
+ * workspace), so this route is the only live-data surface.
  */
 export default function GraphPage() {
   const [status, setStatus] = useState<Status>('loading');
   const [root, setRoot] = useState<GraphData | null>(null);
+  const [ws, setWs] = useState<string | null>(null);
   const [errMsg, setErrMsg] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const ws = await resolveWorkspaceId();
+        const workspaceId = await resolveWorkspaceId();
         if (cancelled) return;
-        if (!ws) {
+        if (!workspaceId) {
           setErrMsg('No workspace membership yet — an allow-listed user is seeded into the bootstrap workspace on first sign-in.');
           setStatus('error');
           return;
         }
-        const rows: CustomerRow[] = await listCustomers(ws);
+        setWs(workspaceId);
+
+        // Primary: the live FalkorDB graph. Fallback (e.g. 503 dormant graph or
+        // unreachable): project the customer rows client-side so the page still
+        // renders the relationship constellation.
+        let graph: GraphData;
+        try {
+          graph = await fetchWorkspaceGraph(workspaceId);
+        } catch {
+          graph = deriveGraph(await listCustomers(workspaceId));
+        }
         if (cancelled) return;
-        const live = rows.filter((r) => !r.isLost);
-        if (live.length === 0) {
+
+        if (!hasRelationships(graph)) {
           setStatus('empty');
           return;
         }
-        setRoot(deriveGraph(rows));
+        setRoot(graph);
         setStatus('ready');
       } catch {
         if (cancelled) return;
@@ -52,8 +72,8 @@ export default function GraphPage() {
     return () => { cancelled = true; };
   }, []);
 
-  if (status === 'ready' && root) {
-    return <GraphExplorer root={root} />;
+  if (status === 'ready' && root && ws) {
+    return <GraphExplorer root={root} workspaceId={ws} />;
   }
 
   // Loading / empty / error all share the explorer's framed glass canvas so the

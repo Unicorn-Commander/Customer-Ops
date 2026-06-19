@@ -24,6 +24,7 @@ import { AgentInferenceModule } from './agents/inference/agent-inference.module'
 import { AgentsModule } from './agents/agents.module';
 import { CustomersModule } from './customers/customers.module';
 import { LeadIntakeModule } from './lead-intake/lead-intake.module';
+import { GraphModule } from './graph/graph.module';
 
 @Module({
   imports: [
@@ -65,6 +66,10 @@ import { LeadIntakeModule } from './lead-intake/lead-intake.module';
     // for the provisional cockpit-label fallback.
     LeadIntakeModule,
     CustomersModule,
+    // The per-workspace FalkorDB knowledge graph (degrade-clean; DORMANT without
+    // FALKORDB_URL). After CustomersModule — the ingest/query phases compose the
+    // relationship + federation data this module already wires.
+    GraphModule,
     // Phase 5 — the relationship agents (compose the federation ports + inference).
     AgentsModule,
     // MCP last so it can consume the cockpit tools + the agents.
