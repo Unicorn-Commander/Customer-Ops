@@ -84,6 +84,8 @@ services:
     networks:
       - internal
       - web
+      # Shared FalkorDB network (external) — reach unicorn-falkordb for the graph.
+      - unicorn-network
     healthcheck:
       # Node 20-alpine has neither curl nor wget by default; use a tiny node probe.
       test:
@@ -169,3 +171,8 @@ networks:
   internal:
     name: customer-ops-internal
     driver: bridge
+  # The shared FalkorDB network (external; project uc-cloud-production) — lets the
+  # backend reach unicorn-falkordb at redis://unicorn-falkordb:6379 for the
+  # knowledge-graph layer. Must already exist on the host (it does: falkordb is on it).
+  unicorn-network:
+    external: true
