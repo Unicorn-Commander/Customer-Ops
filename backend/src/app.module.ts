@@ -23,6 +23,7 @@ import { MeetingOpsModule } from './meeting-ops/meeting-ops.module';
 import { ProjectOpsModule } from './project-ops/project-ops.module';
 import { AgentInferenceModule } from './agents/inference/agent-inference.module';
 import { AgentsModule } from './agents/agents.module';
+import { RelationsOfficerModule } from './relations-officer/relations-officer.module';
 import { CustomersModule } from './customers/customers.module';
 import { LeadIntakeModule } from './lead-intake/lead-intake.module';
 import { GraphModule } from './graph/graph.module';
@@ -75,6 +76,9 @@ import { GraphModule } from './graph/graph.module';
     GraphModule,
     // Phase 5 — the relationship agents (compose the federation ports + inference).
     AgentsModule,
+    // The Relations Officer — the conversational orchestrator (advisor + operator
+    // modes) over the cockpit's reads + the 4 confirm-gated relationship writes.
+    RelationsOfficerModule,
     // MCP last so it can consume the cockpit tools + the agents.
     McpModule,
   ],
