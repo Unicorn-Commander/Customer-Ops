@@ -14,3 +14,6 @@ coverage/
 
 # OS
 .DS_Store
+
+# Track the env template (the real .env stays ignored above)
+!deploy/.env.example
