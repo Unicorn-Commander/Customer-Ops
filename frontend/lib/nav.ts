@@ -1,12 +1,12 @@
 /**
- * Cockpit navigation model — the single source of truth for the primary nav and
- * the federated-surface placeholders. Lives in `lib/` (not in a component) so the
- * desktop rail (AppShell) and the mobile drawer (MobileNav) both import the exact
- * same set with no component↔component import cycle.
+ * Cockpit navigation model — the single source of truth for the primary nav.
+ * Lives in `lib/` (not in a component) so the desktop rail (AppShell) and the
+ * mobile drawer (MobileNav) both import the exact same set with no
+ * component↔component import cycle.
  */
 import {
   LayoutDashboard, Users, Filter, Waypoints, Inbox,
-  Receipt, Megaphone, Mail, Video, Bot, type LucideIcon,
+  Bot, HelpCircle, type LucideIcon,
 } from 'lucide-react';
 
 /** A primary cockpit nav entry. */
@@ -21,8 +21,17 @@ export interface NavItem {
   bar: string;
 }
 
-/** A federated-surface placeholder (rendered inert until each app is wired in). */
-export interface FederatedItem { label: string; icon: LucideIcon; gradient: string }
+/**
+ * A nav entry that runs an action instead of routing (e.g. opens an overlay).
+ * Rendered as a button in the rail / drawer; `action` is a discriminator the
+ * shell maps to the right handler.
+ */
+export interface NavAction {
+  action: 'help';
+  label: string;
+  icon: LucideIcon;
+  gradient: string;
+}
 
 export const NAV: NavItem[] = [
   { href: '/dashboard', label: 'Overview', icon: LayoutDashboard, exact: true, gradient: 'from-indigo-500 to-violet-500', bar: 'bg-violet-400' },
@@ -30,14 +39,12 @@ export const NAV: NavItem[] = [
   { href: '/dashboard/customers', label: 'Relationships', icon: Users, gradient: 'from-violet-500 to-fuchsia-500', bar: 'bg-fuchsia-400' },
   { href: '/dashboard/pipeline', label: 'Pipeline', icon: Filter, gradient: 'from-amber-400 to-orange-500', bar: 'bg-amber-400' },
   { href: '/dashboard/graph', label: 'Graph', icon: Waypoints, gradient: 'from-cyan-400 to-blue-500', bar: 'bg-cyan-400' },
+  { href: '/dashboard/agents', label: 'Agents', icon: Bot, gradient: 'from-violet-500 to-cyan-500', bar: 'bg-cyan-400' },
 ];
 
-export const FEDERATED: FederatedItem[] = [
-  { label: 'Invoices', icon: Receipt, gradient: 'from-emerald-400 to-teal-500' },
-  { label: 'Outreach', icon: Megaphone, gradient: 'from-fuchsia-500 to-pink-500' },
-  { label: 'Email', icon: Mail, gradient: 'from-sky-400 to-blue-500' },
-  { label: 'Meetings', icon: Video, gradient: 'from-teal-400 to-cyan-500' },
-  { label: 'Agents', icon: Bot, gradient: 'from-violet-500 to-cyan-500' },
+/** Action entries rendered below the primary nav (open overlays, etc.). */
+export const NAV_ACTIONS: NavAction[] = [
+  { action: 'help', label: 'Help', icon: HelpCircle, gradient: 'from-slate-400 to-slate-500' },
 ];
 
 /** Is this nav item the active route? Shared by the rail + the mobile drawer. */

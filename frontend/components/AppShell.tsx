@@ -7,7 +7,7 @@ import {
   Search, Plus, LogOut, Radar, PanelLeftClose, PanelLeftOpen, Menu,
 } from 'lucide-react';
 import { getToken, getStoredUser, clearSession, type CustomerOpsUser } from '@/lib/api';
-import { NAV, FEDERATED, isNavActive } from '@/lib/nav';
+import { NAV, NAV_ACTIONS, isNavActive } from '@/lib/nav';
 import { ThemeToggle } from './ThemeToggle';
 import { CommandPalette } from './CommandPalette';
 import { MobileNav } from './MobileNav';
@@ -22,6 +22,7 @@ function titleFor(pathname: string): { title: string; sub: string } {
   if (pathname.startsWith('/dashboard/customers')) return { title: 'Relationships', sub: 'Every contact, by lifecycle stage' };
   if (pathname.startsWith('/dashboard/pipeline')) return { title: 'Pipeline', sub: 'Lead → Prospect → Customer' };
   if (pathname.startsWith('/dashboard/graph')) return { title: 'Knowledge graph', sub: 'People, orgs & deals as a living network' };
+  if (pathname.startsWith('/dashboard/agents')) return { title: 'Relations Officer', sub: 'Every relationship, connected' };
   return { title: 'Overview', sub: 'Your relationship cockpit at a glance' };
 }
 
@@ -33,6 +34,7 @@ export function AppShell({ children, demo = false }: { children: React.ReactNode
   const [collapsed, setCollapsed] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
 
   useEffect(() => {
     try { setCollapsed(localStorage.getItem('co-sidebar') === 'collapsed'); } catch { /* ignore */ }
@@ -56,6 +58,8 @@ export function AppShell({ children, demo = false }: { children: React.ReactNode
   }, []);
   const closePalette = useCallback(() => setPaletteOpen(false), []);
   const closeMobileNav = useCallback(() => setMobileNavOpen(false), []);
+  const openHelp = useCallback(() => setHelpOpen(true), []);
+  const closeHelp = useCallback(() => setHelpOpen(false), []);
   // Dismiss the mobile drawer on navigation (a tap that changes the route).
   useEffect(() => { setMobileNavOpen(false); }, [pathname]);
   useEffect(() => {
@@ -132,22 +136,27 @@ export function AppShell({ children, demo = false }: { children: React.ReactNode
           })}
         </nav>
 
-        {/* Federated surfaces */}
-        <div className={cn('mt-6', collapsed ? 'w-full' : 'px-2.5')}>
-          {!collapsed && <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-tertiary">Federated surfaces</div>}
-          <div className={cn('flex flex-col gap-1', collapsed && 'items-center')}>
-            {FEDERATED.map((f) => (
-              <div
-                key={f.label}
-                title={collapsed ? f.label : undefined}
-                className={cn('flex items-center text-[13px] text-primary/80', collapsed ? 'h-10 w-10 justify-center' : 'gap-3 rounded-token px-1 py-1')}
-              >
-                <IconTile icon={f.icon} gradient={f.gradient} size="sm" />
-                {!collapsed && f.label}
-              </div>
-            ))}
-          </div>
-        </div>
+        {/* Action entries (open overlays — e.g. Help) */}
+        <nav className={cn('mt-6 flex flex-col gap-1', collapsed && 'w-full items-center')}>
+          {NAV_ACTIONS.map((a) => (
+            <button
+              key={a.action}
+              type="button"
+              onClick={a.action === 'help' ? openHelp : undefined}
+              title={collapsed ? a.label : undefined}
+              className={cn(
+                'group relative flex items-center rounded-token transition-colors duration-fast ease-token hover:bg-surface-raised',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
+                collapsed ? 'h-11 w-11 justify-center' : 'gap-3 px-2.5 py-2',
+              )}
+            >
+              <IconTile icon={a.icon} gradient={a.gradient} size="sm" />
+              {!collapsed && (
+                <span className="text-sm font-medium text-primary/85 group-hover:text-primary">{a.label}</span>
+              )}
+            </button>
+          ))}
+        </nav>
 
         <div className="mt-auto w-full" />
 
@@ -210,7 +219,7 @@ export function AppShell({ children, demo = false }: { children: React.ReactNode
               <Search className="h-4 w-4" strokeWidth={2.25} /><span>Search</span>
               <kbd className="ml-1 rounded border border-subtle bg-surface-overlay px-1.5 py-0.5 font-mono text-[10px] text-muted">⌘K</kbd>
             </button>
-            <HelpCenter pathname={pathname} disableFirstRun={demo} />
+            <HelpCenter pathname={pathname} disableFirstRun={demo} open={helpOpen} onOpen={openHelp} onClose={closeHelp} />
             <ThemeToggle />
             <Link
               href="/dashboard/customers"
@@ -237,6 +246,7 @@ export function AppShell({ children, demo = false }: { children: React.ReactNode
         pathname={pathname}
         user={user}
         onSignOut={signOut}
+        onOpenHelp={openHelp}
       />
     </div>
   );

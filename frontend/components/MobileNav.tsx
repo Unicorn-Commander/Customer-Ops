@@ -5,9 +5,9 @@
    -----------------------------------------------------------------------------
    The desktop sidebar rail is `hidden md:flex`, so below the md breakpoint this
    slide-over is the ONLY way to move between sections. It mirrors the rail's
-   content (brand, primary NAV, federated surfaces, theme + user/sign-out) and
-   reuses the SAME NAV / FEDERATED / isNavActive exports from AppShell so the two
-   never drift apart.
+   content (brand, primary NAV, action entries, theme + user/sign-out) and reuses
+   the SAME NAV / NAV_ACTIONS / isNavActive exports from lib/nav so the two never
+   drift apart.
 
    It follows the CommandPalette's slide-over conventions exactly — portaled to
    <body>, mounted through the exit transition, focus-trapped to the panel,
@@ -23,7 +23,7 @@ import { Radar, X, LogOut } from 'lucide-react';
 import { ThemeToggle } from './ThemeToggle';
 import { IconTile } from './ui/IconTile';
 import { cn } from './ui/cn';
-import { NAV, FEDERATED, isNavActive } from '@/lib/nav';
+import { NAV, NAV_ACTIONS, isNavActive } from '@/lib/nav';
 import type { CustomerOpsUser } from '@/lib/api';
 
 export interface MobileNavProps {
@@ -32,6 +32,8 @@ export interface MobileNavProps {
   pathname: string;
   user: CustomerOpsUser | null;
   onSignOut: () => void;
+  /** Open the Help drawer (closes this drawer first). */
+  onOpenHelp: () => void;
 }
 
 /** Read the reduced-motion preference (kept local so the drawer is self-contained). */
@@ -48,7 +50,7 @@ function usePrefersReducedMotion(): boolean {
   return reduced;
 }
 
-export function MobileNav({ open, onClose, pathname, user, onSignOut }: MobileNavProps) {
+export function MobileNav({ open, onClose, pathname, user, onSignOut, onOpenHelp }: MobileNavProps) {
   const reduced = usePrefersReducedMotion();
 
   // Keep mounted through the exit transition; `shown` drives the enter/exit CSS.
@@ -211,17 +213,22 @@ export function MobileNav({ open, onClose, pathname, user, onSignOut }: MobileNa
             })}
           </nav>
 
-          <div className="mt-6 px-2.5">
-            <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-tertiary">Federated surfaces</div>
-            <div className="flex flex-col gap-1">
-              {FEDERATED.map((f) => (
-                <div key={f.label} className="flex items-center gap-3 rounded-token px-1 py-1.5 text-[13px] text-primary/80">
-                  <IconTile icon={f.icon} gradient={f.gradient} size="sm" />
-                  {f.label}
-                </div>
-              ))}
-            </div>
-          </div>
+          <nav className="mt-6 flex flex-col gap-1" aria-label="Actions">
+            {NAV_ACTIONS.map((a) => (
+              <button
+                key={a.action}
+                type="button"
+                onClick={a.action === 'help' ? () => { onClose(); onOpenHelp(); } : undefined}
+                className={cn(
+                  'group relative flex items-center gap-3 rounded-token px-2.5 py-2.5 transition-colors duration-fast ease-token hover:bg-surface-raised',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
+                )}
+              >
+                <IconTile icon={a.icon} gradient={a.gradient} size="sm" />
+                <span className="text-sm font-medium text-primary/85 group-hover:text-primary">{a.label}</span>
+              </button>
+            ))}
+          </nav>
         </div>
 
         {/* Footer: theme + user/sign-out */}

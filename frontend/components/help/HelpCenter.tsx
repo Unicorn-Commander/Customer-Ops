@@ -3,7 +3,7 @@
 /* =============================================================================
    HelpCenter — the global Help affordance + its two overlays
    -----------------------------------------------------------------------------
-   A single drop-in for the app header. It owns the open-state for both the Help
+   A single drop-in for the app header. It owns the open-state for the Help
    drawer (HelpPanel) and the first-run onboarding tour (OnboardingTour), and:
 
    • renders the "?" Help button shown on every authenticated page,
@@ -11,8 +11,13 @@
      (gated on the `co_onboarded_v1` localStorage flag), and
    • lets the Help panel re-trigger the tour ("Replay the intro").
 
-   Co-locating the trigger and the overlays keeps the wiring in AppShell to a
-   single element while the overlays themselves portal to <body>.
+   The Help drawer's open-state is LIFTED to a controlled prop (`open`/`onOpen`/
+   `onClose`) so other surfaces — e.g. the nav rail's "Help" entry — can open the
+   exact same drawer. When the host doesn't pass `open`, HelpCenter falls back to
+   owning the state itself (uncontrolled), so it stays a clean drop-in.
+
+   Co-locating the trigger and the overlays keeps the wiring in AppShell minimal
+   while the overlays themselves portal to <body>.
    ========================================================================== */
 
 import { useCallback, useEffect, useState } from 'react';
@@ -27,11 +32,28 @@ export interface HelpCenterProps {
   /** Skip the first-run tour auto-open (e.g. the public `demo` shell). */
   disableFirstRun?: boolean;
   className?: string;
+  /** Controlled drawer open-state. Omit to let HelpCenter own it (uncontrolled). */
+  open?: boolean;
+  /** Controlled open handler (e.g. opened from the nav). */
+  onOpen?: () => void;
+  /** Controlled close handler. */
+  onClose?: () => void;
 }
 
-export function HelpCenter({ pathname, disableFirstRun = false, className }: HelpCenterProps) {
-  const [helpOpen, setHelpOpen] = useState(false);
+export function HelpCenter({
+  pathname,
+  disableFirstRun = false,
+  className,
+  open,
+  onOpen,
+  onClose,
+}: HelpCenterProps) {
+  // Uncontrolled fallback — used only when the host doesn't supply `open`.
+  const [internalOpen, setInternalOpen] = useState(false);
   const [tourOpen, setTourOpen] = useState(false);
+
+  const isControlled = open !== undefined;
+  const helpOpen = isControlled ? !!open : internalOpen;
 
   // First-run: open the tour once, on the first authenticated visit. Deferred a
   // beat so the cockpit paints first (the welcome lands on a rendered cockpit,
@@ -43,8 +65,14 @@ export function HelpCenter({ pathname, disableFirstRun = false, className }: Hel
     return () => clearTimeout(t);
   }, [disableFirstRun]);
 
-  const openHelp = useCallback(() => setHelpOpen(true), []);
-  const closeHelp = useCallback(() => setHelpOpen(false), []);
+  const openHelp = useCallback(() => {
+    if (isControlled) onOpen?.();
+    else setInternalOpen(true);
+  }, [isControlled, onOpen]);
+  const closeHelp = useCallback(() => {
+    if (isControlled) onClose?.();
+    else setInternalOpen(false);
+  }, [isControlled, onClose]);
   const closeTour = useCallback(() => setTourOpen(false), []);
   // "Replay the intro" — re-open the tour without touching the flag.
   const replayIntro = useCallback(() => setTourOpen(true), []);
