@@ -110,11 +110,24 @@ export class ProjectOpsClient extends ProjectOpsPort {
       'Content-Type': 'application/json',
       Accept: 'application/json, text/event-stream',
     };
-    const bearer = await this.bearerFor(ctx.workspaceId);
+    // Workspace addressing. PROJECT_OPS_WORKSPACE_OVERRIDE maps this app's local
+    // workspace id to the shared canonical id Project-Ops recognizes (the same
+    // pattern as Contact-Ops / Meeting-Ops). Both the brigade exchange claim and
+    // the X-Workspace-Id hint use it; Project-Ops re-gates membership server-side.
+    const ws = this.workspaceOverride ?? ctx.workspaceId;
+    const bearer = await this.bearerFor(ws);
     if (bearer) headers['Authorization'] = `Bearer ${bearer}`;
-    headers['X-Workspace-Id'] = ctx.workspaceId;
+    headers['X-Workspace-Id'] = ws;
     if (ctx.ucUid) headers['X-Uc-Uid'] = ctx.ucUid;
     return headers;
+  }
+
+  /** Optional override mapping CO's local workspace id to the canonical id
+   *  Project-Ops recognizes (PROJECT_OPS_WORKSPACE_OVERRIDE). Null = pass through
+   *  the resolved workspace id unchanged. */
+  private get workspaceOverride(): string | null {
+    const w = this.config.get<string>('PROJECT_OPS_WORKSPACE_OVERRIDE');
+    return w && w.trim() ? w.trim() : null;
   }
 
   /** Resolve the bearer per the auth mode. `static` forwards PROJECT_OPS_SERVICE_TOKEN;
