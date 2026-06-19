@@ -226,7 +226,12 @@ export class MeetingPrepAgent {
       'outside the JSON, matching exactly: {"talkingPoints": ["..."], "openItems": ' +
       '["..."], "suggestedAgenda": ["..."], "summary": "<2-3 sentences>"}. Keep each ' +
       'array to a few crisp bullets; "openItems" are loose threads to close (open ' +
-      'action items, an outstanding balance); "suggestedAgenda" is an ordered plan.';
+      'action items, an outstanding balance); "suggestedAgenda" is an ordered plan. ' +
+      'DEPTH + GAPS: provide at least 3-4 talkingPoints, 2-3 openItems, and a 4-5 step ' +
+      'ORDERED (numbered) suggestedAgenda — every bullet specific and grounded in the ' +
+      'signal. When a field is null/0/missing (no contact email or name, 0 prior meetings, ' +
+      '0 outreach touches, no expected value), SURFACE that gap explicitly in openItems and ' +
+      'frame the brief as a first-touch / qualification meeting.';
     const user =
       'Relationship signal:\n' + JSON.stringify(signals, null, 2) + '\nReturn the JSON brief.';
     return [
