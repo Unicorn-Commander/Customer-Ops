@@ -1,6 +1,8 @@
 <div align="center">
 
-<img src="docs/brand/customer-ops-og.png" alt="Customer-Ops — Every relationship, connected." width="820" />
+<img src="docs/brand/customer-ops-logo.png" alt="Customer-Ops" width="440" />
+
+### Every relationship, connected.
 
 **The relationship brain of the [Unicorn Commander](https://unicorncommander.ai) suite** — a graph‑native CRM that federates your people, meetings, projects, and invoices into one living relationship graph, worked by agents, on infrastructure you own.
 
