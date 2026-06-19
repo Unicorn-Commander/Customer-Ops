@@ -312,7 +312,7 @@ export class GraphService {
       `MATCH (o:Org { workspaceId: $workspaceId })
        OPTIONAL MATCH (o)-[r { workspaceId: $workspaceId }]-()
        WITH o, max(coalesce(r.weight, 0)) AS w
-       RETURN o.key AS key, labels(o)[0] AS nodeLabel, o.label AS displayLabel,
+       RETURN o.key AS key, labels(o)[0] AS nodeLabel, coalesce(o.label, o.displayName, o.name, o.title) AS displayLabel,
               o.stage AS stage, w AS weight
        ORDER BY w DESC, o.key ASC
        LIMIT $cap`,
@@ -324,7 +324,7 @@ export class GraphService {
       `MATCH (p:Person { workspaceId: $workspaceId })
        OPTIONAL MATCH (p)-[r { workspaceId: $workspaceId }]-()
        WITH p, max(coalesce(r.weight, 0)) AS w
-       RETURN p.key AS key, labels(p)[0] AS nodeLabel, p.label AS displayLabel,
+       RETURN p.key AS key, labels(p)[0] AS nodeLabel, coalesce(p.label, p.displayName, p.name, p.title) AS displayLabel,
               p.stage AS stage, w AS weight
        ORDER BY w DESC, p.key ASC
        LIMIT $cap`,
@@ -386,7 +386,7 @@ export class GraphService {
     // the same per-workspace graph by construction.
     const focusReply = await g.roQuery<GraphRow>(
       `MATCH (f { key: $nodeKey, workspaceId: $workspaceId })
-       RETURN f.key AS key, labels(f)[0] AS nodeLabel, f.label AS displayLabel,
+       RETURN f.key AS key, labels(f)[0] AS nodeLabel, coalesce(f.label, f.displayName, f.name, f.title) AS displayLabel,
               f.stage AS stage, f.weight AS weight
        LIMIT 1`,
       { params: { nodeKey, workspaceId } },
@@ -404,7 +404,7 @@ export class GraphService {
       `MATCH (f { key: $nodeKey, workspaceId: $workspaceId })-[*1..${d}]-(m)
        WHERE m.workspaceId = $workspaceId
        WITH DISTINCT m
-       RETURN m.key AS key, labels(m)[0] AS nodeLabel, m.label AS displayLabel,
+       RETURN m.key AS key, labels(m)[0] AS nodeLabel, coalesce(m.label, m.displayName, m.name, m.title) AS displayLabel,
               m.stage AS stage, m.weight AS weight
        LIMIT $lim`,
       { params: { nodeKey, workspaceId, lim } },
@@ -444,7 +444,7 @@ export class GraphService {
     // Resolve the node's label + display first (tenant tripwire on the MATCH).
     const baseReply = await g.roQuery<{ label: string; displayLabel: string | null }>(
       `MATCH (n { key: $nodeKey, workspaceId: $workspaceId })
-       RETURN labels(n)[0] AS label, n.label AS displayLabel
+       RETURN labels(n)[0] AS label, coalesce(n.label, n.displayName, n.name, n.title) AS displayLabel
        LIMIT 1`,
       { params: { nodeKey, workspaceId } },
     );
