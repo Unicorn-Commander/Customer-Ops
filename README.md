@@ -1,10 +1,6 @@
 <div align="center">
 
-<!-- Brand assets live in Brand-Ops kit `customer-ops`; drop the OG card at docs/brand/customer-ops-og.png to render the banner here. -->
-
-# Customer‑Ops
-
-### Every relationship, connected.
+<img src="docs/brand/customer-ops-og.png" alt="Customer-Ops — Every relationship, connected." width="820" />
 
 **The relationship brain of the [Unicorn Commander](https://unicorncommander.ai) suite** — a graph‑native CRM that federates your people, meetings, projects, and invoices into one living relationship graph, worked by agents, on infrastructure you own.
 
@@ -84,6 +80,8 @@ It stays current automatically — every relationship write fires a **post‑com
 ---
 
 ## The Relations Officer
+
+<img src="docs/brand/relations-officer.jpg" alt="The Relations Officer" width="132" align="right" />
 
 The relationship layer is run by a named orchestrator — the **Relations Officer** — that dispatches to a focused sub‑agent team:
 
