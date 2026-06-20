@@ -25,6 +25,7 @@ import { AgentInferenceModule } from './agents/inference/agent-inference.module'
 import { AgentsModule } from './agents/agents.module';
 import { RelationsOfficerModule } from './relations-officer/relations-officer.module';
 import { CustomersModule } from './customers/customers.module';
+import { OverviewModule } from './overview/overview.module';
 import { LeadIntakeModule } from './lead-intake/lead-intake.module';
 import { GraphModule } from './graph/graph.module';
 
@@ -70,6 +71,11 @@ import { GraphModule } from './graph/graph.module';
     // for the provisional cockpit-label fallback.
     LeadIntakeModule,
     CustomersModule,
+    // The command-center OVERVIEW surface: workspace-wide rollups of the local
+    // invoice/outreach/email link tables (read-only; reuses the RLS chokepoint +
+    // the Contact-Ops batch name-resolution). After CustomersModule — it reads the
+    // same link tables the cockpit writes.
+    OverviewModule,
     // The per-workspace FalkorDB knowledge graph (degrade-clean; DORMANT without
     // FALKORDB_URL). After CustomersModule — the ingest/query phases compose the
     // relationship + federation data this module already wires.
