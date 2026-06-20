@@ -6,6 +6,7 @@ import { MeetingOpsModule } from '../meeting-ops/meeting-ops.module';
 import { OutreachOpsModule } from '../outreach-ops/outreach-ops.module';
 import { CustomersModule } from '../customers/customers.module';
 import { AgentInferenceModule } from './inference/agent-inference.module';
+import { AuditModule } from '../audit/audit.module';
 import { LeadTriageAgent } from './lead-triage.agent';
 import { FollowUpDrafterAgent } from './follow-up-drafter.agent';
 import { CollectionsNudgeAgent } from './collections-nudge.agent';
@@ -47,6 +48,10 @@ import { AgentsController } from './agents.controller';
     OutreachOpsModule,
     AgentInferenceModule,
     CustomersModule,
+    // Phase 7: record each agent RUN (EXECUTE on 'agent') — agents read federated
+    // PII + spend inference, so the invocation is audited even though it writes
+    // no relationship state.
+    AuditModule,
   ],
   providers: [
     LeadTriageAgent,

@@ -26,11 +26,12 @@
 import { Body, Controller, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
-import { User } from '@prisma/client';
+import { AuditAction, User } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { WorkspaceMembershipGuard } from '../common/workspace/workspace-membership.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
-import { WithWorkspaceClaim } from '../common/workspace/workspace.util';
+import { WithWorkspaceClaim, ucUidOf } from '../common/workspace/workspace.util';
+import { AuditService } from '../audit/audit.service';
 import { LeadTriageAgent } from './lead-triage.agent';
 import { FollowUpDrafterAgent } from './follow-up-drafter.agent';
 import { CollectionsNudgeAgent } from './collections-nudge.agent';
@@ -64,7 +65,31 @@ export class AgentsController {
     private readonly collections: CollectionsNudgeAgent,
     private readonly nextBestAction: NextBestActionAgent,
     private readonly meetingPrep: MeetingPrepAgent,
+    private readonly audit: AuditService,
   ) {}
+
+  /**
+   * Record one agent RUN as an EXECUTE audit event (Phase 7). Agents are
+   * draft-only (no relationship write to audit), but the invocation reads
+   * federated PII + spends inference, so we record who ran which agent on which
+   * customer. Never throws (AuditService.log swallows failures).
+   */
+  private async auditRun(
+    user: AuthedUser,
+    workspaceId: string,
+    customerId: string,
+    agent: string,
+    tier: string,
+  ): Promise<void> {
+    await this.audit.log({
+      workspaceId,
+      userId: ucUidOf(user),
+      action: AuditAction.EXECUTE,
+      resource: 'agent',
+      resourceId: customerId,
+      details: { agent, tier },
+    });
+  }
 
   @Post('triage')
   @ApiOperation({
@@ -81,7 +106,9 @@ export class AgentsController {
     @Query('tier') tierQuery?: string,
   ) {
     const tier = resolveTier(this.config, 'lead-triage', dto.tier ?? tierQuery);
-    return this.leadTriage.triage(user, id, workspaceId, tier);
+    const result = await this.leadTriage.triage(user, id, workspaceId, tier);
+    await this.auditRun(user, workspaceId, id, 'lead-triage', tier);
+    return result;
   }
 
   @Post('follow-up')
@@ -100,13 +127,15 @@ export class AgentsController {
     @Query('tier') tierQuery?: string,
   ) {
     const tier = resolveTier(this.config, 'follow-up-draft', dto.tier ?? tierQuery);
-    return this.followUp.draftFollowUp(
+    const result = await this.followUp.draftFollowUp(
       user,
       id,
       { goal: dto.goal, stageDraft: dto.stageDraft, idempotencyKey: dto.idempotencyKey },
       workspaceId,
       tier,
     );
+    await this.auditRun(user, workspaceId, id, 'follow-up-draft', tier);
+    return result;
   }
 
   @Post('collections-nudge')
@@ -124,7 +153,9 @@ export class AgentsController {
     @Query('tier') tierQuery?: string,
   ) {
     const tier = resolveTier(this.config, 'collections-nudge', dto.tier ?? tierQuery);
-    return this.collections.draftNudge(user, id, workspaceId, tier);
+    const result = await this.collections.draftNudge(user, id, workspaceId, tier);
+    await this.auditRun(user, workspaceId, id, 'collections-nudge', tier);
+    return result;
   }
 
   @Post('next-best-action')
@@ -143,7 +174,9 @@ export class AgentsController {
     @Query('tier') tierQuery?: string,
   ) {
     const tier = resolveTier(this.config, 'next-best-action', dto.tier ?? tierQuery);
-    return this.nextBestAction.recommend(user, id, workspaceId, tier);
+    const result = await this.nextBestAction.recommend(user, id, workspaceId, tier);
+    await this.auditRun(user, workspaceId, id, 'next-best-action', tier);
+    return result;
   }
 
   @Post('meeting-prep')
@@ -162,6 +195,8 @@ export class AgentsController {
     @Query('tier') tierQuery?: string,
   ) {
     const tier = resolveTier(this.config, 'meeting-prep', dto.tier ?? tierQuery);
-    return this.meetingPrep.prep(user, id, workspaceId, tier);
+    const result = await this.meetingPrep.prep(user, id, workspaceId, tier);
+    await this.auditRun(user, workspaceId, id, 'meeting-prep', tier);
+    return result;
   }
 }
