@@ -14,6 +14,7 @@ import { Throttle } from '@nestjs/throttler';
 import { User } from '@prisma/client';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../guards/jwt-auth.guard';
+import { JwtOnly } from '../decorators/jwt-only.decorator';
 import { PAT_AVAILABLE_SCOPES } from './pat.constants';
 import { CreatePatDto } from './dto/create-pat.dto';
 import { PatService } from './pat.service';
@@ -26,6 +27,7 @@ import { PatService } from './pat.service';
  * without going through the browser SSO session.
  */
 @ApiTags('auth')
+@JwtOnly()
 @Controller('auth/pats')
 export class PatController {
   constructor(private readonly pats: PatService) {}

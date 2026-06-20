@@ -10,6 +10,7 @@ import { ModuleRef, Reflector } from '@nestjs/core';
 import { Request } from 'express';
 import { isPatToken } from '../pat/pat.util';
 import { PatService } from '../pat/pat.service';
+import { JWT_ONLY_KEY } from '../decorators/jwt-only.decorator';
 import { explicitRequestedWorkspaceId } from '../../common/workspace/workspace.util';
 
 /**
@@ -67,6 +68,18 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
     const token = extractBearerToken(request);
 
     if (token && isPatToken(token)) {
+      // Session-only routes (e.g. the PAT management endpoints) reject a PAT
+      // bearer — a leaked PAT must not be able to mint/revoke PATs.
+      const jwtOnly = this.reflector.getAllAndOverride<boolean>(JWT_ONLY_KEY, [
+        context.getHandler(),
+        context.getClass(),
+      ]);
+      if (jwtOnly) {
+        throw new ForbiddenException(
+          'Personal access tokens cannot be used on this route; sign in with your session.',
+        );
+      }
+
       const pats = await this.resolvePatService();
       const resolved = await pats.findByPlaintext(token);
       if (!resolved) throw new UnauthorizedException('Invalid token');
