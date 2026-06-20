@@ -20,7 +20,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
-  Bot, Send, Sparkles, ShieldCheck, ShieldAlert, Check, X, ChevronDown,
+  Send, Sparkles, ShieldCheck, ShieldAlert, Check, X, ChevronDown,
   Gauge, PenLine, BellRing, Compass, CalendarClock, ArrowRight, Lock, Copy,
   AlertTriangle, type LucideIcon,
 } from 'lucide-react';
@@ -39,10 +39,9 @@ import {
 } from '@/lib/relations-officer';
 
 /* ── persona constants ─────────────────────────────────────────────────────
-   The avatar at docs/brand/relations-officer.jpg lives at the repo root (outside
-   the Next.js public/ dir), so it can't be referenced as a web asset from the
-   app — per the brief we fall back to the Bot glyph styled in the persona coral.
-   Coral #FF5D73 is the persona accent (people); the cyan token is "connected". */
+   The Relations Officer avatar ships as a web asset at /relations-officer.png
+   (frontend/public/), rendered by OfficerAvatar. Coral #FF5D73 is the persona
+   accent (people); the cyan token is "connected". */
 const CORAL = '#FF5D73';
 
 /* ── the transcript model ──────────────────────────────────────────────────── */
@@ -59,18 +58,15 @@ type Entry =
 /* ── small persona avatar ──────────────────────────────────────────────────── */
 function OfficerAvatar({ size = 'md' }: { size?: 'sm' | 'md' | 'lg' }) {
   const dim = size === 'lg' ? 'h-11 w-11 rounded-[13px]' : size === 'sm' ? 'h-7 w-7 rounded-[9px]' : 'h-9 w-9 rounded-[11px]';
-  const glyph = size === 'lg' ? 'h-[23px] w-[23px]' : size === 'sm' ? 'h-[15px] w-[15px]' : 'h-[18px] w-[18px]';
   return (
-    <span
+    <img
+      src="/relations-officer.png"
+      alt="The Relations Officer"
       className={cn(
-        'relative grid shrink-0 place-items-center bg-gradient-to-br',
-        'shadow-[inset_0_1px_0_0_rgba(255,255,255,0.28),0_3px_8px_-2px_rgba(0,0,0,0.45)]',
+        'shrink-0 object-cover ring-1 ring-white/10 shadow-[0_3px_8px_-2px_rgba(0,0,0,0.45)]',
         dim,
       )}
-      style={{ backgroundImage: `linear-gradient(to bottom right, ${CORAL}, rgb(var(--co-cyan)))` }}
-    >
-      <Bot className={cn('text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.25)]', glyph)} strokeWidth={2.4} />
-    </span>
+    />
   );
 }
 
