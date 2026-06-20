@@ -73,9 +73,13 @@ services:
     restart: unless-stopped
     env_file:
       - .env
-    # The image CMD already does `npx prisma migrate deploy && node dist/main`;
-    # we pin it here too so the deploy intent is explicit and reviewable.
-    command: ["sh", "-c", "npx prisma migrate deploy && node dist/main"]
+    # Tenancy go-live (flipped 2026-06-20): the runtime DATABASE_URL is now the
+    # NOBYPASSRLS `customer_ops_app` role, which has NO DDL rights — so run
+    # `prisma migrate deploy` under ADMIN_DATABASE_URL (customer_ops_admin), then
+    # start the app under DATABASE_URL. `$$` defers expansion to the container
+    # shell (compose turns `$$`->`$`); ADMIN_DATABASE_URL comes from env_file.
+    # Mirrors docker-compose.prod.yml, which always shipped this hardened form.
+    command: ["sh", "-c", "DATABASE_URL=\"$${ADMIN_DATABASE_URL}\" npx prisma migrate deploy && node dist/main"]
     expose:
       - "3211"
     depends_on:
