@@ -122,6 +122,37 @@ export function apiPatch<T = unknown>(path: string, body?: unknown): Promise<T> 
   return apiSend<T>('PATCH', path, body);
 }
 
+/**
+ * Authenticated DELETE against the backend. Throws on non-2xx.
+ *
+ * Some DELETE endpoints answer 200 with no body (e.g. idempotent soft-revoke),
+ * so we tolerate an empty/non-JSON body and resolve to `undefined` rather than
+ * choking on `res.json()`.
+ */
+export async function apiDelete<T = void>(path: string): Promise<T> {
+  const bearer = getToken();
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: 'DELETE',
+    headers: bearer ? { Authorization: `Bearer ${bearer}` } : {},
+  });
+  if (!res.ok) {
+    let detail = '';
+    try {
+      const j = await res.json();
+      detail = j?.message ? ` — ${Array.isArray(j.message) ? j.message.join(', ') : j.message}` : '';
+    } catch {
+      /* ignore */
+    }
+    if (res.status === 401) handleAuthFailure();
+    throw new ApiError(res.status, `DELETE ${path} failed: ${res.status}${detail}`);
+  }
+  try {
+    return (await res.json()) as T;
+  } catch {
+    return undefined as T;
+  }
+}
+
 export interface CustomerOpsUser {
   id: string;
   email: string;

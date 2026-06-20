@@ -81,3 +81,21 @@ export function entitlementsOf(user: Partial<WithWorkspaceClaim> | null | undefi
   const e = (user as WithWorkspaceClaim | undefined)?.__entitlements;
   return Array.isArray(e) ? e : [];
 }
+
+/**
+ * The EXPLICITLY-addressed workspace on a request, per SUITE-IDENTITY §D4
+ * precedence: path param `workspaceId`/`workspace_id` > `X-Workspace-Id` header.
+ * Returns null when neither is present (no implicit claim fallback — that's the
+ * caller's job). Used by the PAT auth chokepoint to fence a token to its bound
+ * workspace (a `co_pat_` for W1 can never act on an explicitly-addressed W2).
+ */
+export function explicitRequestedWorkspaceId(req: {
+  params?: Record<string, any>;
+  headers?: Record<string, any>;
+}): string | null {
+  const raw =
+    req?.params?.workspaceId ?? req?.params?.workspace_id ?? req?.headers?.['x-workspace-id'];
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}

@@ -250,6 +250,8 @@ model User {
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
+  personalAccessTokens PersonalAccessToken[]
+
   @@index([email])
   @@index([keycloakId])
   @@map("users")
@@ -723,4 +725,37 @@ model AuditLog {
   @@index([resource, resourceId])
   @@index([timestamp])
   @@map("audit_logs")
+}
+
+// ============================================================================
+// Personal Access Tokens (co_pat_) — programmatic, user-scoped API auth.
+// ============================================================================
+// A user mints a PAT (SSO session required) for scripts/integrations; the
+// plaintext `co_pat_<random>` is shown ONCE and only its bcrypt hash is stored.
+// Unlike the workspace-scoped tables this is USER-scoped + app-enforced — it is
+// deliberately NOT under RLS: the auth chokepoint resolves a PAT to its user +
+// bound workspace BEFORE any workspace GUC is set, so a `workspace_isolation`
+// policy here would return zero rows and make tokens unauthenticatable. The
+// PAT's own `workspaceId` becomes the request's workspace claim (the GUC) for
+// everything downstream. Ownership is enforced in the service (where userId).
+model PersonalAccessToken {
+  id          String    @id @default(uuid())
+  workspaceId String? // the single workspace this token may act in (NOT an RLS predicate)
+  userId      String
+  name        String
+  prefix      String    @default("co_pat_")
+  tokenHash   String    @unique
+  scopes      String[]
+  lastUsedAt  DateTime?
+  expiresAt   DateTime? // null = no expiry
+  createdAt   DateTime  @default(now())
+  revokedAt   DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([tokenHash])
+  @@index([revokedAt])
+  @@index([workspaceId])
+  @@map("personal_access_tokens")
 }

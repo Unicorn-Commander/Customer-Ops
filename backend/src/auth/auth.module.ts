@@ -7,6 +7,8 @@ import { AuthController } from './auth.controller';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { KeycloakStrategy } from './strategies/keycloak.strategy';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import { PatController } from './pat/pat.controller';
+import { PatService } from './pat/pat.service';
 import { WorkspaceModule } from '../common/workspace/workspace.module';
 
 @Module({
@@ -24,8 +26,8 @@ import { WorkspaceModule } from '../common/workspace/workspace.module';
       inject: [ConfigService],
     }),
   ],
-  controllers: [AuthController],
-  providers: [AuthService, JwtStrategy, KeycloakStrategy, JwtAuthGuard],
-  exports: [AuthService, JwtModule, JwtAuthGuard],
+  controllers: [AuthController, PatController],
+  providers: [AuthService, JwtStrategy, KeycloakStrategy, JwtAuthGuard, PatService],
+  exports: [AuthService, JwtModule, JwtAuthGuard, PatService],
 })
 export class AuthModule {}
