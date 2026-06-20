@@ -6,7 +6,7 @@
  */
 import {
   LayoutDashboard, Users, Filter, Waypoints, Inbox,
-  Bot, Settings, LifeBuoy, Receipt, Mail, Megaphone, type LucideIcon,
+  Bot, Settings, LifeBuoy, Receipt, Mail, Megaphone, ScrollText, type LucideIcon,
 } from 'lucide-react';
 
 /** A primary cockpit nav entry. */
@@ -41,6 +41,7 @@ export const NAV: NavItem[] = [
   { href: '/dashboard/outreach', label: 'Outreach', icon: Megaphone, gradient: 'from-fuchsia-500 to-pink-500', bar: 'bg-fuchsia-400' },
   // ── System ──
   { href: '/dashboard/settings', label: 'Settings', icon: Settings, gradient: 'from-slate-400 to-slate-600', bar: 'bg-slate-400', groupLabel: 'System' },
+  { href: '/dashboard/audit', label: 'Audit', icon: ScrollText, gradient: 'from-slate-400 to-slate-600', bar: 'bg-slate-400' },
   { href: '/dashboard/help', label: 'Help', icon: LifeBuoy, gradient: 'from-fuchsia-500 to-pink-500', bar: 'bg-fuchsia-400' },
 ];
 
