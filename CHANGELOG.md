@@ -3,6 +3,54 @@
 All notable changes to Customer-Ops. Versions track the app milestone; the MCP
 tool surface version (`mcp.service.ts`) tracks alongside.
 
+## [0.9.0] — 2026-06-20 — "Least-privilege + polish"
+
+Locks the relationship surface to least‑privilege and hardens the edges. PATs
+stop being advisory and start being **enforced**; the JWT verifier and the MCP
+endpoint get the same treatment as the REST surface; and the customer‑360 gets a
+performance pass.
+
+### Added / Changed
+- **PAT scope enforcement (was advisory).** REST is now **deny‑by‑default**: a
+  PAT can only reach a route that declares its scope with `@RequireScopes(...)`
+  and only if the token holds it — an un‑annotated route is PAT‑inaccessible. The
+  MCP surface gets a **per‑tool scope gate** (`MCP_TOOL_SCOPE_MAP`, fail‑closed on
+  an unmapped tool) plus a **workspace fence** on the JSON‑RPC `workspace_id` arg
+  so a PAT bound to one workspace can't address another via the arg. `write:*`
+  implies the matching `read:*`. A normal JWT session is unaffected (full RBAC).
+- **JWT verifier hardening.** Explicit `algorithms` allow‑list (`HS256`, `RS256`
+  only — closes the alg‑confusion vector) and **fail‑closed on an empty
+  `JWT_SECRET`** (an unset secret can no longer accept any local HS256 token).
+- **MCP endpoint rate‑limiting.** The `POST /mcp` surface is now throttled (was
+  unthrottled).
+- **Audit consistency for inbound engagement** — `record_customer_engagement`
+  now records to the audit trail like every other relationship write, plus
+  validation on the audit list query.
+- **Customer‑360 performance.** Parallel federation fan‑out across the seams,
+  bounded concurrency on the contact‑summary calls, and batched invoice‑cache
+  writes.
+
+## [0.8.0] — 2026-06-20 — "Audit + tokens"
+
+Adds the two operator‑facing trust features: an append‑only system audit trail
+and Personal Access Tokens for programmatic/agent access.
+
+### Added
+- **Append‑only system audit trail.** A new `audit_logs` table (migration
+  `20260620000000_phase7_audit_logs`) records relationship writes and agent runs
+  (an `EXECUTE` on `agent`) across **both REST and MCP**. The writer is
+  RLS‑correct (routed through the workspace GUC) and never throws — auditing can't
+  break the request it records. Surfaced in the cockpit as **System → Audit**.
+- **Personal Access Tokens (`co_pat_`).** Mint / list / revoke from
+  **session‑only** routes (`/api/v1/auth/pats/*`) — you cannot mint or revoke a
+  PAT *with* a PAT. The plaintext is shown exactly **once** at creation. A token
+  is bound to a single workspace and carries a set of scopes. Backed by migration
+  `20260620010000_personal_access_tokens`. (Scope **enforcement** lands in
+  [0.9.0].)
+- **`GET /health/integrations`** — a per‑seam federation probe reporting `ok` /
+  `auth-error` / `unreachable` / `not-configured` for every integration, so a
+  silent auth failure can't hide behind an empty panel.
+
 ## [0.7.0] — 2026-06-05 — Federation live
 
 The relationship cockpit goes from contract-coded seams to **live cross-app

@@ -119,6 +119,12 @@ Either way, the underlying **contact lives in Contact‑Ops** — the one phoneb
 ## 9. For admins & operators
 
 - **Health at a glance:** `GET /api/v1/health/integrations` reports every federation seam as `ok` / `auth-error` / `unreachable` / `not-configured` — the fastest way to see which siblings are connected.
+- **The audit trail** — open **System → Audit** to see who did what, when. Every relationship write (stage moves, notes, federated actions) and every agent run is recorded. The trail is **append‑only**: entries are never edited or deleted, so it's a faithful record. You only ever see your own workspace's entries.
+- **Personal Access Tokens** — for scripts, integrations, or an MCP agent that needs to act without a browser session. Mint them in **Settings → API tokens**:
+  - **The token is shown only once**, right after you create it. Copy it then — you can't see it again. If you lose it, revoke it and mint a new one.
+  - **Scope it down.** A token carries only the scopes you grant (e.g. read customers, run agents). It can do nothing outside them — and a token can never mint or revoke other tokens, so a leaked token can't escalate itself.
+  - **It's bound to one workspace.** A token only works in the workspace you create it for.
+  - **Revoke any time** from the same screen; revocation takes effect immediately.
 - **Connecting a sibling app:** see [`README.md`](../README.md#how-it-federates) and the per‑seam settings in [`deploy/.env.example`](../deploy/.env.example).
 - **Architecture & internals:** [`ARCHITECTURE.md`](ARCHITECTURE.md).
 - **Runbooks:** [`runbooks/`](runbooks/) — deploy, backup/restore, tenancy, inference, entitlements.
