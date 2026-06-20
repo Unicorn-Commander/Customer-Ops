@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { Button, StageBadge, Badge, cn } from '@/components/ui';
 import { STAGE_META } from '@/components/ui/tokens';
+import { formatDate } from '@/lib/format';
 import {
   money, STAGES, STAGE_LABEL, type Customer360, type Stage,
 } from '@/lib/customers';
@@ -192,7 +193,7 @@ export function Customer360Header({
             <span>
               <span className="font-semibold">Marked lost.</span> {rel.lostReason}
               {rel.closedLostAt && (
-                <span className="text-danger/70"> · {new Date(rel.closedLostAt).toLocaleDateString()}</span>
+                <span className="text-danger/70"> · {formatDate(rel.closedLostAt)}</span>
               )}
             </span>
           </div>
@@ -203,8 +204,8 @@ export function Customer360Header({
           <Fact icon={Banknote} label="Expected value" value={money(rel.expectedValue, rel.currency ?? 'USD')} emphasize />
           <Fact icon={UserRound} label="Owner" value={rel.ownerUserKey ?? 'Unassigned'} />
           <Fact icon={Flag} label="Source" value={rel.source ?? '—'} />
-          <Fact icon={CalendarClock} label="Next action" value={rel.nextActionAt ? new Date(rel.nextActionAt).toLocaleDateString() : '—'} />
-          <Fact icon={ArrowRight} label="In stage since" value={new Date(rel.lastStageChangeAt).toLocaleDateString()} />
+          <Fact icon={CalendarClock} label="Next action" value={rel.nextActionAt ? formatDate(rel.nextActionAt) : '—'} />
+          <Fact icon={ArrowRight} label="In stage since" value={formatDate(rel.lastStageChangeAt)} />
         </div>
       </div>
     </section>

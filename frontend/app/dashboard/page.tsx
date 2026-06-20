@@ -8,21 +8,11 @@ import {
 } from '@/lib/customers';
 import { getStoredUser, ApiError, type CustomerOpsUser } from '@/lib/api';
 import { deriveGraph } from '@/lib/graph';
+import { relativeTime } from '@/lib/format';
 
 const STAGE_VERB: Record<Stage, string> = {
   LEAD: 'is a new lead', PROSPECT: 'is now a prospect', CUSTOMER: 'is now a customer',
 };
-
-function rel(iso: string): string {
-  const then = new Date(iso).getTime();
-  if (!Number.isFinite(then)) return '';
-  const s = Math.max(0, Math.floor((Date.now() - then) / 1000));
-  if (s < 60) return 'just now';
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
-  if (s < 172800) return 'Yesterday';
-  return `${Math.floor(s / 86400)}d ago`;
-}
 
 function deriveAttention(rows: CustomerRow[]): AttentionItem[] {
   const now = Date.now();
@@ -42,7 +32,7 @@ function deriveActivity(rows: CustomerRow[]): ActivityItem[] {
   return [...rows]
     .sort((a, b) => new Date(b.lastStageChangeAt).getTime() - new Date(a.lastStageChangeAt).getTime())
     .slice(0, 6)
-    .map((r) => ({ id: r.id, name: contactLabel(r), stage: r.stage, text: STAGE_VERB[r.stage], when: rel(r.lastStageChangeAt) }));
+    .map((r) => ({ id: r.id, name: contactLabel(r), stage: r.stage, text: STAGE_VERB[r.stage], when: relativeTime(r.lastStageChangeAt) }));
 }
 
 export default function DashboardHome() {

@@ -87,7 +87,7 @@ export function FieldTextarea({
 export function FormError({ error }: { error: string | null }) {
   if (!error) return null;
   return (
-    <p className="flex items-start gap-2 rounded-token border border-danger/30 bg-danger-subtle px-3 py-2 text-xs text-danger">
+    <p role="alert" className="flex items-start gap-2 rounded-token border border-danger/30 bg-danger-subtle px-3 py-2 text-xs text-danger">
       <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" strokeWidth={2.25} />
       <span className="min-w-0 break-words">{error}</span>
     </p>

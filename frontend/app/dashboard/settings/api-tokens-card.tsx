@@ -21,13 +21,15 @@
    security-critical; do not soften it.
    ========================================================================== */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   Check, Copy, KeyRound, Loader2, Plus, ShieldAlert, Trash2, X,
 } from 'lucide-react';
 import { Button } from '@/components/ui';
 import { IconTile } from '@/components/ui/IconTile';
 import { apiGet, apiPost, apiDelete, ApiError } from '@/lib/api';
+import { useOverlay } from '@/lib/useOverlay';
+import { formatDate, formatDateTime } from '@/lib/format';
 
 interface PatMetadata {
   id: string;
@@ -165,7 +167,7 @@ export function ApiTokensCard() {
               <Loader2 className="h-4 w-4 animate-spin" /> Loading tokens…
             </div>
           ) : error ? (
-            <div className="flex items-start gap-3 rounded-token border border-danger/30 bg-danger-subtle px-4 py-3 text-sm text-danger">
+            <div role="alert" className="flex items-start gap-3 rounded-token border border-danger/30 bg-danger-subtle px-4 py-3 text-sm text-danger">
               <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" strokeWidth={2.25} aria-hidden />
               <div className="min-w-0 flex-1">
                 <p className="break-words">{error}</p>
@@ -218,10 +220,10 @@ export function ApiTokensCard() {
                         </div>
                       </td>
                       <td className="border-b border-subtle px-4 py-3 align-middle text-tertiary">
-                        {token.lastUsedAt ? new Date(token.lastUsedAt).toLocaleString() : 'Never'}
+                        {token.lastUsedAt ? formatDateTime(token.lastUsedAt) : 'Never'}
                       </td>
                       <td className="border-b border-subtle px-4 py-3 align-middle text-tertiary">
-                        {token.expiresAt ? new Date(token.expiresAt).toLocaleDateString() : 'Never'}
+                        {token.expiresAt ? formatDate(token.expiresAt) : 'Never'}
                       </td>
                       <td className="border-b border-subtle px-4 py-3 text-right align-middle">
                         <Button
@@ -288,6 +290,8 @@ function CreateTokenModal({
   const [expiryDays, setExpiryDays] = useState<number | null>(90);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const headingId = useId();
+  const nameRef = useRef<HTMLInputElement>(null);
 
   function toggleScope(scope: string) {
     setSelectedScopes((current) =>
@@ -324,10 +328,10 @@ function CreateTokenModal({
   }
 
   return (
-    <ModalShell onClose={submitting ? undefined : onClose}>
+    <ModalShell onClose={submitting ? undefined : onClose} labelledBy={headingId} initialFocusRef={nameRef}>
       <div className="mb-4 flex items-start justify-between gap-3">
         <div>
-          <h3 className="text-base font-semibold text-primary">Create API token</h3>
+          <h3 id={headingId} className="text-base font-semibold text-primary">Create API token</h3>
           <p className="mt-0.5 text-xs text-tertiary">
             Pick the scopes the token should be allowed to use, plus an expiry.
           </p>
@@ -349,6 +353,7 @@ function CreateTokenModal({
             Name
           </label>
           <input
+            ref={nameRef}
             id="pat-name"
             value={name}
             onChange={(e) => setName(e.target.value)}
@@ -413,7 +418,7 @@ function CreateTokenModal({
         </div>
 
         {formError && (
-          <div className="flex items-start gap-2 rounded-token border border-danger/30 bg-danger-subtle px-3 py-2 text-xs text-danger">
+          <div role="alert" className="flex items-start gap-2 rounded-token border border-danger/30 bg-danger-subtle px-3 py-2 text-xs text-danger">
             <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" strokeWidth={2.25} aria-hidden />
             <span className="break-words">{formError}</span>
           </div>
@@ -450,6 +455,8 @@ function RevealTokenModal({
   const [copied, setCopied] = useState(false);
   const [copyFailed, setCopyFailed] = useState(false);
   const [acknowledged, setAcknowledged] = useState(false);
+  const headingId = useId();
+  const copyBtnRef = useRef<HTMLButtonElement>(null);
 
   async function handleCopy() {
     try {
@@ -465,11 +472,11 @@ function RevealTokenModal({
   return (
     // Deliberately no close button and no overlay-dismiss — the user MUST
     // acknowledge they've copied the token before this can close.
-    <ModalShell onClose={undefined}>
+    <ModalShell onClose={undefined} labelledBy={headingId} initialFocusRef={copyBtnRef}>
       <div className="mb-4">
         <div className="mb-2 flex items-center gap-2">
           <Check className="h-5 w-5 text-success" />
-          <h3 className="text-base font-semibold text-primary">Token created</h3>
+          <h3 id={headingId} className="text-base font-semibold text-primary">Token created</h3>
         </div>
         <p className="text-sm text-tertiary">
           Copy this token now. <strong className="text-secondary">It will never be shown again.</strong>{' '}
@@ -482,7 +489,7 @@ function RevealTokenModal({
           {token.plaintext}
         </div>
 
-        <Button variant="secondary" block onClick={() => void handleCopy()}>
+        <Button ref={copyBtnRef} variant="secondary" block onClick={() => void handleCopy()}>
           {copied ? (
             <>
               <Check className="mr-2 h-4 w-4 text-success" />
@@ -548,10 +555,12 @@ function RevokeConfirmModal({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const headingId = useId();
+  const cancelRef = useRef<HTMLButtonElement>(null);
   return (
-    <ModalShell onClose={onCancel}>
+    <ModalShell onClose={onCancel} labelledBy={headingId} initialFocusRef={cancelRef}>
       <div className="mb-4">
-        <h3 className="text-base font-semibold text-primary">Revoke token?</h3>
+        <h3 id={headingId} className="text-base font-semibold text-primary">Revoke token?</h3>
         <p className="mt-1 text-sm text-tertiary">
           {token ? (
             <>
@@ -564,13 +573,13 @@ function RevokeConfirmModal({
         </p>
       </div>
       {error && (
-        <div className="mb-4 flex items-start gap-2 rounded-token border border-danger/30 bg-danger-subtle px-3 py-2 text-xs text-danger">
+        <div role="alert" className="mb-4 flex items-start gap-2 rounded-token border border-danger/30 bg-danger-subtle px-3 py-2 text-xs text-danger">
           <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" strokeWidth={2.25} aria-hidden />
           <span className="break-words">{error}</span>
         </div>
       )}
       <div className="flex items-center justify-end gap-2">
-        <Button variant="secondary" onClick={onCancel}>
+        <Button ref={cancelRef} variant="secondary" onClick={onCancel}>
           Cancel
         </Button>
         <Button variant="danger" onClick={onConfirm}>
@@ -588,16 +597,40 @@ function RevokeConfirmModal({
 function ModalShell({
   children,
   onClose,
+  labelledBy,
+  initialFocusRef,
 }: {
   children: React.ReactNode;
+  /** Dismiss handler (scrim click + Esc). Omit to force an explicit action
+   *  (the reveal modal — its only way out is the acknowledge checkbox + Done). */
   onClose?: () => void;
+  /** Id of the heading element that names the dialog. */
+  labelledBy: string;
+  /** Element to focus on open (else the panel's first focusable). */
+  initialFocusRef?: React.RefObject<HTMLElement | null>;
 }) {
+  // A no-op close keeps the trap/scroll-lock/focus-restore behaviour while
+  // disabling Esc for the must-acknowledge reveal modal.
+  const { panelRef, onKeyDown } = useOverlay({
+    onClose: onClose ?? (() => {}),
+    closeOnEsc: Boolean(onClose),
+    initialFocusRef,
+  });
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+      onKeyDown={onKeyDown}
+    >
       {/* Overlay click closes only when onClose is provided (the reveal modal
           omits it to force explicit acknowledgement). */}
       <div className="absolute inset-0" onClick={onClose} aria-hidden="true" />
-      <div className="relative w-full max-w-lg rounded-token-lg border border-subtle bg-surface-raised p-6 text-secondary shadow-token-lg">
+      <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={labelledBy}
+        className="relative w-full max-w-lg rounded-token-lg border border-subtle bg-surface-raised p-6 text-secondary shadow-token-lg"
+      >
         {children}
       </div>
     </div>

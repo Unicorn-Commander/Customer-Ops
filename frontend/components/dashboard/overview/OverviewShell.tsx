@@ -259,7 +259,7 @@ export function OverviewError({
   canRetry?: boolean;
 }) {
   return (
-    <div className="flex items-start gap-3 rounded-token-lg border border-danger/30 bg-danger-subtle px-4 py-3 text-sm text-danger">
+    <div role="alert" className="flex items-start gap-3 rounded-token-lg border border-danger/30 bg-danger-subtle px-4 py-3 text-sm text-danger">
       <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" strokeWidth={2.25} aria-hidden />
       <div className="min-w-0">
         <p className="font-medium">Couldn&rsquo;t load this view</p>

@@ -271,29 +271,7 @@ export function slugifyDedupKey(input: string): string {
     .slice(0, 80);
 }
 
-/** Compact relative time, past + future ("3d ago" / "in 5d"). */
-export function relativeTime(iso: string | null): string {
-  if (!iso) return '—';
-  const t = new Date(iso).getTime();
-  if (!Number.isFinite(t)) return '—';
-  const diff = t - Date.now();
-  const past = diff < 0;
-  const s = Math.abs(diff) / 1000;
-  const fmt = (n: number, unit: string) => (past ? `${n}${unit} ago` : `in ${n}${unit}`);
-  if (s < 45) return past ? 'just now' : 'soon';
-  if (s < 3600) return fmt(Math.round(s / 60), 'm');
-  if (s < 86400) return fmt(Math.round(s / 3600), 'h');
-  const d = Math.round(s / 86400);
-  if (d === 1) return past ? 'yesterday' : 'tomorrow';
-  if (d < 30) return fmt(d, 'd');
-  if (d < 365) return fmt(Math.round(d / 30), 'mo');
-  return fmt(Math.round(d / 365), 'y');
-}
-
-/** Absolute timestamp for a title tooltip. */
-export function absoluteTime(iso: string | null): string {
-  if (!iso) return '';
-  const d = new Date(iso);
-  if (!Number.isFinite(d.getTime())) return '';
-  return d.toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
-}
+/* Time formatting lives in lib/format.ts now (the suite-wide source of truth).
+ * Re-exported here so the lead screens keep their existing import surface;
+ * `absoluteTime` is the date+time form. */
+export { relativeTime, formatDateTime as absoluteTime } from './format';

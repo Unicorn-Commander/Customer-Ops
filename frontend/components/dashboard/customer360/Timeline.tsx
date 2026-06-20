@@ -5,25 +5,8 @@ import {
   ArrowRightLeft, StickyNote, Bot, Flag, RotateCcw, Sparkles, Send, type LucideIcon,
 } from 'lucide-react';
 import { Button, StageBadge, cn } from '@/components/ui';
+import { formatDateTime, relativeTime } from '@/lib/format';
 import type { Stage, TimelineEntry } from '@/lib/customers';
-
-/* ── time formatting ──────────────────────────────────────────────────────── */
-function relativeTime(iso: string): string {
-  const then = new Date(iso).getTime();
-  if (!Number.isFinite(then)) return '';
-  const diff = Date.now() - then;
-  const abs = Math.abs(diff);
-  const m = 60_000, h = 3_600_000, d = 86_400_000;
-  if (abs < m) return 'just now';
-  if (abs < h) return `${Math.round(abs / m)}m ago`;
-  if (abs < d) return `${Math.round(abs / h)}h ago`;
-  if (abs < 7 * d) return `${Math.round(abs / d)}d ago`;
-  return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-}
-function absoluteTime(iso: string): string {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? '' : d.toLocaleString();
-}
 
 /* ── per-kind visual meta ─────────────────────────────────────────────────── */
 interface KindMeta { icon: LucideIcon; well: string; ring: string; label: string }
@@ -83,7 +66,7 @@ function TimelineItem({ entry, last }: { entry: TimelineEntry; last: boolean }) 
               <StageBadge stage={entry.toStage as Stage} className="px-2 py-0" />
             </span>
           )}
-          <span className="ml-auto shrink-0 text-[11px] text-muted" title={absoluteTime(entry.createdAt)}>
+          <span className="ml-auto shrink-0 text-[11px] text-muted" title={formatDateTime(entry.createdAt)}>
             {relativeTime(entry.createdAt)}
           </span>
         </div>

@@ -27,7 +27,7 @@ export function IconTile({
         DIM[size], gradient, glow && 'ring-1 ring-white/10', className,
       )}
     >
-      <Icon className={cn('text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.25)]', GLYPH[size])} strokeWidth={2.4} />
+      <Icon aria-hidden focusable={false} className={cn('text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.25)]', GLYPH[size])} strokeWidth={2.4} />
     </span>
   );
 }

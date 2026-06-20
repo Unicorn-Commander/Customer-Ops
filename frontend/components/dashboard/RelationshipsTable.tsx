@@ -18,6 +18,7 @@ import {
   type CustomerRow, type Stage, type Priority,
   STAGES, STAGE_LABEL, contactLabel, money,
 } from '@/lib/customers';
+import { formatDateTime, relativeTime } from '@/lib/format';
 
 /* ── Presentational relationships data table ──────────────────────────────────
  * Owns only VIEW state (active stage filter, search query, sort) derived over the
@@ -312,7 +313,7 @@ function RelationshipRow({ row }: { row: CustomerRow }) {
 
       {/* Last activity */}
       <TD>
-        <span className="text-tertiary" title={absolute(row.updatedAt)}>{relative(row.updatedAt)}</span>
+        <span className="text-tertiary" title={formatDateTime(row.updatedAt)}>{relativeTime(row.updatedAt)}</span>
       </TD>
 
       {/* Open-profile cue — a trailing chevron that brightens + nudges right on
@@ -348,10 +349,10 @@ function NextActionCell({ iso, lost }: { iso: string | null; lost: boolean }) {
   return (
     <span
       className={cn('inline-flex items-center gap-1.5 text-xs', overdue ? 'font-semibold text-danger' : 'text-secondary')}
-      title={absolute(iso)}
+      title={formatDateTime(iso)}
     >
       {overdue && <AlertTriangle className="h-3.5 w-3.5" strokeWidth={2.5} aria-hidden />}
-      {relative(iso)}
+      {relativeTime(iso)}
     </span>
   );
 }
@@ -478,28 +479,4 @@ function initials(name: string): string {
   if (parts.length === 0) return '··';
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-}
-
-/** Compact relative time, both past ("3d ago") and future ("in 5d"). */
-function relative(iso: string): string {
-  const t = new Date(iso).getTime();
-  if (!Number.isFinite(t)) return '—';
-  const diff = t - Date.now();
-  const past = diff < 0;
-  const s = Math.abs(diff) / 1000;
-  const fmt = (n: number, unit: string) => (past ? `${n}${unit} ago` : `in ${n}${unit}`);
-  if (s < 45) return past ? 'just now' : 'soon';
-  if (s < 3600) return fmt(Math.round(s / 60), 'm');
-  if (s < 86400) return fmt(Math.round(s / 3600), 'h');
-  const d = Math.round(s / 86400);
-  if (d === 1) return past ? 'yesterday' : 'tomorrow';
-  if (d < 30) return fmt(d, 'd');
-  if (d < 365) return fmt(Math.round(d / 30), 'mo');
-  return fmt(Math.round(d / 365), 'y');
-}
-
-function absolute(iso: string): string {
-  const d = new Date(iso);
-  if (!Number.isFinite(d.getTime())) return '';
-  return d.toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
 }

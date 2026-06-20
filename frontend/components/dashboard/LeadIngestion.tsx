@@ -21,6 +21,7 @@ import {
   INTAKE_STATUSES, INTAKE_STATUS_LABEL,
   sourceMeta, tallyBySource, slugifyDedupKey, relativeTime, absoluteTime,
 } from '@/lib/leads';
+import { useOverlay } from '@/lib/useOverlay';
 
 /* ── Presentational lead-ingestion cockpit ────────────────────────────────────
  * The observability + control surface for the Phase-6 `ingest_lead` pipeline.
@@ -905,21 +906,27 @@ function AddLeadDrawer({
   const [outcome, setOutcome] = useState<IngestResult | null>(null);
   const firstFieldRef = useRef<HTMLInputElement>(null);
 
+  // Shared overlay mechanics: focus into the first field on open, Tab focus-trap,
+  // body-scroll lock, Esc-to-close (gated while a submit is in flight), and focus
+  // restored to the opener on close.
+  const { panelRef, onKeyDown } = useOverlay({
+    onClose: () => { if (!busy) onClose(); },
+    closeOnEsc: !busy,
+    initialFocusRef: firstFieldRef,
+    enabled: open,
+  });
+
   // Auto-suggest the dedup key from email until the operator edits it.
   useEffect(() => {
     if (!dedupTouched) setDedupKey(email.trim() ? slugifyDedupKey(email) : '');
   }, [email, dedupTouched]);
 
-  // Reset + focus on open; Escape closes.
+  // Clear any prior outcome/error each time the drawer opens.
   useEffect(() => {
     if (!open) return;
     setError(null);
     setOutcome(null);
-    requestAnimationFrame(() => firstFieldRef.current?.focus());
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !busy) onClose(); };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [open, busy, onClose]);
+  }, [open]);
 
   const reset = () => {
     setSource('manual'); setDedupKey(''); setDedupTouched(false);
@@ -967,7 +974,7 @@ function AddLeadDrawer({
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end" role="dialog" aria-modal="true" aria-label="Add a lead">
+    <div className="fixed inset-0 z-50 flex justify-end" role="presentation" onKeyDown={onKeyDown}>
       {/* Scrim */}
       <button
         type="button"
@@ -977,7 +984,13 @@ function AddLeadDrawer({
       />
 
       {/* Panel */}
-      <div className="relative flex h-full w-full max-w-md flex-col border-l border-[rgb(var(--co-edge))] bg-surface-base shadow-token-lg animate-fade-up">
+      <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Add a lead"
+        className="relative flex h-full w-full max-w-md flex-col border-l border-[rgb(var(--co-edge))] bg-surface-base shadow-token-lg animate-fade-up"
+      >
         {/* Header */}
         <div className="relative flex items-center justify-between gap-3 border-b border-subtle px-5 py-4">
           <div aria-hidden className="co-glow absolute -left-8 -top-10 h-28 w-44 opacity-40" />

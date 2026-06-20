@@ -66,8 +66,12 @@ export function CockpitDashboard({ userName, board, attention, activity, graph }
             </p>
           </div>
           <div className="flex shrink-0 gap-2">
-            <Button glow leading={<Sparkles className="h-4 w-4" strokeWidth={2.4} />}>Triage leads</Button>
-            <Button variant="secondary" leading={<Upload className="h-4 w-4" strokeWidth={2.4} />}>Import</Button>
+            <Link href="/dashboard/pipeline">
+              <Button glow leading={<Sparkles className="h-4 w-4" strokeWidth={2.4} />}>Triage leads</Button>
+            </Link>
+            <Link href="/dashboard/leads">
+              <Button variant="secondary" leading={<Upload className="h-4 w-4" strokeWidth={2.4} />}>Import</Button>
+            </Link>
           </div>
         </div>
       </section>
