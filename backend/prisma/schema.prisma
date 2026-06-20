@@ -670,3 +670,57 @@ model LeadIntake {
 // Workspace is the tenancy CONTROL table (not RLS-fenced); Customer +
 // CustomerActivity + CustomerInvoiceLink + CustomerOutreachLink +
 // CustomerEmailLink are the scoped projections (RLS-fenced by the migrations).
+
+// ============================================================================
+// Phase 7 — the system audit trail (who did what, when).
+// ============================================================================
+// A workspace-scoped, APPEND-ONLY record of consequential actions: every
+// relationship write (create/update/transition/mark-lost/reopen/note), whether
+// it entered via the REST cockpit, the MCP tools, or a confirmed Relations
+// Officer proposal, lands one row here. Distinct from `customer_activities`
+// (the relationship's domain timeline): audit_logs is the security/compliance
+// trail — actor + action + target + metadata, never the free-text content
+// (no notes/reasons/secrets are copied here).
+//
+// RLS-fenced on `workspaceId` exactly like `customers` (migration
+// 20260620000000_phase7_audit_logs: ENABLE+FORCE + workspace_isolation policy).
+// The runtime role (customer_ops_app) holds INSERT+SELECT only — no
+// UPDATE/DELETE — so the trail is tamper-resistant even from the app.
+enum AuditAction {
+  CREATE
+  READ
+  UPDATE
+  DELETE
+  LOGIN
+  LOGOUT
+  EXPORT
+  IMPORT
+  EXECUTE // an AI-proposed write confirmed + executed on the user's behalf
+}
+
+model AuditLog {
+  id String @id @default(uuid())
+  // INTENTIONALLY nullable (mirrors the Project-Ops reference): a future
+  // workspace-less system event (e.g. LOGIN/LOGOUT) must still be recordable.
+  // Every CURRENT writer stamps it and writes through the workspace GUC, so the
+  // RLS predicate (workspaceId = current_workspace_id()) fences live rows; a
+  // NULL-workspace row is invisible + un-writable under a GUC (fail-closed).
+  workspaceId String?
+  // The acting uchub subject (Keycloak `sub`). A plain string, NO FK to users —
+  // the suite-canonical, federation-portable identity key (see migration parity).
+  userId      String?
+  action      AuditAction
+  resource    String // e.g. 'customer', 'customer_note', 'invoice_link'
+  resourceId  String?
+  details     Json? // structural metadata only (which fields / kind) — never content
+  ipAddress   String?
+  userAgent   String?
+  timestamp   DateTime    @default(now())
+
+  @@index([workspaceId])
+  @@index([userId])
+  @@index([action])
+  @@index([resource, resourceId])
+  @@index([timestamp])
+  @@map("audit_logs")
+}

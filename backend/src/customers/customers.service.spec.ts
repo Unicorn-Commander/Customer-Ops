@@ -228,6 +228,7 @@ function makeService(opts?: {
   const workspaces = {
     resolveAuthorized: jest.fn().mockResolvedValue(WS),
     runForUser: jest.fn(async (_user: User, fn: any) => fn(lastTx.current)),
+    runInWorkspace: jest.fn(async (_ws: string, _uc: any, fn: any) => fn(lastTx.current)),
   } as unknown as WorkspaceContextService;
 
   const svc = new CustomersService(

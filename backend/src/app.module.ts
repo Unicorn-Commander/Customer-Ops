@@ -26,6 +26,7 @@ import { AgentsModule } from './agents/agents.module';
 import { RelationsOfficerModule } from './relations-officer/relations-officer.module';
 import { CustomersModule } from './customers/customers.module';
 import { OverviewModule } from './overview/overview.module';
+import { AuditModule } from './audit/audit.module';
 import { LeadIntakeModule } from './lead-intake/lead-intake.module';
 import { GraphModule } from './graph/graph.module';
 
@@ -71,6 +72,10 @@ import { GraphModule } from './graph/graph.module';
     // for the provisional cockpit-label fallback.
     LeadIntakeModule,
     CustomersModule,
+    // The system audit trail (append-only audit_logs): the relationship write
+    // paths record who/what/when via AuditService; also mounts the workspace-
+    // scoped read surface. After CustomersModule (which writes through it).
+    AuditModule,
     // The command-center OVERVIEW surface: workspace-wide rollups of the local
     // invoice/outreach/email link tables (read-only; reuses the RLS chokepoint +
     // the Contact-Ops batch name-resolution). After CustomersModule — it reads the

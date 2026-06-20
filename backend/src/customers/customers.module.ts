@@ -9,6 +9,7 @@ import { MeetingOpsModule } from '../meeting-ops/meeting-ops.module';
 import { ProjectOpsModule } from '../project-ops/project-ops.module';
 import { LeadIntakeModule } from '../lead-intake/lead-intake.module';
 import { GraphModule } from '../graph/graph.module';
+import { AuditModule } from '../audit/audit.module';
 import { CustomersService } from './customers.service';
 import { CustomersController } from './customers.controller';
 
@@ -52,6 +53,10 @@ import { CustomersController } from './customers.controller';
     // refresh hook (CustomersService.refreshGraph). @Optional in the service; no
     // circular dep — GraphModule does not import CustomersModule.
     GraphModule,
+    // Phase 7: the append-only audit trail — CustomersService records every
+    // relationship write (create/update/transition/mark-lost/reopen/note)
+    // through AuditService (injected @Optional, never-throw).
+    AuditModule,
   ],
   providers: [CustomersService],
   controllers: [CustomersController],

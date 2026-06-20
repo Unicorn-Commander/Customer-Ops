@@ -35,10 +35,11 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { randomUUID } from 'crypto';
-import { CustomerActivityKind, Prisma, RelationshipStage, User } from '@prisma/client';
+import { AuditAction, CustomerActivityKind, Prisma, RelationshipStage, User } from '@prisma/client';
 import { WorkspaceContextService } from '../common/workspace/workspace-context.service';
 import { WorkspaceTxClient } from '../prisma/prisma.service';
 import { WithWorkspaceClaim, entitlementsOf, ucUidOf } from '../common/workspace/workspace.util';
+import { AuditService } from '../audit/audit.service';
 import { ContactOpsPort, FederationContext } from '../contact-ops/contact-ops.port';
 import { FederatedContact } from '../contact-ops/contact-ops.types';
 import {
@@ -179,6 +180,12 @@ export class CustomersService {
     @Optional()
     @Inject(GraphIngestService)
     private readonly graphIngest?: GraphIngestService,
+    // Phase 7: the append-only audit trail. @Optional so the existing positional
+    // spec construction still compiles + the relationship layer keeps no hard
+    // dep; every call is `this.audit?.log(...)` (and log() never throws).
+    @Optional()
+    @Inject(AuditService)
+    private readonly audit?: AuditService,
   ) {}
 
   // ========================================================================
@@ -336,18 +343,45 @@ export class CustomersService {
     };
   }
 
+  /**
+   * Record one relationship-write audit event (Phase 7). The caller passes the
+   * ALREADY-resolved workspaceId so the audit row's workspace matches the write's
+   * GUC (RLS WITH CHECK). Never throws (AuditService.log swallows failures; `?.`
+   * no-ops when the audit module is absent, e.g. in unit tests).
+   */
+  private async auditWrite(
+    workspaceId: string,
+    ucUid: string | null | undefined,
+    action: AuditAction,
+    resource: string,
+    resourceId: string,
+    details?: Record<string, unknown>,
+  ): Promise<void> {
+    await this.audit?.log({
+      workspaceId,
+      userId: ucUid ?? undefined,
+      action,
+      resource,
+      resourceId,
+      details,
+    });
+  }
+
   async createForUser(
     user: User & Partial<WithWorkspaceClaim>,
     dto: CreateCustomerDto,
     requestedWorkspaceId?: string | null,
   ) {
     const ucUid = ucUidOf(user);
-    const row = await this.workspaces.runForUser(
-      user,
-      (tx) => this.createInTx(tx, dto, ucUid),
-      requestedWorkspaceId,
+    const workspaceId = await this.workspaces.resolveAuthorized(user, requestedWorkspaceId);
+    const row = await this.workspaces.runInWorkspace(workspaceId, ucUid, (tx) =>
+      this.createInTx(tx, dto, ucUid),
     );
     this.refreshGraph(user, row.id, requestedWorkspaceId);
+    await this.auditWrite(workspaceId, ucUid, AuditAction.CREATE, 'customer', row.id, {
+      contactId: dto.contactId,
+      stage: row.stage,
+    });
     return this.serialize(row);
   }
 
@@ -358,12 +392,14 @@ export class CustomersService {
     requestedWorkspaceId?: string | null,
   ) {
     const ucUid = ucUidOf(user);
-    const row = await this.workspaces.runForUser(
-      user,
-      (tx) => this.updateInTx(tx, id, dto, ucUid),
-      requestedWorkspaceId,
+    const workspaceId = await this.workspaces.resolveAuthorized(user, requestedWorkspaceId);
+    const row = await this.workspaces.runInWorkspace(workspaceId, ucUid, (tx) =>
+      this.updateInTx(tx, id, dto, ucUid),
     );
     this.refreshGraph(user, id, requestedWorkspaceId);
+    await this.auditWrite(workspaceId, ucUid, AuditAction.UPDATE, 'customer', id, {
+      fields: Object.keys(dto ?? {}),
+    });
     return this.serialize(row);
   }
 
@@ -374,12 +410,15 @@ export class CustomersService {
     requestedWorkspaceId?: string | null,
   ) {
     const ucUid = ucUidOf(user);
-    const row = await this.workspaces.runForUser(
-      user,
-      (tx) => this.transitionInTx(tx, id, dto.toStage, dto.note, ucUid),
-      requestedWorkspaceId,
+    const workspaceId = await this.workspaces.resolveAuthorized(user, requestedWorkspaceId);
+    const row = await this.workspaces.runInWorkspace(workspaceId, ucUid, (tx) =>
+      this.transitionInTx(tx, id, dto.toStage, dto.note, ucUid),
     );
     this.refreshGraph(user, id, requestedWorkspaceId);
+    await this.auditWrite(workspaceId, ucUid, AuditAction.UPDATE, 'customer', id, {
+      kind: 'transition',
+      toStage: dto.toStage,
+    });
     return this.serialize(row);
   }
 
@@ -390,12 +429,14 @@ export class CustomersService {
     requestedWorkspaceId?: string | null,
   ) {
     const ucUid = ucUidOf(user);
-    const row = await this.workspaces.runForUser(
-      user,
-      (tx) => this.markLostInTx(tx, id, dto.reason, ucUid),
-      requestedWorkspaceId,
+    const workspaceId = await this.workspaces.resolveAuthorized(user, requestedWorkspaceId);
+    const row = await this.workspaces.runInWorkspace(workspaceId, ucUid, (tx) =>
+      this.markLostInTx(tx, id, dto.reason, ucUid),
     );
     this.refreshGraph(user, id, requestedWorkspaceId);
+    await this.auditWrite(workspaceId, ucUid, AuditAction.UPDATE, 'customer', id, {
+      kind: 'mark_lost',
+    });
     return this.serialize(row);
   }
 
@@ -405,12 +446,14 @@ export class CustomersService {
     requestedWorkspaceId?: string | null,
   ) {
     const ucUid = ucUidOf(user);
-    const row = await this.workspaces.runForUser(
-      user,
-      (tx) => this.reopenInTx(tx, id, ucUid),
-      requestedWorkspaceId,
+    const workspaceId = await this.workspaces.resolveAuthorized(user, requestedWorkspaceId);
+    const row = await this.workspaces.runInWorkspace(workspaceId, ucUid, (tx) =>
+      this.reopenInTx(tx, id, ucUid),
     );
     this.refreshGraph(user, id, requestedWorkspaceId);
+    await this.auditWrite(workspaceId, ucUid, AuditAction.UPDATE, 'customer', id, {
+      kind: 'reopen',
+    });
     return this.serialize(row);
   }
 
@@ -421,11 +464,14 @@ export class CustomersService {
     requestedWorkspaceId?: string | null,
   ) {
     const ucUid = ucUidOf(user);
-    return this.workspaces.runForUser(
-      user,
-      (tx) => this.addNoteInTx(tx, id, dto.body, ucUid),
-      requestedWorkspaceId,
+    const workspaceId = await this.workspaces.resolveAuthorized(user, requestedWorkspaceId);
+    const result = await this.workspaces.runInWorkspace(workspaceId, ucUid, (tx) =>
+      this.addNoteInTx(tx, id, dto.body, ucUid),
     );
+    await this.auditWrite(workspaceId, ucUid, AuditAction.CREATE, 'customer_note', id, {
+      kind: 'note',
+    });
+    return result;
   }
 
   /**
