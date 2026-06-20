@@ -152,7 +152,11 @@ export class AccountingOpsClient extends AccountingOpsPort {
    * membership server-side, so the header is a hint, never the authz boundary.
    */
   private async authHeaders(ctx: FederationContext): Promise<Record<string, string>> {
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      // AO's MCP is Streamable HTTP — it 406s unless the client accepts BOTH.
+      Accept: 'application/json, text/event-stream',
+    };
     // Workspace addressing. AO_WORKSPACE_OVERRIDE maps this app's local workspace
     // onto Accounting-Ops' uc-registry tenant for the single-workspace dogfood
     // (until the suite shares one uc-registry id — SUITE-IDENTITY §0.1). Both the
@@ -279,11 +283,9 @@ export class AccountingOpsClient extends AccountingOpsPort {
       return null;
     }
 
-    let payload: JsonRpcResponse;
-    try {
-      payload = (await res.json()) as JsonRpcResponse;
-    } catch (err) {
-      this.logger.warn(`Accounting-Ops MCP ${name} non-JSON response: ${(err as Error).message}`);
+    const payload = this.parseRpc(await res.text());
+    if (!payload) {
+      this.logger.warn(`Accounting-Ops MCP ${name} unparseable response`);
       return null;
     }
 
@@ -309,6 +311,28 @@ export class AccountingOpsClient extends AccountingOpsPort {
       }
     }
     return null;
+  }
+
+  /** Parse a JSON-RPC response that may arrive as plain JSON OR an SSE frame
+   *  (`event: message\ndata: {...}`), which Streamable-HTTP MCP servers emit. */
+  private parseRpc(raw: string): JsonRpcResponse | null {
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    try {
+      return JSON.parse(trimmed) as JsonRpcResponse;
+    } catch {
+      const dataLines = trimmed
+        .split('\n')
+        .filter((l) => l.startsWith('data:'))
+        .map((l) => l.slice(5).trim());
+      const last = dataLines[dataLines.length - 1];
+      if (!last) return null;
+      try {
+        return JSON.parse(last) as JsonRpcResponse;
+      } catch {
+        return null;
+      }
+    }
   }
 
   private async fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
