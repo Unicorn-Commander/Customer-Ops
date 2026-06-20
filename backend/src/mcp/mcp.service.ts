@@ -9,9 +9,12 @@
  */
 
 import { Injectable, Logger } from '@nestjs/common';
-import { User } from '@prisma/client';
+import { User, AuditAction } from '@prisma/client';
 import { z } from 'zod';
 import { MembershipService } from '../common/workspace/membership.service';
+import { WorkspaceContextService } from '../common/workspace/workspace-context.service';
+import { ucUidOf } from '../common/workspace/workspace.util';
+import { AuditService } from '../audit/audit.service';
 import { CustomersService } from '../customers/customers.service';
 import { LeadTriageAgent } from '../agents/lead-triage.agent';
 import { FollowUpDrafterAgent } from '../agents/follow-up-drafter.agent';
@@ -40,7 +43,36 @@ export class McpService {
     private readonly followUp: FollowUpDrafterAgent,
     private readonly collections: CollectionsNudgeAgent,
     private readonly leads: LeadIntakeService,
+    private readonly workspaces: WorkspaceContextService,
+    private readonly audit: AuditService,
   ) {}
+
+  /**
+   * Record an agent RUN invoked via MCP as an EXECUTE audit event — the MCP
+   * analog of AgentsController.auditRun, so agent runs are audited whether they
+   * enter via REST or MCP. The agent result carries customerId + agent; we
+   * resolve the concrete workspaceId (AuditService.log skips a no-workspace DTO)
+   * and tag via:'mcp' to tell the surfaces apart. Never breaks the tool call.
+   */
+  private async auditAgentRun(
+    user: User,
+    requestedWorkspaceId: string | null | undefined,
+    result: { customerId: string; agent: string; tierUsed?: string | null },
+  ): Promise<void> {
+    try {
+      const workspaceId = await this.workspaces.resolveAuthorized(user, requestedWorkspaceId ?? null);
+      await this.audit.log({
+        workspaceId,
+        userId: ucUidOf(user),
+        action: AuditAction.EXECUTE,
+        resource: 'agent',
+        resourceId: result.customerId,
+        details: { agent: result.agent, tier: result.tierUsed ?? 'bundled', via: 'mcp' },
+      });
+    } catch {
+      // resolveAuthorized can throw (403); never let auditing change tool behavior.
+    }
+  }
 
   /**
    * Build a fresh MCP server bound to one authenticated user. Returns the
@@ -432,7 +464,11 @@ export class McpService {
           workspace_id: z.string().optional(),
         },
       },
-      async (args: any) => wrap(await tools.triageCustomer(user, args)),
+      async (args: any) => {
+        const r = await tools.triageCustomer(user, args);
+        await this.auditAgentRun(user, args?.workspace_id, r);
+        return wrap(r);
+      },
     );
 
     server.registerTool(
@@ -454,7 +490,11 @@ export class McpService {
           idempotency_key: z.string().max(200).optional(),
         },
       },
-      async (args: any) => wrap(await tools.draftFollowup(user, args)),
+      async (args: any) => {
+        const r = await tools.draftFollowup(user, args);
+        await this.auditAgentRun(user, args?.workspace_id, r);
+        return wrap(r);
+      },
     );
 
     server.registerTool(
@@ -473,7 +513,11 @@ export class McpService {
           workspace_id: z.string().optional(),
         },
       },
-      async (args: any) => wrap(await tools.draftCollectionsNudge(user, args)),
+      async (args: any) => {
+        const r = await tools.draftCollectionsNudge(user, args);
+        await this.auditAgentRun(user, args?.workspace_id, r);
+        return wrap(r);
+      },
     );
 
     // ── Phase 6 lead-ingestion tools (the `ingest_lead` keystone) ──

@@ -6,6 +6,7 @@ import { WorkspaceModule } from '../common/workspace/workspace.module';
 import { CustomersModule } from '../customers/customers.module';
 import { AgentsModule } from '../agents/agents.module';
 import { LeadIntakeModule } from '../lead-intake/lead-intake.module';
+import { AuditModule } from '../audit/audit.module';
 
 @Module({
   // CustomersModule exports CustomersService so the cockpit MCP tools run the
@@ -15,7 +16,7 @@ import { LeadIntakeModule } from '../lead-intake/lead-intake.module';
   // REST cockpit actions (one implementation, two surfaces). LeadIntakeModule
   // exports LeadIntakeService so the Phase-6 ingest tools (ingest_lead /
   // list_lead_intakes / resolve_pending_leads) hit the same pipeline.
-  imports: [AuthModule, WorkspaceModule, CustomersModule, AgentsModule, LeadIntakeModule],
+  imports: [AuthModule, WorkspaceModule, CustomersModule, AgentsModule, LeadIntakeModule, AuditModule],
   controllers: [McpController],
   providers: [McpService],
 })
