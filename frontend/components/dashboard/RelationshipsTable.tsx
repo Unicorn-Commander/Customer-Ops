@@ -3,7 +3,7 @@
 import { useId, useMemo, useState } from 'react';
 import Link from 'next/link';
 import {
-  Search, Plus, Users, AlertTriangle, X, type LucideIcon,
+  Search, Plus, Users, AlertTriangle, X, ChevronRight, type LucideIcon,
 } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
@@ -58,7 +58,9 @@ const COLUMNS: ColumnDef[] = [
   { key: 'nextAction', label: 'Next action', align: 'left', sortable: true, initialDir: 'asc' },
   { key: 'lastActivity', label: 'Last activity', align: 'left', sortable: true, initialDir: 'desc' },
 ];
-const COLSPAN = COLUMNS.length;
+// +1 for the trailing "open profile" chevron column (not in COLUMNS, which
+// drives the sortable headers).
+const COLSPAN = COLUMNS.length + 1;
 
 const PRIORITY_RANK: Record<Priority, number> = { HIGH: 3, MEDIUM: 2, LOW: 1 };
 const STAGE_RANK: Record<Stage, number> = { LEAD: 1, PROSPECT: 2, CUSTOMER: 3 };
@@ -206,6 +208,8 @@ export function RelationshipsTable({ rows, loading = false, onNew }: Relationshi
                   {col.label}
                 </TH>
               ))}
+              {/* Trailing "open profile" affordance column (chevron). */}
+              <TH align="right"><span className="sr-only">Open profile</span></TH>
             </tr>
           </THead>
 
@@ -252,7 +256,7 @@ function RelationshipRow({ row }: { row: CustomerRow }) {
   const meta = STAGE_META[row.stage];
 
   return (
-    <TR className={cn(row.isLost && 'opacity-60')}>
+    <TR className={cn('cursor-pointer', row.isLost && 'opacity-60')}>
       {/* Contact — the row's primary link + identity. A stretched overlay link
           makes the whole identity cell a generous click target (avatar + name +
           sub) without hijacking text selection in the data cells. */}
@@ -309,6 +313,17 @@ function RelationshipRow({ row }: { row: CustomerRow }) {
       {/* Last activity */}
       <TD>
         <span className="text-tertiary" title={absolute(row.updatedAt)}>{relative(row.updatedAt)}</span>
+      </TD>
+
+      {/* Open-profile cue — a trailing chevron that brightens + nudges right on
+          row hover. Purely a visual affordance; the stretched whole-row link
+          above does the navigation (no second click target). */}
+      <TD align="right" className="w-10">
+        <ChevronRight
+          className="ml-auto h-4 w-4 text-muted opacity-50 transition-all duration-fast ease-token group-hover/row:translate-x-0.5 group-hover/row:text-accent group-hover/row:opacity-100"
+          strokeWidth={2.5}
+          aria-hidden
+        />
       </TD>
     </TR>
   );
@@ -447,7 +462,9 @@ function SkeletonRows() {
           {/* Next action */}
           <td className="px-3 py-2.5"><div className="h-3 w-20 animate-pulse rounded bg-surface-overlay" /></td>
           {/* Last activity */}
-          <td className="px-4 py-2.5"><div className="h-3 w-16 animate-pulse rounded bg-surface-overlay" /></td>
+          <td className="px-3 py-2.5"><div className="h-3 w-16 animate-pulse rounded bg-surface-overlay" /></td>
+          {/* Open-profile chevron */}
+          <td className="px-4 py-2.5"><div className="ml-auto h-4 w-4 animate-pulse rounded bg-surface-overlay" /></td>
         </tr>
       ))}
     </>

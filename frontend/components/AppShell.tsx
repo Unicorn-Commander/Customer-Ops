@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import {
@@ -23,6 +23,9 @@ function titleFor(pathname: string): { title: string; sub: string } {
   if (pathname.startsWith('/dashboard/pipeline')) return { title: 'Pipeline', sub: 'Lead → Prospect → Customer' };
   if (pathname.startsWith('/dashboard/graph')) return { title: 'Knowledge graph', sub: 'People, orgs & deals as a living network' };
   if (pathname.startsWith('/dashboard/agents')) return { title: 'Relations Officer', sub: 'Every relationship, connected' };
+  if (pathname.startsWith('/dashboard/invoices')) return { title: 'Invoices', sub: 'Every invoice across your workspace' };
+  if (pathname.startsWith('/dashboard/email')) return { title: 'Email', sub: 'Every send & draft across your workspace' };
+  if (pathname.startsWith('/dashboard/outreach')) return { title: 'Outreach', sub: 'Every campaign touch across your workspace' };
   if (pathname.startsWith('/dashboard/settings')) return { title: 'Settings', sub: 'Configure your cockpit & its connections' };
   if (pathname.startsWith('/dashboard/help')) return { title: 'Help', sub: 'The complete guide to your cockpit' };
   return { title: 'Overview', sub: 'Your relationship cockpit at a glance' };
@@ -113,24 +116,36 @@ export function AppShell({ children, demo = false }: { children: React.ReactNode
           {NAV.map((item) => {
             const active = isNavActive(item, pathname);
             return (
-              <Link
-                key={item.href}
-                href={item.href}
-                title={collapsed ? item.label : undefined}
-                className={cn(
-                  'group relative flex items-center rounded-token transition-colors duration-fast ease-token',
-                  collapsed ? 'h-11 w-11 justify-center' : 'gap-3 px-2.5 py-2',
-                  active ? 'bg-surface-overlay' : 'hover:bg-surface-raised',
+              <Fragment key={item.href}>
+                {/* Section divider/label — keeps the rail scannable as it grows.
+                    Collapsed: a hairline rule; expanded: a small uppercase label. */}
+                {item.groupLabel && (
+                  collapsed ? (
+                    <span aria-hidden className="my-1.5 h-px w-7 bg-[rgb(var(--co-edge))]/70" />
+                  ) : (
+                    <span className="mb-1 mt-3 px-2.5 text-[10px] font-semibold uppercase tracking-wider text-muted">
+                      {item.groupLabel}
+                    </span>
+                  )
                 )}
-              >
-                {active && !collapsed && <span className={cn('absolute left-0 top-1.5 h-[calc(100%-12px)] w-[3px] rounded-full', item.bar)} />}
-                <IconTile icon={item.icon} gradient={item.gradient} size="sm" />
-                {!collapsed && (
-                  <span className={cn('text-sm', active ? 'font-semibold text-primary' : 'font-medium text-primary/85 group-hover:text-primary')}>
-                    {item.label}
-                  </span>
-                )}
-              </Link>
+                <Link
+                  href={item.href}
+                  title={collapsed ? item.label : undefined}
+                  className={cn(
+                    'group relative flex items-center rounded-token transition-colors duration-fast ease-token',
+                    collapsed ? 'h-11 w-11 justify-center' : 'gap-3 px-2.5 py-2',
+                    active ? 'bg-surface-overlay' : 'hover:bg-surface-raised',
+                  )}
+                >
+                  {active && !collapsed && <span className={cn('absolute left-0 top-1.5 h-[calc(100%-12px)] w-[3px] rounded-full', item.bar)} />}
+                  <IconTile icon={item.icon} gradient={item.gradient} size="sm" />
+                  {!collapsed && (
+                    <span className={cn('text-sm', active ? 'font-semibold text-primary' : 'font-medium text-primary/85 group-hover:text-primary')}>
+                      {item.label}
+                    </span>
+                  )}
+                </Link>
+              </Fragment>
             );
           })}
         </nav>

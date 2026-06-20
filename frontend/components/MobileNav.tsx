@@ -15,7 +15,7 @@
    panel itself comes in from the left to echo the rail's position.
    ========================================================================== */
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import Link from 'next/link';
 import { Radar, X, LogOut } from 'lucide-react';
@@ -189,23 +189,30 @@ export function MobileNav({ open, onClose, pathname, user, onSignOut }: MobileNa
             {NAV.map((item) => {
               const active = isNavActive(item, pathname);
               return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  onClick={onClose}
-                  aria-current={active ? 'page' : undefined}
-                  className={cn(
-                    'group relative flex items-center gap-3 rounded-token px-2.5 py-2.5 transition-colors duration-fast ease-token',
-                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
-                    active ? 'bg-surface-overlay' : 'hover:bg-surface-raised',
+                <Fragment key={item.href}>
+                  {/* Section label — mirrors the desktop rail so the two never drift. */}
+                  {item.groupLabel && (
+                    <span className="mb-1 mt-3 px-2.5 text-[10px] font-semibold uppercase tracking-wider text-muted">
+                      {item.groupLabel}
+                    </span>
                   )}
-                >
-                  {active && <span className={cn('absolute left-0 top-2 h-[calc(100%-16px)] w-[3px] rounded-full', item.bar)} />}
-                  <IconTile icon={item.icon} gradient={item.gradient} size="sm" />
-                  <span className={cn('text-sm', active ? 'font-semibold text-primary' : 'font-medium text-primary/85 group-hover:text-primary')}>
-                    {item.label}
-                  </span>
-                </Link>
+                  <Link
+                    href={item.href}
+                    onClick={onClose}
+                    aria-current={active ? 'page' : undefined}
+                    className={cn(
+                      'group relative flex items-center gap-3 rounded-token px-2.5 py-2.5 transition-colors duration-fast ease-token',
+                      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
+                      active ? 'bg-surface-overlay' : 'hover:bg-surface-raised',
+                    )}
+                  >
+                    {active && <span className={cn('absolute left-0 top-2 h-[calc(100%-16px)] w-[3px] rounded-full', item.bar)} />}
+                    <IconTile icon={item.icon} gradient={item.gradient} size="sm" />
+                    <span className={cn('text-sm', active ? 'font-semibold text-primary' : 'font-medium text-primary/85 group-hover:text-primary')}>
+                      {item.label}
+                    </span>
+                  </Link>
+                </Fragment>
               );
             })}
           </nav>
