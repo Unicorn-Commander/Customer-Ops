@@ -20,7 +20,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  Radar, X, ChevronDown, BookOpen, Sparkles, ShieldCheck, type LucideIcon,
+  X, ChevronDown, BookOpen, Sparkles, ShieldCheck, type LucideIcon,
 } from 'lucide-react';
 import { IconTile } from '../ui/IconTile';
 import { cn } from '../ui/cn';
@@ -323,9 +323,11 @@ export function HelpPanel({
         {/* Header */}
         <div className="relative flex items-center justify-between gap-2 border-b border-subtle px-4 py-4">
           <div className="flex min-w-0 items-center gap-2.5">
-            <span className="relative grid h-9 w-9 shrink-0 place-items-center rounded-[11px] bg-gradient-to-br from-accent to-fuchsia shadow-glow">
-              <Radar className="h-5 w-5 text-white" strokeWidth={2.4} />
-            </span>
+            <img
+              src="/brand-mark.png"
+              alt="Customer-Ops"
+              className="relative h-9 w-9 shrink-0 rounded-[11px] shadow-glow"
+            />
             <div className="min-w-0">
               <div className="truncate text-[15px] font-semibold tracking-tight text-primary">Help</div>
               <div className="truncate text-[11px] text-tertiary">Every relationship, connected.</div>

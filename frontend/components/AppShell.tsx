@@ -4,7 +4,7 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import {
-  Search, Plus, LogOut, Radar, PanelLeftClose, PanelLeftOpen, Menu,
+  Search, Plus, LogOut, PanelLeftClose, PanelLeftOpen, Menu,
 } from 'lucide-react';
 import { getToken, getStoredUser, clearSession, type CustomerOpsUser } from '@/lib/api';
 import { NAV, isNavActive } from '@/lib/nav';
@@ -101,9 +101,11 @@ export function AppShell({ children, demo = false }: { children: React.ReactNode
         {/* Brand */}
         <Link href="/dashboard" className={cn('relative mb-5 flex items-center gap-2.5', collapsed ? 'justify-center px-0' : 'px-2')}>
           <span aria-hidden className="co-glow absolute -left-1 -top-1 h-10 w-10" />
-          <span className="relative grid h-9 w-9 place-items-center rounded-[11px] bg-gradient-to-br from-accent to-fuchsia shadow-glow">
-            <Radar className="h-5 w-5 text-white" strokeWidth={2.4} />
-          </span>
+          <img
+            src="/brand-mark.png"
+            alt="Customer-Ops"
+            className="relative h-9 w-9 rounded-[11px] shadow-glow"
+          />
           {!collapsed && (
             <span className="relative text-[15px] font-semibold tracking-tight">
               <span className="co-wordmark">Customer</span><span className="text-tertiary">-Ops</span>

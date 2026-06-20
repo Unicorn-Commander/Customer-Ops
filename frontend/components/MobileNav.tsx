@@ -18,7 +18,7 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import Link from 'next/link';
-import { Radar, X, LogOut } from 'lucide-react';
+import { X, LogOut } from 'lucide-react';
 import { ThemeToggle } from './ThemeToggle';
 import { IconTile } from './ui/IconTile';
 import { cn } from './ui/cn';
@@ -165,9 +165,11 @@ export function MobileNav({ open, onClose, pathname, user, onSignOut }: MobileNa
         <div className="relative flex items-center justify-between gap-2 border-b border-subtle px-4 py-4">
           <Link href="/dashboard" onClick={onClose} className="relative flex items-center gap-2.5">
             <span aria-hidden className="co-glow absolute -left-1 -top-1 h-10 w-10" />
-            <span className="relative grid h-9 w-9 place-items-center rounded-[11px] bg-gradient-to-br from-accent to-fuchsia shadow-glow">
-              <Radar className="h-5 w-5 text-white" strokeWidth={2.4} />
-            </span>
+            <img
+              src="/brand-mark.png"
+              alt="Customer-Ops"
+              className="relative h-9 w-9 rounded-[11px] shadow-glow"
+            />
             <span className="relative text-[15px] font-semibold tracking-tight">
               <span className="co-wordmark">Customer</span><span className="text-tertiary">-Ops</span>
             </span>

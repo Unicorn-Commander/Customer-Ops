@@ -1,6 +1,6 @@
 'use client';
 
-import { Radar, ShieldCheck, ArrowRight } from 'lucide-react';
+import { ShieldCheck, ArrowRight } from 'lucide-react';
 import { ssoLoginUrl } from '@/lib/api';
 import { ThemeToggle } from '@/components/ThemeToggle';
 
@@ -25,9 +25,11 @@ export default function LoginPage() {
         {/* brand mark */}
         <div className="relative mx-auto mb-6 w-fit">
           <span aria-hidden className="co-glow absolute -inset-3 h-[88px] w-[88px]" />
-          <span className="relative grid h-16 w-16 place-items-center rounded-[18px] bg-gradient-to-br from-accent to-fuchsia shadow-glow">
-            <Radar className="h-8 w-8 text-white" strokeWidth={2.2} />
-          </span>
+          <img
+            src="/brand-mark.png"
+            alt="Customer-Ops"
+            className="relative h-16 w-16 rounded-[18px] shadow-glow"
+          />
         </div>
 
         <h1 className="text-2xl font-semibold tracking-tight">
