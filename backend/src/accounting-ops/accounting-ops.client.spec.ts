@@ -63,7 +63,14 @@ function makeConfig(env: Record<string, string | undefined>): ConfigService {
 }
 
 function jsonResponse(body: unknown, ok = true, status = 200): Response {
-  return { ok, status, json: async () => body } as unknown as Response;
+  // The client reads the body via `res.text()` then SSE/JSON-parses it
+  // (callTool -> parseRpc(await res.text())), so the mock must expose text().
+  return {
+    ok,
+    status,
+    json: async () => body,
+    text: async () => JSON.stringify(body),
+  } as unknown as Response;
 }
 
 /** A JSON-RPC tools/call success envelope wrapping structuredContent. */
@@ -204,9 +211,10 @@ describe('AccountingOpsClient (Accounting-Ops MOCKED)', () => {
 
       const invoice = await client.createInvoice(ENTITLED, DRAFT);
 
-      // URL + method + JSON-RPC envelope.
+      // URL + method + JSON-RPC envelope. Trailing slash is intentional — the
+      // client POSTs to {BASE}/mcp/ for the stateless FastMCP seam.
       const [url, init] = fetchSpy.mock.calls[0];
-      expect(url).toBe('https://acct.example.test/mcp');
+      expect(url).toBe('https://acct.example.test/mcp/');
       expect(init.method).toBe('POST');
       const body = JSON.parse(init.body);
       expect(body).toMatchObject({
