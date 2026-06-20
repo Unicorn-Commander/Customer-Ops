@@ -6,7 +6,7 @@
  */
 import {
   LayoutDashboard, Users, Filter, Waypoints, Inbox,
-  Bot, HelpCircle, type LucideIcon,
+  Bot, Settings, LifeBuoy, type LucideIcon,
 } from 'lucide-react';
 
 /** A primary cockpit nav entry. */
@@ -21,18 +21,6 @@ export interface NavItem {
   bar: string;
 }
 
-/**
- * A nav entry that runs an action instead of routing (e.g. opens an overlay).
- * Rendered as a button in the rail / drawer; `action` is a discriminator the
- * shell maps to the right handler.
- */
-export interface NavAction {
-  action: 'help';
-  label: string;
-  icon: LucideIcon;
-  gradient: string;
-}
-
 export const NAV: NavItem[] = [
   { href: '/dashboard', label: 'Overview', icon: LayoutDashboard, exact: true, gradient: 'from-indigo-500 to-violet-500', bar: 'bg-violet-400' },
   { href: '/dashboard/leads', label: 'Ingestion', icon: Inbox, gradient: 'from-lime-400 to-emerald-500', bar: 'bg-emerald-400' },
@@ -40,11 +28,8 @@ export const NAV: NavItem[] = [
   { href: '/dashboard/pipeline', label: 'Pipeline', icon: Filter, gradient: 'from-amber-400 to-orange-500', bar: 'bg-amber-400' },
   { href: '/dashboard/graph', label: 'Graph', icon: Waypoints, gradient: 'from-cyan-400 to-blue-500', bar: 'bg-cyan-400' },
   { href: '/dashboard/agents', label: 'Agents', icon: Bot, gradient: 'from-violet-500 to-cyan-500', bar: 'bg-cyan-400' },
-];
-
-/** Action entries rendered below the primary nav (open overlays, etc.). */
-export const NAV_ACTIONS: NavAction[] = [
-  { action: 'help', label: 'Help', icon: HelpCircle, gradient: 'from-slate-400 to-slate-500' },
+  { href: '/dashboard/settings', label: 'Settings', icon: Settings, gradient: 'from-slate-400 to-slate-600', bar: 'bg-slate-400' },
+  { href: '/dashboard/help', label: 'Help', icon: LifeBuoy, gradient: 'from-fuchsia-500 to-pink-500', bar: 'bg-fuchsia-400' },
 ];
 
 /** Is this nav item the active route? Shared by the rail + the mobile drawer. */
