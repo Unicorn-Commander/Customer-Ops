@@ -20,6 +20,7 @@ import { Controller, Get, Param, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { User } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RequireScopes } from '../auth/decorators/require-scopes.decorator';
 import { WorkspaceMembershipGuard } from '../common/workspace/workspace-membership.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { WithWorkspaceClaim } from '../common/workspace/workspace.util';
@@ -29,6 +30,7 @@ type AuthedUser = User & Partial<WithWorkspaceClaim>;
 
 @ApiTags('overview')
 @ApiBearerAuth()
+@RequireScopes('read:overview')
 @UseGuards(JwtAuthGuard, WorkspaceMembershipGuard)
 @Controller('workspaces/:workspaceId/overview')
 export class OverviewController {

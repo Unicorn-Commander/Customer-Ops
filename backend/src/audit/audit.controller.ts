@@ -1,11 +1,13 @@
 import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { AuditAction, User } from '@prisma/client';
+import { User } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RequireScopes } from '../auth/decorators/require-scopes.decorator';
 import { WorkspaceMembershipGuard } from '../common/workspace/workspace-membership.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { WithWorkspaceClaim } from '../common/workspace/workspace.util';
 import { AuditService } from './audit.service';
+import { ListAuditQueryDto } from './dto/list-audit-query.dto';
 
 type AuthedUser = User & Partial<WithWorkspaceClaim>;
 
@@ -21,6 +23,7 @@ type AuthedUser = User & Partial<WithWorkspaceClaim>;
  */
 @ApiTags('audit')
 @ApiBearerAuth()
+@RequireScopes('read:activity')
 @UseGuards(JwtAuthGuard, WorkspaceMembershipGuard)
 @Controller('workspaces/:workspaceId/audit')
 export class AuditController {
@@ -35,16 +38,13 @@ export class AuditController {
   async list(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
-    @Query('skip') skip?: string,
-    @Query('take') take?: string,
-    @Query('action') action?: string,
-    @Query('resource') resource?: string,
+    @Query() query: ListAuditQueryDto,
   ) {
     return this.audit.findForUser(user, workspaceId, {
-      skip: skip ? parseInt(skip, 10) : undefined,
-      take: take ? parseInt(take, 10) : undefined,
-      action: action ? (action as AuditAction) : undefined,
-      resource: resource || undefined,
+      skip: query.skip,
+      take: query.take,
+      action: query.action,
+      resource: query.resource,
     });
   }
 

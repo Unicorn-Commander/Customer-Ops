@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { AuthGuard } from '@nestjs/passport';
 import { AuthService } from './auth.service';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import { RequireScopes } from './decorators/require-scopes.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { User } from '@prisma/client';
 import { MembershipService } from '../common/workspace/membership.service';
@@ -41,6 +42,7 @@ export class AuthController {
 
   @Get('profile')
   @UseGuards(JwtAuthGuard)
+  @RequireScopes()
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get current user profile' })
   @ApiResponse({ status: 200, description: 'Returns user profile' })
@@ -60,6 +62,7 @@ export class AuthController {
 
   @Get('me/workspaces')
   @UseGuards(JwtAuthGuard)
+  @RequireScopes()
   @ApiBearerAuth()
   @ApiOperation({ summary: 'List the workspaces the caller is an active member of' })
   @ApiResponse({ status: 200, description: 'Returns the caller’s active workspaces' })

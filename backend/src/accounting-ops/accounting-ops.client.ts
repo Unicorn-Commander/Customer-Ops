@@ -161,7 +161,7 @@ export class AccountingOpsClient extends AccountingOpsPort {
     // onto Accounting-Ops' uc-registry tenant for the single-workspace dogfood
     // (until the suite shares one uc-registry id — SUITE-IDENTITY §0.1). Both the
     // bearer claim and the X-Workspace-Id hint use it; AO re-gates membership.
-    const ws = this.workspaceOverride ?? ctx.workspaceId;
+    const ws = this.effectiveWorkspaceId(ctx);
     const bearer = await this.bearerFor(ws);
     if (bearer) headers['Authorization'] = `Bearer ${bearer}`;
     headers['X-Workspace-Id'] = ws;
@@ -175,6 +175,15 @@ export class AccountingOpsClient extends AccountingOpsPort {
   private get workspaceOverride(): string | null {
     const w = this.config.get<string>('AO_WORKSPACE_OVERRIDE');
     return w && w.trim() ? w.trim() : null;
+  }
+
+  /** The workspace id to address Accounting-Ops with: the override when set, else
+   *  the resolved context id. Used for BOTH the bearer claim / X-Workspace-Id
+   *  header AND the JSON-RPC body `workspace_id` — if the header addressed the
+   *  override tenant but the body carried CO's local id, AO would auth as one
+   *  tenant and write/look-up under another (mis-tenant + split idempotency). */
+  private effectiveWorkspaceId(ctx: FederationContext): string {
+    return this.workspaceOverride ?? ctx.workspaceId;
   }
 
   /** The auth mode: `static` forwards AO_SERVICE_TOKEN (legacy / dev); `brigade-sts`
@@ -453,7 +462,7 @@ export class AccountingOpsClient extends AccountingOpsPort {
     });
 
     const args: Record<string, unknown> = {
-      workspace_id: ctx.workspaceId,
+      workspace_id: this.effectiveWorkspaceId(ctx),
       entity_id: draft.entityId,
       external_source: draft.externalSource,
       external_ref: draft.externalRef,
@@ -503,7 +512,7 @@ export class AccountingOpsClient extends AccountingOpsPort {
   ): Promise<FederatedInvoice | null> {
     if (!this.baseUrl) return null;
     const raw = await this.callTool(ctx, 'get_invoice', {
-      workspace_id: ctx.workspaceId,
+      workspace_id: this.effectiveWorkspaceId(ctx),
       external_source: externalSource,
       external_ref: externalRef,
     });
@@ -517,7 +526,7 @@ export class AccountingOpsClient extends AccountingOpsPort {
   ): Promise<FederatedInvoice | null> {
     if (!this.baseUrl) return null;
     const raw = await this.callTool(ctx, 'get_invoice', {
-      workspace_id: ctx.workspaceId,
+      workspace_id: this.effectiveWorkspaceId(ctx),
       invoice_id: invoiceId,
     });
     if (!raw) return null;

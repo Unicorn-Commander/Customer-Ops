@@ -8,18 +8,25 @@
  */
 
 import { All, Controller, Logger, Req, Res, UseGuards } from '@nestjs/common';
-import { SkipThrottle } from '@nestjs/throttler';
+import { Throttle } from '@nestjs/throttler';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { Request, Response } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RequireScopes } from '../auth/decorators/require-scopes.decorator';
 import { McpService } from './mcp.service';
-import { User } from '@prisma/client';
+import { PersonalAccessToken, User } from '@prisma/client';
 
 @ApiTags('mcp')
 @ApiBearerAuth()
-// Bare @SkipThrottle() is a no-op against the named throttlers in app.module,
-// so spell them out for v5.
-@SkipThrottle({ short: true, long: true })
+// MCP is the most expensive + most attacker-interesting surface: a `co_pat_`-
+// prefixed bearer triggers the O(n) bcrypt scan in PatService BEFORE auth
+// succeeds, so an unlimited endpoint is a pre-auth CPU-exhaustion vector. Rather
+// than blanket-@SkipThrottle (the prior posture), apply an MCP-appropriate
+// per-IP cap — generous for a busy agent, but a hard ceiling on a bcrypt flood.
+@Throttle({ short: { limit: 60, ttl: 60_000 }, long: { limit: 1000, ttl: 3_600_000 } })
+// A PAT may drive MCP; the route admits any authenticated PAT and the per-tool
+// scope gate (MCP_TOOL_SCOPE_MAP) enforces least-privilege inside the dispatch.
+@RequireScopes()
 @Controller('mcp')
 export class McpController {
   private readonly logger = new Logger(McpController.name);
@@ -39,6 +46,13 @@ export class McpController {
       return;
     }
 
+    // When the caller authenticated with a PAT, pass its granted scopes + bound
+    // workspace into the server so the per-tool gate enforces least-privilege.
+    // A JWT/federation caller has no `req.pat` → null scopes → full RBAC.
+    const pat = (req as Request & { pat?: PersonalAccessToken }).pat;
+    const grantedScopes = pat ? pat.scopes : null;
+    const patWorkspaceId = pat ? pat.workspaceId : null;
+
     // Lazy require: the SDK ships dual CJS/ESM; resolve only when MCP is called.
     const sdk = require('@modelcontextprotocol/sdk/server/streamableHttp.js'); // eslint-disable-line @typescript-eslint/no-var-requires
     const StreamableHTTPServerTransport = sdk.StreamableHTTPServerTransport;
@@ -53,7 +67,7 @@ export class McpController {
     });
 
     try {
-      const server = await this.mcp.createServerForUser(user);
+      const server = await this.mcp.createServerForUser(user, grantedScopes, patWorkspaceId);
       await server.connect(transport);
       // body has already been parsed by express.json — pass it through.
       await transport.handleRequest(req, res, (req as any).body);

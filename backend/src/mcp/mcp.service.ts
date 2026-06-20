@@ -21,6 +21,7 @@ import { FollowUpDrafterAgent } from '../agents/follow-up-drafter.agent';
 import { CollectionsNudgeAgent } from '../agents/collections-nudge.agent';
 import { LeadIntakeService } from '../lead-intake/lead-intake.service';
 import { CustomerOpsTools } from './mcp.tools';
+import { mcpToolDenial } from './mcp-access';
 
 // The funnel stages, as a zod enum for tool input validation.
 const STAGE = z.enum(['LEAD', 'PROSPECT', 'CUSTOMER']);
@@ -78,8 +79,20 @@ export class McpService {
    * Build a fresh MCP server bound to one authenticated user. Returns the
    * server instance; the caller connects a transport to it. The SDK is imported
    * lazily so we pay the resolve cost only when MCP is actually called.
+   *
+   * `grantedScopes` / `patWorkspaceId`:
+   *   - both null/undefined → a JWT or Brigade-federation caller: every tool is
+   *     exposed and runs under the user's full workspace RBAC (no scope gating).
+   *   - a string[] (+ bound workspace) → a `co_pat_` caller: every tool handler
+   *     is wrapped with the MCP access gate (mcp-access.ts) so the call fails
+   *     closed unless the PAT holds the tool's required scope, and the JSON-RPC
+   *     `workspace_id` arg cannot escape the PAT's bound workspace.
    */
-  async createServerForUser(user: User) {
+  async createServerForUser(
+    user: User,
+    grantedScopes: string[] | null = null,
+    patWorkspaceId: string | null = null,
+  ) {
     // Lazy require: the SDK ships dual CJS/ESM; resolve only when MCP is called.
     const sdk = require('@modelcontextprotocol/sdk/server/mcp.js'); // eslint-disable-line @typescript-eslint/no-var-requires
     const McpServer = sdk.McpServer;
@@ -87,7 +100,7 @@ export class McpService {
     const server = new McpServer(
       {
         name: 'customer-ops',
-        version: '0.7.0',
+        version: '0.9.0',
       },
       {
         capabilities: { tools: {} },
@@ -127,6 +140,28 @@ export class McpService {
       this.collections,
       this.leads,
     );
+
+    // Wrap registerTool so EVERY tool handler is gated for a PAT caller (scope +
+    // workspace fence, via the pure mcp-access policy) before it runs. A JWT /
+    // federation caller (grantedScopes == null) passes straight through, so this
+    // is behaviour-preserving for the existing transports. Monkey-patching the
+    // factory means a tool added later can't accidentally skip the gate.
+    const rawRegister = server.registerTool.bind(server);
+    server.registerTool = (
+      name: string,
+      config: unknown,
+      handler: (args: any) => Promise<any> | any,
+    ) => {
+      const gated = async (args: any) => {
+        const denial = mcpToolDenial(name, args, grantedScopes, patWorkspaceId);
+        if (denial) {
+          this.logger.warn(`MCP tool "${name}" denied for PAT caller (user=${user.email})`);
+          return denial;
+        }
+        return handler(args);
+      };
+      return rawRegister(name, config, gated);
+    };
 
     // ── Foundation tools ──
 

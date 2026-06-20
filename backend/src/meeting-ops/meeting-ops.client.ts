@@ -120,6 +120,14 @@ export class MeetingOpsClient extends MeetingOpsPort {
     return w && w.trim() ? w.trim() : null;
   }
 
+  /** The workspace id to address Meeting-Ops with: the override when set, else the
+   *  resolved context id. Used for BOTH the bearer claim / X-Workspace-Id header
+   *  AND the JSON-RPC body `workspace_id`, so the auth tenant and the addressed
+   *  tenant never disagree. */
+  private effectiveWorkspaceId(ctx: FederationContext): string {
+    return this.workspaceOverride ?? ctx.workspaceId;
+  }
+
   /** Auth mode: `static` forwards MEETING_OPS_SERVICE_TOKEN; `brigade-sts`
    *  delegates to the shared BrigadeTokenSource (aud=meeting-ops, meetings:read). */
   private get authMode(): 'static' | 'brigade-sts' {
@@ -152,7 +160,7 @@ export class MeetingOpsClient extends MeetingOpsPort {
       // Meeting-Ops' federation MCP is Streamable-HTTP; it requires this Accept.
       Accept: 'application/json, text/event-stream',
     };
-    const ws = this.workspaceOverride ?? ctx.workspaceId;
+    const ws = this.effectiveWorkspaceId(ctx);
     const bearer = await this.bearerFor(ws);
     if (bearer) headers['Authorization'] = `Bearer ${bearer}`;
     headers['X-Workspace-Id'] = ws;
@@ -404,7 +412,7 @@ export class MeetingOpsClient extends MeetingOpsPort {
     const empty: FederatedMeetingPage = { items: [], count: 0, nextCursor: null };
     if (!this.baseUrl) return empty;
     const args: Record<string, unknown> = {
-      workspace_id: ctx.workspaceId,
+      workspace_id: this.effectiveWorkspaceId(ctx),
       contact_id: contactId,
       limit: filter?.limit ?? 25,
     };
@@ -434,7 +442,7 @@ export class MeetingOpsClient extends MeetingOpsPort {
   ): Promise<FederatedMeetingSummary[]> {
     if (!this.baseUrl) return [];
     const raw = await this.callTool(ctx, 'list_summaries_for_contact', {
-      workspace_id: ctx.workspaceId,
+      workspace_id: this.effectiveWorkspaceId(ctx),
       contact_id: contactId,
       limit: filter?.limit ?? 25,
     });
@@ -457,7 +465,7 @@ export class MeetingOpsClient extends MeetingOpsPort {
   ): Promise<FederatedActionItem[]> {
     if (!this.baseUrl) return [];
     const raw = await this.callTool(ctx, 'list_action_items_for_contact', {
-      workspace_id: ctx.workspaceId,
+      workspace_id: this.effectiveWorkspaceId(ctx),
       contact_id: contactId,
       limit: filter?.limit ?? 50,
     });

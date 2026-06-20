@@ -22,6 +22,7 @@ import { Controller, Get, Param, Post, Query, Req, UseGuards } from '@nestjs/com
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { Request } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RequireScopes } from '../auth/decorators/require-scopes.decorator';
 import { WorkspaceMembershipGuard } from '../common/workspace/workspace-membership.guard';
 import { graphKeyFor } from './graph-key';
 import { GraphService } from './graph.service';
@@ -50,6 +51,7 @@ export class GraphController {
       'federated sources (idempotent backfill). Membership-gated; no-op (0/0) when ' +
       'the graph is dormant.',
   })
+  @RequireScopes('write:customers')
   async reindex(@Req() req: Request): Promise<{ nodes: number; edges: number }> {
     return this.ingest.backfillWorkspace(workspaceIdOf(req));
   }
@@ -61,6 +63,7 @@ export class GraphController {
       'orgs (≤10) + top people (≤28), from the persisted knowledge graph. 503 ' +
       'when the graph is dormant (frontend falls back to its DB-derived graph).',
   })
+  @RequireScopes('read:customers')
   async workspaceGraph(@Req() req: Request): Promise<GraphDataDTO> {
     return this.graph.getWorkspaceGraph(graphKeyFor(workspaceIdOf(req)));
   }
@@ -71,6 +74,7 @@ export class GraphController {
       "Expand a node's 1..depth neighborhood (depth≤3, limit≤200) for the " +
       'cockpit click-to-expand. 503 when the graph is dormant.',
   })
+  @RequireScopes('read:customers')
   async neighborhood(
     @Req() req: Request,
     @Param('nodeKey') nodeKey: string,
@@ -90,6 +94,7 @@ export class GraphController {
       'Aggregate detail for one node (org: people/pipeline/last-touch; person: ' +
       'interactions/last-touch; hub: workspace rollup). 503 when dormant.',
   })
+  @RequireScopes('read:customers')
   async nodeDetail(
     @Req() req: Request,
     @Param('nodeKey') nodeKey: string,

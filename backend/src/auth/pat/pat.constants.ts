@@ -14,14 +14,17 @@ export const PAT_BCRYPT_COST = 10;
 
 /**
  * Scopes that can be granted to a PAT — Customer-Ops surfaces (resource:action).
- * Single source of truth for the create-token UI (GET /auth/pats/scopes) and
- * mint-time validation.
+ * Single source of truth for the create-token UI (GET /auth/pats/scopes),
+ * mint-time validation, AND request-time enforcement.
  *
- * v1 NOTE: scopes are validated at MINT time (unknown scopes rejected) and are
- * ADVISORY at request time — a PAT-authenticated REST/MCP call still runs under
- * the owning user's full workspace RBAC (exactly like the Project-Ops v1). When
- * a CO MCP scope-dispatch gate is added later, enforce these via the same map
- * pattern PO uses (MCP_TOOL_SCOPE_MAP).
+ * ENFORCED (was advisory in v1):
+ *   - REST: deny-by-default. A PAT can only reach a route that declares its
+ *     scope via `@RequireScopes(...)` and only if the token holds the scope
+ *     (see jwt-auth.guard.ts). An un-annotated route is PAT-inaccessible.
+ *   - MCP: each tool call is gated against MCP_TOOL_SCOPE_MAP below (fail-closed
+ *     on an unmapped tool) — see mcp.service.ts.
+ * A normal JWT session is unaffected: it always runs under the user's full
+ * workspace RBAC, scopes never apply.
  */
 export const PAT_AVAILABLE_SCOPES = [
   'read:customers',
@@ -35,3 +38,74 @@ export const PAT_AVAILABLE_SCOPES = [
 ] as const;
 
 export type PatScope = (typeof PAT_AVAILABLE_SCOPES)[number];
+
+/**
+ * Scope implication: holding a `write:*` scope implies the matching `read:*`
+ * (a token that can mutate a resource can obviously read it — the GitHub
+ * fine-grained-PAT convention). Enforcement expands the granted set through
+ * this map before checking a route/tool requirement, so a write-only token is
+ * never surprisingly denied a read it strictly subsumes. `read:overview` and
+ * `run:agents` stand alone.
+ */
+export const SCOPE_IMPLICATIONS: Record<string, PatScope[]> = {
+  'write:customers': ['read:customers'],
+  'write:activity': ['read:activity'],
+  'write:leads': ['read:leads'],
+};
+
+/**
+ * Expand a granted scope list to include everything it implies (write ⊇ read).
+ * Pure; the single helper both the REST guard and the MCP gate check against.
+ */
+export function expandScopes(granted: readonly string[]): Set<string> {
+  const set = new Set<string>(granted);
+  for (const s of granted) {
+    for (const implied of SCOPE_IMPLICATIONS[s] ?? []) set.add(implied);
+  }
+  return set;
+}
+
+/**
+ * Maps an MCP tool name → the single scope a PAT-auth'd call must hold (after
+ * write⊇read expansion). Kept in lock-step with the tools registered in
+ * `mcp.service.ts`; an MCP tool with no entry here (and not in
+ * MCP_TOOL_NO_SCOPE) fails CLOSED for a PAT caller rather than open. JWT/
+ * federation callers ignore this map entirely (full RBAC). Mirrors the
+ * Project-Ops MCP_TOOL_SCOPE_MAP convention.
+ */
+export const MCP_TOOL_SCOPE_MAP: Record<string, PatScope> = {
+  // read:customers — the relationship cockpit reads (+ federated sub-resources)
+  list_customers: 'read:customers',
+  get_customer_360: 'read:customers',
+  pipeline_board: 'read:customers',
+  list_customer_invoices: 'read:customers',
+  list_customer_outreach: 'read:customers',
+  list_customer_email: 'read:customers',
+  list_customer_meetings: 'read:customers',
+  // write:customers — relationship + federated-action mutations
+  transition_customer_stage: 'write:customers',
+  create_customer_invoice: 'write:customers',
+  start_customer_campaign: 'write:customers',
+  send_customer_email: 'write:customers',
+  // write:activity — timeline writes (notes + inbound engagement)
+  add_customer_note: 'write:activity',
+  record_customer_engagement: 'write:activity',
+  // run:agents — the draft-only relationship agents
+  triage_customer: 'run:agents',
+  draft_followup: 'run:agents',
+  draft_collections_nudge: 'run:agents',
+  // read:leads — intake observability
+  lead_intake_stats: 'read:leads',
+  list_lead_intakes: 'read:leads',
+  // write:leads — intake mutations
+  ingest_lead: 'write:leads',
+  resolve_pending_leads: 'write:leads',
+  discard_lead_intake: 'write:leads',
+};
+
+/**
+ * MCP tools any authenticated PAT may call regardless of its scopes: liveness
+ * and identity/whoami only (no tenant data beyond the caller's own membership
+ * list). Everything else must be mapped above or it fails closed.
+ */
+export const MCP_TOOL_NO_SCOPE = new Set<string>(['health', 'list_my_workspaces']);

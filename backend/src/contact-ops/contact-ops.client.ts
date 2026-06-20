@@ -48,6 +48,14 @@ import {
 } from './contact-ops.types';
 import { SeamHealth } from '../health/seam-health';
 import { shortBody } from '../health/probe-util';
+import { mapWithConcurrency } from '../common/concurrency';
+
+/**
+ * Max simultaneous get_person calls when resolving a batch of contact summaries.
+ * Caps the fan-out from a large list/overview page (up to ~500 ids) to a steady
+ * wave instead of one burst, until Contact-Ops exposes a bulk-read tool.
+ */
+const CONTACT_SUMMARY_CONCURRENCY = 8;
 
 interface JsonRpcResult {
   structuredContent?: Record<string, unknown>;
@@ -124,6 +132,14 @@ export class ContactOpsClient extends ContactOpsPort {
   private get workspaceOverride(): string | null {
     const w = this.config.get<string>('CONTACT_OPS_WORKSPACE_OVERRIDE');
     return w && w.trim() ? w.trim() : null;
+  }
+
+  /** The workspace id to address Contact-Ops with: the override when set, else the
+   *  resolved context id. Used for BOTH the bearer claim / X-Workspace-Id header
+   *  AND the workspace-projection URL path, so the token tenant and the addressed
+   *  tenant never disagree. */
+  private effectiveWorkspaceId(ctx: FederationContext): string {
+    return this.workspaceOverride ?? ctx.workspaceId;
   }
 
   /** The auth mode: `static` forwards CONTACT_OPS_SERVICE_TOKEN (legacy / dev);
@@ -348,27 +364,27 @@ export class ContactOpsClient extends ContactOpsPort {
     if (contactIds.length === 0 || !this.baseUrl) return out;
 
     // Contact-Ops has no batch "get_people by ids" tool; get_person is the
-    // typed by-id read. Resolve concurrently (bounded by the caller's page
-    // size). A future CO bulk-read tool drops straight in here.
+    // typed by-id read. Resolve with BOUNDED concurrency — a list/overview page
+    // can pass up to ~500 ids, and an unbounded Promise.all would fire that many
+    // simultaneous MCP calls (socket/pool exhaustion here, thundering herd at
+    // Contact-Ops). A future CO bulk-read tool drops straight in here.
     const unique = [...new Set(contactIds)];
-    const results = await Promise.all(
-      unique.map(async (id) => {
-        const full = await this.getContact(ctx, id);
-        return full
-          ? ({
-              contactId: full.contactId,
-              displayName: full.displayName,
-              primaryEmail: full.primaryEmail,
-              currentOrgId: full.currentOrgId,
-              currentOrgName: full.currentOrgName,
-              lastInteractionAt: full.lastInteractionAt,
-              communicationStrength: full.communicationStrength,
-              tags: full.tags,
-              etag: full.etag,
-            } as FederatedContactSummary)
-          : null;
-      }),
-    );
+    const results = await mapWithConcurrency(unique, CONTACT_SUMMARY_CONCURRENCY, async (id) => {
+      const full = await this.getContact(ctx, id);
+      return full
+        ? ({
+            contactId: full.contactId,
+            displayName: full.displayName,
+            primaryEmail: full.primaryEmail,
+            currentOrgId: full.currentOrgId,
+            currentOrgName: full.currentOrgName,
+            lastInteractionAt: full.lastInteractionAt,
+            communicationStrength: full.communicationStrength,
+            tags: full.tags,
+            etag: full.etag,
+          } as FederatedContactSummary)
+        : null;
+    });
     for (const s of results) if (s) out.set(s.contactId, s);
     return out;
   }
@@ -416,7 +432,7 @@ export class ContactOpsClient extends ContactOpsPort {
     let res: Response;
     try {
       res = await this.fetchWithTimeout(
-        `${base}/api/v1/workspaces/${encodeURIComponent(ctx.workspaceId)}`,
+        `${base}/api/v1/workspaces/${encodeURIComponent(this.effectiveWorkspaceId(ctx))}`,
         { method: 'GET', headers: await this.authHeaders(ctx) },
       );
     } catch (err) {
@@ -437,7 +453,7 @@ export class ContactOpsClient extends ContactOpsPort {
     } catch {
       return null;
     }
-    const wid = (raw['workspace_id'] as string) ?? ctx.workspaceId;
+    const wid = (raw['workspace_id'] as string) ?? this.effectiveWorkspaceId(ctx);
     return {
       workspaceId: wid,
       slug: (raw['slug'] as string) ?? '',

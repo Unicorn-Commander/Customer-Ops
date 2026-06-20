@@ -20,6 +20,7 @@ import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/co
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { User } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RequireScopes } from '../auth/decorators/require-scopes.decorator';
 import { WorkspaceMembershipGuard } from '../common/workspace/workspace-membership.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { WithWorkspaceClaim } from '../common/workspace/workspace.util';
@@ -48,6 +49,7 @@ export class LeadIntakeController {
       'intake + resolution outcome. Degrade-clean: stages PENDING when identity ' +
       'cannot be resolved yet.',
   })
+  @RequireScopes('write:leads')
   async ingest(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
@@ -58,12 +60,14 @@ export class LeadIntakeController {
 
   @Get('stats')
   @ApiOperation({ summary: 'Intake status counts (pending/resolved/failed/discarded).' })
+  @RequireScopes('read:leads')
   async stats(@CurrentUser() user: AuthedUser, @Param('workspaceId') workspaceId: string) {
     return this.leads.statsForUser(user, workspaceId);
   }
 
   @Get('intakes')
   @ApiOperation({ summary: 'List staged intakes, filterable by status/source.' })
+  @RequireScopes('read:leads')
   async list(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
@@ -74,6 +78,7 @@ export class LeadIntakeController {
 
   @Get('intakes/:id')
   @ApiOperation({ summary: 'One staged intake by id.' })
+  @RequireScopes('read:leads')
   async get(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
@@ -89,6 +94,7 @@ export class LeadIntakeController {
       'reachable — upgrade provisional ids to the canonical person_id. The ' +
       '"wire P-00059 later" reconciler.',
   })
+  @RequireScopes('write:leads')
   async resolvePending(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
@@ -99,6 +105,7 @@ export class LeadIntakeController {
 
   @Post('intakes/:id/discard')
   @ApiOperation({ summary: 'Discard a staged intake (spam/duplicate/opt-out). Terminal.' })
+  @RequireScopes('write:leads')
   async discard(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,

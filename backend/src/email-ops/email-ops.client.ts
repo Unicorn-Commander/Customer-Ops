@@ -177,7 +177,7 @@ export class EmailOpsClient extends EmailOpsPort {
     // dogfood (until the suite shares one uc-registry id — SUITE-IDENTITY §0.1).
     // Both the bearer claim and the X-Workspace-Id hint use it; Email-Ops re-gates
     // membership server-side.
-    const ws = this.workspaceOverride ?? ctx.workspaceId;
+    const ws = this.effectiveWorkspaceId(ctx);
     const bearer = await this.bearerFor(ws);
     if (bearer) headers['Authorization'] = `Bearer ${bearer}`;
     headers['X-Workspace-Id'] = ws;
@@ -191,6 +191,14 @@ export class EmailOpsClient extends EmailOpsPort {
   private get workspaceOverride(): string | null {
     const w = this.config.get<string>('EMAIL_OPS_WORKSPACE_OVERRIDE');
     return w && w.trim() ? w.trim() : null;
+  }
+
+  /** The workspace id to address Email-Ops with: the override when set, else the
+   *  resolved context id. Used for BOTH the bearer claim / X-Workspace-Id header
+   *  AND the JSON-RPC body `workspace_id`, so the auth tenant and the addressed
+   *  tenant never disagree (a divergence mis-tenants sends + splits idempotency). */
+  private effectiveWorkspaceId(ctx: FederationContext): string {
+    return this.workspaceOverride ?? ctx.workspaceId;
   }
 
   /** The auth mode: `static` forwards EMAIL_OPS_SERVICE_TOKEN (legacy / dev);
@@ -480,7 +488,7 @@ export class EmailOpsClient extends EmailOpsPort {
   async listThreadsWithContact(ctx: FederationContext, contactId: string): Promise<EmailThread[]> {
     if (!this.baseUrl) return [];
     const raw = await this.callTool(ctx, 'list_threads_with_contact', {
-      workspace_id: ctx.workspaceId,
+      workspace_id: this.effectiveWorkspaceId(ctx),
       contact_id: contactId,
     });
     if (!raw) return [];
@@ -498,7 +506,7 @@ export class EmailOpsClient extends EmailOpsPort {
   async listThreadMessages(ctx: FederationContext, threadId: string): Promise<EmailMessage[]> {
     if (!this.baseUrl) return [];
     const raw = await this.callTool(ctx, 'list_thread_messages', {
-      workspace_id: ctx.workspaceId,
+      workspace_id: this.effectiveWorkspaceId(ctx),
       thread_id: threadId,
     });
     if (!raw) return [];
@@ -528,7 +536,7 @@ export class EmailOpsClient extends EmailOpsPort {
       return null;
     }
     const args: Record<string, unknown> = {
-      workspace_id: ctx.workspaceId,
+      workspace_id: this.effectiveWorkspaceId(ctx),
       contact_id: request.contactId,
       to_address: request.toAddress,
       subject: request.subject,

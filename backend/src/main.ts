@@ -78,22 +78,32 @@ async function bootstrap() {
     const config = new DocumentBuilder()
       .setTitle('Customer-Ops API')
       .setDescription(
-        'The relationship / funnel cockpit of the Unicorn Commander suite (Phase 1 foundation).',
+        'The relationship / funnel cockpit of the Unicorn Commander suite: a multi-tenant ' +
+          'CRM that federates contacts, invoicing, outreach, email, meetings, and projects ' +
+          'from the sibling *-ops apps. Bearer auth accepts a JWT (local session, Keycloak ' +
+          'realm, or Brigade federation) or a scoped Personal Access Token (`co_pat_`).',
       )
-      .setVersion('0.1')
+      .setVersion('0.9')
       .addBearerAuth(
         {
           type: 'http',
           scheme: 'bearer',
           bearerFormat: 'JWT',
           name: 'JWT',
-          description: 'Enter JWT token',
+          description: 'JWT session/realm/federation token, or a `co_pat_` personal access token',
           in: 'header',
         },
         'JWT-auth',
       )
-      .addTag('auth', 'Authentication + SSO')
-      .addTag('health', 'Health check endpoints')
+      .addTag('auth', 'Authentication, SSO, and Personal Access Tokens')
+      .addTag('customers', 'The relationship cockpit + federated customer-360 surfaces')
+      .addTag('leads', 'Lead ingestion + the intake reconciliation buffer')
+      .addTag('overview', 'Command-center workspace rollups')
+      .addTag('agents', 'Draft-only relationship agents (human-in-the-loop)')
+      .addTag('relations-officer', 'The conversational orchestrator (advisor / operator)')
+      .addTag('graph', 'The per-workspace knowledge graph')
+      .addTag('audit', 'The append-only system audit trail')
+      .addTag('health', 'Liveness / readiness / federation-seam probes')
       .addTag('mcp', 'MCP server (agents)')
       .build();
     const document = SwaggerModule.createDocument(app, config);

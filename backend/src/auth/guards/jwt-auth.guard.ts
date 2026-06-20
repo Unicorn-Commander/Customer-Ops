@@ -11,6 +11,8 @@ import { Request } from 'express';
 import { isPatToken } from '../pat/pat.util';
 import { PatService } from '../pat/pat.service';
 import { JWT_ONLY_KEY } from '../decorators/jwt-only.decorator';
+import { REQUIRE_SCOPES_KEY } from '../decorators/require-scopes.decorator';
+import { expandScopes, PatScope } from '../pat/pat.constants';
 import { explicitRequestedWorkspaceId } from '../../common/workspace/workspace.util';
 
 /**
@@ -28,7 +30,13 @@ import { explicitRequestedWorkspaceId } from '../../common/workspace/workspace.u
  *      header MUST equal the PAT's bound workspace (else 403 — a `co_pat_` for
  *      W1 cannot act on W2). On success the PAT's workspace becomes the request's
  *      `__workspaceClaim` + `req.workspaceId`, so the GUC chokepoint
- *      (WorkspaceContextService.runForUser) scopes every query to it.
+ *      (WorkspaceContextService.runForUser) scopes every query to it. (The MCP
+ *      JSON-RPC `workspace_id` arg is invisible here — McpService re-fences it.)
+ *
+ *      SCOPE ENFORCEMENT (deny-by-default): a PAT may only reach a route that
+ *      declares its required scope via `@RequireScopes(...)`, and only if the
+ *      token holds it (write ⊇ read). An un-annotated route is PAT-inaccessible.
+ *      A JWT session ignores scopes entirely (full RBAC).
  *   3. Otherwise delegate to Passport's JWT strategy (local HS256 session,
  *      Keycloak realm RS256, Brigade federation RS256 — see jwt.strategy.ts).
  *
@@ -103,11 +111,41 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
       (resolved.user as any).__ucUid = resolved.user.keycloakId ?? resolved.user.id;
       (request as any).user = resolved.user;
       (request as any).pat = resolved.token;
+
+      // Deny-by-default scope check: a PAT may only reach a route that declares
+      // its scope, and only if the token holds it. (JWT sessions never get here.)
+      this.enforcePatScopes(context, resolved.token.scopes);
       return true;
     }
 
     const result = await super.canActivate(context);
     return result instanceof Promise ? await result : (result as boolean);
+  }
+
+  /**
+   * Enforce `@RequireScopes(...)` for a PAT-authenticated request. Deny-by-
+   * default: an un-annotated route (no metadata) is unreachable with a PAT; an
+   * `@RequireScopes()` with no scopes admits any PAT (identity/whoami routes);
+   * otherwise the token must hold every required scope after write⊇read
+   * expansion. Throws ForbiddenException on a miss; returns on success.
+   */
+  private enforcePatScopes(context: ExecutionContext, grantedScopes: string[]): void {
+    const required = this.reflector.getAllAndOverride<PatScope[]>(REQUIRE_SCOPES_KEY, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
+    if (required === undefined) {
+      throw new ForbiddenException('This route is not accessible with a personal access token.');
+    }
+    if (required.length === 0) return; // any authenticated PAT (no resource scope)
+
+    const granted = expandScopes(grantedScopes);
+    const missing = required.filter((scope) => !granted.has(scope));
+    if (missing.length > 0) {
+      throw new ForbiddenException(
+        `This personal access token is missing the required scope(s): ${missing.join(', ')}.`,
+      );
+    }
   }
 
   private async resolvePatService(): Promise<PatService> {

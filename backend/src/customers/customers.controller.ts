@@ -19,6 +19,7 @@ import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@ne
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { User } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RequireScopes } from '../auth/decorators/require-scopes.decorator';
 import { WorkspaceMembershipGuard } from '../common/workspace/workspace-membership.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { WithWorkspaceClaim } from '../common/workspace/workspace.util';
@@ -48,6 +49,7 @@ export class CustomersController {
 
   @Get()
   @ApiOperation({ summary: 'List relationships, filterable by stage/priority/owner.' })
+  @RequireScopes('read:customers')
   async list(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
@@ -58,6 +60,7 @@ export class CustomersController {
 
   @Get('pipeline')
   @ApiOperation({ summary: 'Pipeline board: relationships bucketed by funnel stage.' })
+  @RequireScopes('read:customers')
   async pipeline(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
@@ -68,6 +71,7 @@ export class CustomersController {
 
   @Post()
   @ApiOperation({ summary: 'Create a relationship keyed on a federated contactId.' })
+  @RequireScopes('write:customers')
   async create(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
@@ -78,6 +82,7 @@ export class CustomersController {
 
   @Get(':id')
   @ApiOperation({ summary: 'One relationship + its federated contact summary.' })
+  @RequireScopes('read:customers')
   async get(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
@@ -92,6 +97,7 @@ export class CustomersController {
       'Customer-360: the relationship + timeline + FEDERATED contact + invoices (Phase 3) + ' +
       'outreach + email panels (Phase 4).',
   })
+  @RequireScopes('read:customers')
   async customer360(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
@@ -102,6 +108,7 @@ export class CustomersController {
 
   @Patch(':id')
   @ApiOperation({ summary: 'Patch relationship fields (priority/owner/value/notes/next-action).' })
+  @RequireScopes('write:customers')
   async update(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
@@ -113,6 +120,7 @@ export class CustomersController {
 
   @Post(':id/transition')
   @ApiOperation({ summary: 'Move the relationship to a new funnel stage (funnel rules enforced).' })
+  @RequireScopes('write:customers')
   async transition(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
@@ -124,6 +132,7 @@ export class CustomersController {
 
   @Post(':id/lost')
   @ApiOperation({ summary: 'Mark the relationship closed-lost (orthogonal to stage).' })
+  @RequireScopes('write:customers')
   async markLost(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
@@ -135,6 +144,7 @@ export class CustomersController {
 
   @Post(':id/reopen')
   @ApiOperation({ summary: 'Re-open a closed-lost relationship.' })
+  @RequireScopes('write:customers')
   async reopen(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
@@ -145,6 +155,7 @@ export class CustomersController {
 
   @Post(':id/notes')
   @ApiOperation({ summary: 'Append a freeform note to the relationship timeline.' })
+  @RequireScopes('write:activity')
   async addNote(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
@@ -165,6 +176,7 @@ export class CustomersController {
       "This customer's invoices, federated from Accounting-Ops (live status polled). " +
       'Reports connect/entitlement affordances when AO is unconfigured / not entitled.',
   })
+  @RequireScopes('read:customers')
   async listInvoices(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
@@ -180,6 +192,7 @@ export class CustomersController {
       '(idempotent on a deterministic external_ref; requires both customer-ops + ' +
       'accounting-ops entitlements).',
   })
+  @RequireScopes('write:customers')
   async createInvoice(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
@@ -200,6 +213,7 @@ export class CustomersController {
       "This customer's outreach: live campaigns + touches federated from the Outreach app, " +
       'plus the local enrollment links. Reports connect/entitlement affordances.',
   })
+  @RequireScopes('read:customers')
   async listOutreach(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
@@ -214,6 +228,7 @@ export class CustomersController {
       "Enroll this customer's contact into an Outreach campaign/sequence (idempotent; " +
       'requires customer-ops + outreach entitlements). Federates to the Outreach app.',
   })
+  @RequireScopes('write:customers')
   async startCampaign(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
@@ -229,6 +244,7 @@ export class CustomersController {
       "Schedule a Postiz social touch for this customer's contact (idempotent; requires " +
       'customer-ops + outreach). Federates to the Outreach app.',
   })
+  @RequireScopes('write:customers')
   async scheduleSocialTouch(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
@@ -249,6 +265,7 @@ export class CustomersController {
       "This customer's email: live mailbox threads with the contact federated from the " +
       'Email-Ops app, plus the local outbound links. Reports connect/entitlement affordances.',
   })
+  @RequireScopes('read:customers')
   async listEmail(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
@@ -264,6 +281,7 @@ export class CustomersController {
       '(idempotent; requires customer-ops + email-ops). mode=send delivers now; mode=draft ' +
       'stages the agent-inbox approval surface.',
   })
+  @RequireScopes('write:customers')
   async sendEmail(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
@@ -285,6 +303,7 @@ export class CustomersController {
       '(the conversation-intelligence app). Read-only; reports connect affordance when ' +
       'Meeting-Ops is unconfigured.',
   })
+  @RequireScopes('read:customers')
   async listMeetings(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
@@ -304,6 +323,7 @@ export class CustomersController {
       'federated org/contact name. Read-only; reports a connect affordance when Project-Ops ' +
       'is unconfigured.',
   })
+  @RequireScopes('read:customers')
   async listProjects(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
@@ -324,6 +344,7 @@ export class CustomersController {
       'when the signal warrants it (one step, never skipping qualification). Logs the stage ' +
       'change + the engagement provenance in one transaction.',
   })
+  @RequireScopes('write:activity')
   async recordEngagement(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,

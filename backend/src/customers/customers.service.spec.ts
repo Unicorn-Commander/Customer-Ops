@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
-import { CustomerActivityKind, RelationshipStage, User } from '@prisma/client';
+import { AuditAction, CustomerActivityKind, RelationshipStage, User } from '@prisma/client';
 import { CustomersService } from './customers.service';
 import { WorkspaceContextService } from '../common/workspace/workspace-context.service';
 import { ContactOpsPort } from '../contact-ops/contact-ops.port';
@@ -8,6 +8,7 @@ import { OutreachPort } from '../outreach-ops/outreach-ops.port';
 import { EmailOpsPort } from '../email-ops/email-ops.port';
 import { MeetingOpsPort } from '../meeting-ops/meeting-ops.port';
 import { ProjectOpsPort } from '../project-ops/project-ops.port';
+import { AuditService } from '../audit/audit.service';
 
 /**
  * CustomersService is the relationship logic of the cockpit. These tests pin:
@@ -1297,5 +1298,255 @@ describe('CustomersService — the engagement → funnel-stage hook (Phase 4)', 
     await expect(
       svc.recordEngagementInTx(tx, 'missing', { kind: 'replied' }, UC_UID),
     ).rejects.toThrow(NotFoundException);
+  });
+});
+
+// ============================================================================
+// Phase 7 — the *ForUser audit side-effects (the append-only trail).
+//
+// Every relationship WRITE entry point records exactly one audit event AFTER the
+// RLS write commits, with the ALREADY-RESOLVED workspaceId (so the audit row's
+// workspace matches the write's GUC WITH CHECK) and the acting ucUid. These pin
+// each write path's (action, resource, details) — including the engagement
+// consistency fix that just landed (recordEngagementForUser now audits the same
+// state change /transition does, with advanced + the toStage when it advances).
+//
+// The audit dep is @Optional() and sits in the 10th constructor slot (after the
+// @Optional leadLabels + graphIngest). The existing makeService() omits all three
+// trailing deps — that 7-arg construction is left untouched, which proves the
+// `this.audit?.log(...)` path no-ops cleanly when the audit module is absent.
+// ============================================================================
+describe('CustomersService — *ForUser audit side-effects (Phase 7; AuditService mocked)', () => {
+  /** Build the service with a mock AuditService injected in the trailing
+   *  @Optional() position (workspaces, contact, accounting, outreach, email,
+   *  meeting, project, leadLabels?, graphIngest?, audit?). */
+  function makeAuditedService(opts?: { contact?: Partial<ContactOpsPort> }) {
+    const contact: ContactOpsPort = {
+      getContact: jest.fn().mockResolvedValue(null),
+      getContactSummaries: jest.fn().mockResolvedValue(new Map()),
+      listContacts: jest.fn().mockResolvedValue({ items: [], count: 0, nextCursor: null }),
+      getWorkspaceProjection: jest.fn().mockResolvedValue(null),
+      ...(opts?.contact ?? {}),
+    } as any;
+    const dormant = {
+      isConfigured: jest.fn().mockReturnValue(false),
+      checkEntitlement: jest.fn().mockReturnValue({ allowed: false, mode: 'enforce', reason: 'x' }),
+    };
+    const accounting = { ...dormant } as unknown as AccountingOpsPort;
+    const outreach = { ...dormant } as unknown as OutreachPort;
+    const email = { ...dormant } as unknown as EmailOpsPort;
+    const meeting = { isConfigured: jest.fn().mockReturnValue(false) } as unknown as MeetingOpsPort;
+    const project = { isConfigured: jest.fn().mockReturnValue(false) } as unknown as ProjectOpsPort;
+
+    const lastTx = { current: null as any };
+    const workspaces = {
+      resolveAuthorized: jest.fn().mockResolvedValue(WS),
+      runForUser: jest.fn(async (_user: User, fn: any) => fn(lastTx.current)),
+      runInWorkspace: jest.fn(async (_ws: string, _uc: any, fn: any) => fn(lastTx.current)),
+    } as unknown as WorkspaceContextService;
+
+    const audit = { log: jest.fn().mockResolvedValue(null) } as unknown as AuditService;
+
+    const svc = new CustomersService(
+      workspaces,
+      contact,
+      accounting,
+      outreach,
+      email,
+      meeting,
+      project,
+      undefined, // leadLabels (@Optional)
+      undefined, // graphIngest (@Optional)
+      audit, // @Optional, 10th slot
+    );
+    return { svc, audit, lastTx, workspaces };
+  }
+
+  it('createForUser → audit CREATE / customer / {contactId, stage} with the resolved workspace + actor', async () => {
+    const { svc, audit, lastTx } = makeAuditedService();
+    const { tx } = makeTx(makeRow());
+    lastTx.current = tx;
+
+    const created = await svc.createForUser(aaron, { contactId: 'contact-9', source: 'webform' }, WS);
+
+    expect(audit.log).toHaveBeenCalledTimes(1);
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: WS,
+        userId: UC_UID,
+        action: AuditAction.CREATE,
+        resource: 'customer',
+        resourceId: created.id,
+        details: { contactId: 'contact-9', stage: RelationshipStage.LEAD },
+      }),
+    );
+  });
+
+  it('updateForUser → audit UPDATE / customer / {fields:[...]} listing the patched keys', async () => {
+    const { svc, audit, lastTx } = makeAuditedService();
+    const { tx } = makeTx(makeRow({ ownerUserKey: 'old' }));
+    lastTx.current = tx;
+
+    await svc.updateForUser(aaron, 'cust-1', { ownerUserKey: 'new', notes: 'hi' }, WS);
+
+    expect(audit.log).toHaveBeenCalledTimes(1);
+    const dto = (audit.log as jest.Mock).mock.calls[0][0];
+    expect(dto).toMatchObject({
+      workspaceId: WS,
+      userId: UC_UID,
+      action: AuditAction.UPDATE,
+      resource: 'customer',
+      resourceId: 'cust-1',
+    });
+    // The details enumerate exactly the DTO keys that were sent.
+    expect(dto.details.fields).toEqual(expect.arrayContaining(['ownerUserKey', 'notes']));
+    expect(dto.details.fields).toHaveLength(2);
+  });
+
+  it('transitionForUser → audit UPDATE / customer / {kind:transition, toStage}', async () => {
+    const { svc, audit, lastTx } = makeAuditedService();
+    const { tx } = makeTx(makeRow({ stage: RelationshipStage.LEAD }));
+    lastTx.current = tx;
+
+    await svc.transitionForUser(aaron, 'cust-1', { toStage: RelationshipStage.PROSPECT }, WS);
+
+    expect(audit.log).toHaveBeenCalledTimes(1);
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: WS,
+        action: AuditAction.UPDATE,
+        resource: 'customer',
+        resourceId: 'cust-1',
+        details: { kind: 'transition', toStage: RelationshipStage.PROSPECT },
+      }),
+    );
+  });
+
+  it('markLostForUser → audit UPDATE / customer / {kind:mark_lost}', async () => {
+    const { svc, audit, lastTx } = makeAuditedService();
+    const { tx } = makeTx(makeRow({ stage: RelationshipStage.PROSPECT, isLost: false }));
+    lastTx.current = tx;
+
+    await svc.markLostForUser(aaron, 'cust-1', { reason: 'lost to a competitor' }, WS);
+
+    expect(audit.log).toHaveBeenCalledTimes(1);
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: AuditAction.UPDATE,
+        resource: 'customer',
+        resourceId: 'cust-1',
+        details: { kind: 'mark_lost' },
+      }),
+    );
+  });
+
+  it('reopenForUser → audit UPDATE / customer / {kind:reopen}', async () => {
+    const { svc, audit, lastTx } = makeAuditedService();
+    const { tx } = makeTx(makeRow({ isLost: true, lostReason: 'x', closedLostAt: new Date() }));
+    lastTx.current = tx;
+
+    await svc.reopenForUser(aaron, 'cust-1', WS);
+
+    expect(audit.log).toHaveBeenCalledTimes(1);
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: AuditAction.UPDATE,
+        resource: 'customer',
+        resourceId: 'cust-1',
+        details: { kind: 'reopen' },
+      }),
+    );
+  });
+
+  it('addNoteForUser → audit CREATE / customer_note (a distinct resource)', async () => {
+    const { svc, audit, lastTx } = makeAuditedService();
+    const { tx } = makeTx(makeRow());
+    lastTx.current = tx;
+
+    await svc.addNoteForUser(aaron, 'cust-1', { body: 'left a voicemail' }, WS);
+
+    expect(audit.log).toHaveBeenCalledTimes(1);
+    expect(audit.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: AuditAction.CREATE,
+        resource: 'customer_note',
+        resourceId: 'cust-1',
+        details: { kind: 'note' },
+      }),
+    );
+  });
+
+  describe('recordEngagementForUser — the consistency fix (advancing vs non-advancing)', () => {
+    it('an ADVANCING signal (replied on a LEAD) → details {kind:engagement, signal, advanced:true, toStage}', async () => {
+      const { svc, audit, lastTx } = makeAuditedService();
+      const { tx } = makeTx(makeRow({ stage: RelationshipStage.LEAD }));
+      lastTx.current = tx;
+
+      const out = await svc.recordEngagementForUser(
+        aaron,
+        'cust-1',
+        { kind: 'replied', source: 'email-ops' },
+        WS,
+      );
+      expect(out.advanced).toBe(true);
+
+      expect(audit.log).toHaveBeenCalledTimes(1);
+      expect(audit.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workspaceId: WS,
+          userId: UC_UID,
+          action: AuditAction.UPDATE,
+          resource: 'customer',
+          resourceId: 'cust-1',
+          // The advancing branch carries the toStage so the audit matches the
+          // /transition row for the same state change.
+          details: {
+            kind: 'engagement',
+            signal: 'replied',
+            advanced: true,
+            toStage: RelationshipStage.PROSPECT,
+          },
+        }),
+      );
+    });
+
+    it('a NON-advancing signal (opened) → details {kind:engagement, signal, advanced:false} with NO toStage key', async () => {
+      const { svc, audit, lastTx } = makeAuditedService();
+      const { tx } = makeTx(makeRow({ stage: RelationshipStage.LEAD }));
+      lastTx.current = tx;
+
+      const out = await svc.recordEngagementForUser(aaron, 'cust-1', { kind: 'opened' }, WS);
+      expect(out.advanced).toBe(false);
+
+      expect(audit.log).toHaveBeenCalledTimes(1);
+      const dto = (audit.log as jest.Mock).mock.calls[0][0];
+      expect(dto.details).toEqual({ kind: 'engagement', signal: 'opened', advanced: false });
+      // No stage moved → the toStage key is omitted entirely (not undefined/null).
+      expect('toStage' in dto.details).toBe(false);
+    });
+
+    it('a BOUNCE never advances → advanced:false, no toStage', async () => {
+      const { svc, audit, lastTx } = makeAuditedService();
+      const { tx } = makeTx(makeRow({ stage: RelationshipStage.LEAD }));
+      lastTx.current = tx;
+
+      await svc.recordEngagementForUser(aaron, 'cust-1', { kind: 'bounced', source: 'email-ops' }, WS);
+      const dto = (audit.log as jest.Mock).mock.calls[0][0];
+      expect(dto.details).toMatchObject({ kind: 'engagement', signal: 'bounced', advanced: false });
+      expect('toStage' in dto.details).toBe(false);
+    });
+  });
+
+  it('every write resolves the workspace exactly once and passes THAT id to audit.log', async () => {
+    // Pin the load-bearing invariant: the audited workspaceId is the resolved one
+    // (so the audit row lands under the same GUC the write committed in), not a
+    // raw requested id.
+    const { svc, audit, lastTx, workspaces } = makeAuditedService();
+    const { tx } = makeTx(makeRow());
+    lastTx.current = tx;
+
+    await svc.createForUser(aaron, { contactId: 'contact-9' }, 'requested-but-overridden');
+    expect(workspaces.resolveAuthorized).toHaveBeenCalledTimes(1);
+    expect((audit.log as jest.Mock).mock.calls[0][0].workspaceId).toBe(WS);
   });
 });

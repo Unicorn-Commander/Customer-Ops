@@ -272,46 +272,27 @@ export class CustomersService {
         requestedWorkspaceId,
       );
 
-    // Federate the contact detail (read-time; never persisted).
+    // Federate the contact detail (read-time; never persisted). Resolved FIRST
+    // because the Project-Ops panel matches on the contact's org/name.
     const contact = await this.contactOps.getContact(fedCtx, relationship.contactId);
 
-    // Federate the invoice panel: poll AO for each linked invoice's live status
-    // (best-effort; degrade-clean). Outside the DB tx — federation must not hold
-    // a transaction open. Refreshes the cached projection on the link rows.
-    const invoices = await this.buildInvoicePanel(user, invoiceLinks, requestedWorkspaceId);
-
-    // ── Phase-4 federation panels (replace the formerly-inert email/campaign
-    // slots): live outreach campaigns/touches + the local enrollment links, and
-    // live mailbox threads + the local outbound links. Federation is best-effort
-    // + degrade-clean — outside the DB tx, never holding a transaction open.
-    const outreachPanel = await this.buildOutreachPanel(
-      user,
-      relationship.contactId,
-      outreachLinks,
-      requestedWorkspaceId,
-    );
-    const emailPanel = await this.buildEmailPanel(
-      user,
-      relationship.contactId,
-      emailLinks,
-      requestedWorkspaceId,
-    );
-
-    // ── Phase-5 federation panel (replaces the formerly-inert meeting slot):
-    // the customer's meetings + summaries + action items, FEDERATED from
-    // Meeting-Ops at read time (never copied; no local Meeting-Ops table).
-    // Best-effort + degrade-clean — outside the DB tx, never holding one open.
-    const meetingPanel = await this.buildMeetingPanel(
-      user,
-      relationship.contactId,
-      requestedWorkspaceId,
-    );
-
-    // ── Project-Ops federation panel: the projects / delivery work Project-Ops
-    // is running for this account, matched on the (already-federated) contact's
-    // organization / name. Read-only, best-effort + degrade-clean — outside the
-    // DB tx, never holding one open; Customer-Ops persists no project state.
-    const projectPanel = await this.buildProjectPanel(user, contact, requestedWorkspaceId);
+    // The five federation panels are INDEPENDENT, each internally best-effort +
+    // degrade-clean (never throws; returns a degrade affordance on failure) and
+    // run OUTSIDE the DB tx. Fan them out concurrently so the 360's latency is
+    // max(panel) not sum(panel) — a single slow sibling no longer stacks onto
+    // every other. (Each build*Panel already parallelizes its own sub-calls.)
+    const [invoices, outreachPanel, emailPanel, meetingPanel, projectPanel] = await Promise.all([
+      // Accounting-Ops: poll each linked invoice's live status; refresh the cache.
+      this.buildInvoicePanel(user, invoiceLinks, requestedWorkspaceId),
+      // Outreach app: live campaigns/touches + the local enrollment links.
+      this.buildOutreachPanel(user, relationship.contactId, outreachLinks, requestedWorkspaceId),
+      // Email-Ops: live mailbox threads + the local outbound links.
+      this.buildEmailPanel(user, relationship.contactId, emailLinks, requestedWorkspaceId),
+      // Meeting-Ops: the customer's meetings + summaries + action items.
+      this.buildMeetingPanel(user, relationship.contactId, requestedWorkspaceId),
+      // Project-Ops: the delivery work for this account (matched on contact org/name).
+      this.buildProjectPanel(user, contact, requestedWorkspaceId),
+    ]);
 
     return {
       relationship: this.serialize(relationship),
@@ -708,10 +689,44 @@ export class CustomersService {
     // so a poll does NOT require the dual SKU — history stays visible). Refresh
     // the cache best-effort; a failed poll leaves the last-cached status.
     if (configured && fedCtx && links.length > 0) {
-      const refreshed = await Promise.all(
-        links.map((l) => this.pollAndRefreshLink(user, fedCtx, l, requestedWorkspaceId)),
+      // 1) Poll every link concurrently — pure federation, no DB tx held open.
+      const polled = await Promise.all(
+        links.map(async (l) => ({ link: l, invoice: await this.pollInvoice(fedCtx, l) })),
       );
-      items = refreshed;
+      // 2) Persist all refreshed projections in ONE workspace tx (was one tx per
+      //    link — up to 100 transactions on a many-invoice 360). Best-effort: a
+      //    batch write failure degrades to the freshly-polled values for render.
+      const toWrite = polled.filter((p) => p.invoice);
+      let updatedById = new Map<string, Record<string, any>>();
+      if (toWrite.length > 0) {
+        try {
+          updatedById = await this.workspaces.runForUser(
+            user,
+            async (tx) => {
+              const m = new Map<string, Record<string, any>>();
+              for (const { link, invoice } of toWrite) {
+                const u = await tx.customerInvoiceLink.update({
+                  where: { id: link.id },
+                  data: this.invoiceCacheUpdate(invoice!),
+                });
+                m.set(link.id, u as Record<string, any>);
+              }
+              return m;
+            },
+            requestedWorkspaceId,
+          );
+        } catch (err) {
+          this.logger.warn(`AO invoice cache batch refresh failed: ${(err as Error).message}`);
+        }
+      }
+      // 3) Render: the refreshed row where the write landed, the polled overlay
+      //    where it didn't, and last-cached where the poll itself failed.
+      items = polled.map(({ link, invoice }) => {
+        const updated = updatedById.get(link.id);
+        if (updated) return this.serializeInvoiceLink(updated);
+        if (invoice) return { ...this.serializeInvoiceLink(link), ...this.invoiceProjection(invoice) };
+        return this.serializeInvoiceLink(link);
+      });
     }
 
     return {
@@ -728,43 +743,21 @@ export class CustomersService {
   }
 
   /**
-   * Poll one link via AO get_invoice (by AO id if known, else by (source, ref))
-   * and refresh its cached projection. Returns the serialized (refreshed) link.
-   * Best-effort: a poll failure returns the link unchanged (last-cached).
+   * Poll one link via AO get_invoice (by AO id if known, else by (source, ref)).
+   * Pure read — no DB write (the caller batches the cache refresh into a single
+   * workspace tx). Best-effort: returns null on a poll failure (last-cached).
    */
-  private async pollAndRefreshLink(
-    user: User & Partial<WithWorkspaceClaim>,
+  private async pollInvoice(
     fedCtx: InvoiceFederationContext,
     link: Record<string, any>,
-    requestedWorkspaceId?: string | null,
-  ) {
-    let invoice: FederatedInvoice | null = null;
+  ): Promise<FederatedInvoice | null> {
     try {
-      invoice = link.aoInvoiceId
+      return link.aoInvoiceId
         ? await this.accountingOps.getInvoiceById(fedCtx, link.aoInvoiceId)
         : await this.accountingOps.getInvoiceByRef(fedCtx, link.externalSource, link.externalRef);
     } catch (err) {
       this.logger.warn(`AO poll failed for link ${link.id}: ${(err as Error).message}`);
-    }
-    if (!invoice) return this.serializeInvoiceLink(link);
-
-    // Persist the refreshed cache (RLS-scoped). Best-effort — a write failure
-    // must not break rendering.
-    try {
-      const updated = await this.workspaces.runForUser(
-        user,
-        (tx) =>
-          tx.customerInvoiceLink.update({
-            where: { id: link.id },
-            data: this.invoiceCacheUpdate(invoice!),
-          }),
-        requestedWorkspaceId,
-      );
-      return this.serializeInvoiceLink(updated);
-    } catch (err) {
-      this.logger.warn(`AO link cache refresh failed for ${link.id}: ${(err as Error).message}`);
-      // Return the freshly-polled values even if the cache write didn't land.
-      return { ...this.serializeInvoiceLink(link), ...this.invoiceProjection(invoice) };
+      return null;
     }
   }
 
@@ -1282,11 +1275,21 @@ export class CustomersService {
     requestedWorkspaceId?: string | null,
   ) {
     const ucUid = ucUidOf(user);
-    return this.workspaces.runForUser(
-      user,
-      (tx) => this.recordEngagementInTx(tx, customerId, dto, ucUid),
-      requestedWorkspaceId,
+    const workspaceId = await this.workspaces.resolveAuthorized(user, requestedWorkspaceId);
+    const result = await this.workspaces.runInWorkspace(workspaceId, ucUid, (tx) =>
+      this.recordEngagementInTx(tx, customerId, dto, ucUid),
     );
+    // An engagement can advance the funnel stage — the same state change that
+    // /transition audits. Record it so the audit trail is consistent across both
+    // entry points (this was the one relationship write with no audit row).
+    const toStage = 'toStage' in result ? result.toStage : undefined;
+    await this.auditWrite(workspaceId, ucUid, AuditAction.UPDATE, 'customer', customerId, {
+      kind: 'engagement',
+      signal: dto.kind,
+      advanced: result.advanced,
+      ...(toStage ? { toStage } : {}),
+    });
+    return result;
   }
 
   /**

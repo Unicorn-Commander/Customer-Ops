@@ -21,6 +21,7 @@ import { Body, Controller, Param, Post, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { User } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RequireScopes } from '../auth/decorators/require-scopes.decorator';
 import { WorkspaceMembershipGuard } from '../common/workspace/workspace-membership.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { WithWorkspaceClaim } from '../common/workspace/workspace.util';
@@ -48,6 +49,7 @@ export class RelationsOfficerController {
       'relationship write (transition/note/mark-lost/reopen) for you to confirm. ' +
       'Never executes here; degrade-clean when inference is not connected.',
   })
+  @RequireScopes('run:agents')
   async chat(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
@@ -67,6 +69,7 @@ export class RelationsOfficerController {
       'On confirm it executes AS you via the matching relationship write (audited via ' +
       'a customer activity); on cancel/expired/missing nothing is changed.',
   })
+  @RequireScopes('write:customers')
   async confirmAction(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,

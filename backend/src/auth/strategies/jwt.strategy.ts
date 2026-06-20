@@ -59,6 +59,13 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
+      // Explicit algorithm allow-list. Without it, passport-jwt verifies with
+      // whatever `alg` the (untrusted) token header names — the classic RS256→
+      // HS256 confusion vector (sign HS256 using the RSA *public* key as the HMAC
+      // secret). We accept only our two real families: HS256 (local session) and
+      // RS256 (Keycloak / Brigade JWKS). `alg:none` and anything else are
+      // rejected before secretOrKeyProvider's key ever applies.
+      algorithms: ['HS256', 'RS256'],
       // secretOrKeyProvider runs per-request; inspect the JWT header + payload
       // and resolve the right key on the fly. Provider must call done(err, key).
       secretOrKeyProvider: (
@@ -98,7 +105,13 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
             });
             return;
           }
-          // Default: locally-signed HS256 JWT
+          // Default: locally-signed HS256 JWT. Fail CLOSED if JWT_SECRET is
+          // unset — verifying against an empty key would accept any HS256 token
+          // an attacker signs with the empty string. Never silently allow it.
+          if (!localSecret) {
+            done(new Error('JWT_SECRET is not configured; cannot verify a local HS256 token'));
+            return;
+          }
           done(null, localSecret);
         } catch (err) {
           done(err);
@@ -109,6 +122,16 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     this.jwks = jwks;
     this.brigadeTrustedIssuers = new Set(brigadeJwksByIss.keys());
     this.brigadeExpectedAudience = brigadeExpectedAudience;
+
+    // Local HS256 sessions are the primary login path (AuthService signs them
+    // after the Keycloak callback), so an empty JWT_SECRET is a misconfiguration
+    // that breaks login AND would be a forgery hole — the provider above now
+    // fails closed on it, but surface it loudly at boot so it's caught fast.
+    if (!localSecret) {
+      this.logger.error(
+        'JWT_SECRET is empty — local HS256 session tokens cannot be issued or verified. Set JWT_SECRET.',
+      );
+    }
 
     if (realmJwksUri) {
       this.logger.log(`Keycloak realm JWT validation enabled via ${realmJwksUri}`);

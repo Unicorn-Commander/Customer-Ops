@@ -28,6 +28,7 @@ import { ConfigService } from '@nestjs/config';
 import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { AuditAction, User } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RequireScopes } from '../auth/decorators/require-scopes.decorator';
 import { WorkspaceMembershipGuard } from '../common/workspace/workspace-membership.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { WithWorkspaceClaim, ucUidOf } from '../common/workspace/workspace.util';
@@ -55,6 +56,7 @@ const TIER_QUERY = {
 
 @ApiTags('agents')
 @ApiBearerAuth()
+@RequireScopes('run:agents')
 @UseGuards(JwtAuthGuard, WorkspaceMembershipGuard)
 @Controller('workspaces/:workspaceId/customers/:id/agents')
 export class AgentsController {
