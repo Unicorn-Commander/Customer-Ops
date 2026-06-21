@@ -3,6 +3,34 @@
 All notable changes to Customer-Ops. Versions track the app milestone; the MCP
 tool surface version (`mcp.service.ts`) tracks alongside.
 
+## [0.11.0] — 2026-06-20 — "All federation rides Brigade"
+
+Closes the last static‑token federation seam: Outreach now exchanges through
+Unicorn Brigade (RFC‑8693) like every sibling, so cross‑app federation has a
+single trust path.
+
+### Added / Changed
+- **Outreach → Brigade.** The Outreach client gains a selectable auth mode
+  (`OUTREACH_AUTH_MODE: static | brigade-sts`, default `static`) mirroring the
+  Contact/Accounting/Email/Meeting/Project‑Ops clients: in `brigade-sts` it mints
+  a `customer-ops` client‑credentials token and exchanges it at Brigade for an
+  `aud=outreach`, workspace‑bound bearer. Adds `OUTREACH_WORKSPACE_OVERRIDE`
+  (maps the local workspace id to the canonical one) applied to BOTH the exchange
+  claim and the body `workspace_id` arg so the token claim and the addressed
+  tenant always match, plus an optional `OUTREACH_SCOPE`
+  (default `outreach:read outreach:send`). Outreach was the last client without a
+  Brigade path; **all six cross‑app seams now support `brigade-sts`.**
+- Dormant until the Outreach app exists (`OUTREACH_BASE_URL` unset =
+  degrade‑clean) — no live behavior change; the seam is now Brigade‑ready.
+
+### Verified (dogfood, live)
+- The five active seams (Contact/Accounting/Email/Meeting/Project‑Ops) run
+  `brigade-sts`; the CC‑mint → RFC‑8693 exchange chain returns `200` end‑to‑end
+  (`customer-ops` is an allowed Brigade actor for `aud=contact-ops`).
+- Agent inference routes through the Ops‑Center gateway (`unicorn-litellm:4000`,
+  no‑think Qwen3.6‑35B) and returns token usage for metering.
+- Tests: +5 `brigade-sts` specs; full backend suite **467 green**, `tsc` clean.
+
 ## [0.10.0] — 2026-06-20 — "Workspace & Profile settings"
 
 Turns the last two "Coming" settings cards into real surfaces.

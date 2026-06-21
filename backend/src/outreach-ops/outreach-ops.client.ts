@@ -27,14 +27,15 @@
  *      Application errors come back HTTP 200 with result.isError=true OR a
  *      JSON-RPC `error` — both handled.
  *
- * AUTH: Customer-Ops calls Outreach as a service. The bearer is a federation
- * token carrying the addressed `workspace_id` claim + `aud=outreach`. Minting
- * that token is Brigade's job (RFC-8693 exchange); until that seam is wired this
- * client forwards a configured service token (OUTREACH_SERVICE_TOKEN) and
- * addresses the workspace via the documented precedence (X-Workspace-Id header,
- * which Outreach re-gates against membership). The mint seam is isolated in
- * `authHeaders()` so swapping to Brigade is a one-method change — exactly like
- * the Contact-Ops / Accounting-Ops clients.
+ * AUTH: Customer-Ops calls Outreach as a service. The auth MODE is selectable
+ * (mirrors the Contact-Ops / Meeting-Ops / Accounting-Ops / Project-Ops clients):
+ *   - `static` (default): forward a configured service token (OUTREACH_SERVICE_TOKEN);
+ *   - `brigade-sts`: mint a customer-ops client-credentials token and exchange it
+ *     at Brigade (RFC-8693) for an `aud=outreach`, workspace-bound token.
+ * The bearer carries the addressed `workspace_id` claim; X-Workspace-Id rides
+ * along as a hint, which Outreach re-gates against membership (never the authz
+ * boundary). The mint seam is isolated in `authHeaders()` / `bearerFor()` so the
+ * mode is a one-knob change.
  *
  * ENTITLEMENT (binding): triggering outreach (enroll / schedule) requires BOTH
  * `customer-ops` AND `outreach` on the bearer. `checkEntitlement` is the pure
@@ -53,6 +54,7 @@
 
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { BrigadeTokenSource } from '../common/federation/brigade-token-source';
 import { OutreachPort, FederationContext } from './outreach-ops.port';
 import {
   CampaignEnrollment,
@@ -110,7 +112,10 @@ export class OutreachClient extends OutreachPort {
   private readonly logger = new Logger(OutreachClient.name);
   private rpcId = 0;
 
-  constructor(private readonly config: ConfigService) {
+  constructor(
+    private readonly config: ConfigService,
+    private readonly brigade: BrigadeTokenSource,
+  ) {
     super();
     if (!this.baseUrl) {
       this.logger.warn(
@@ -120,7 +125,10 @@ export class OutreachClient extends OutreachPort {
           'the next track; this seam is mockable + degrade-clean until it lands.)',
       );
     } else {
-      this.logger.log(`Outreach federation target: ${this.baseUrl} (mode=${this.mode()})`);
+      this.logger.log(
+        `Outreach federation target: ${this.baseUrl} ` +
+          `(auth=${this.authMode}, entitlement=${this.mode()})`,
+      );
     }
   }
 
@@ -156,19 +164,63 @@ export class OutreachClient extends OutreachPort {
     return this.baseUrl !== null;
   }
 
+  // --- auth (Brigade token-mint seam) ------------------------------------
+
+  /** The auth mode: `static` forwards OUTREACH_SERVICE_TOKEN (legacy / dev);
+   *  `brigade-sts` mints a customer-ops client-credentials token and exchanges it
+   *  at Brigade (RFC-8693) for an outreach-audience, workspace-bound token.
+   *  DEFAULT `static` so behavior is unchanged when OUTREACH_AUTH_MODE is unset. */
+  private get authMode(): 'static' | 'brigade-sts' {
+    return this.config.get<string>('OUTREACH_AUTH_MODE')?.trim() === 'brigade-sts'
+      ? 'brigade-sts'
+      : 'static';
+  }
+
+  /** Optional override mapping CO's local workspace id to the canonical id
+   *  Outreach recognizes (OUTREACH_WORKSPACE_OVERRIDE). Null = pass the resolved
+   *  workspace id through unchanged. Mirrors the Contact-Ops / Project-Ops seams. */
+  private get workspaceOverride(): string | null {
+    const w = this.config.get<string>('OUTREACH_WORKSPACE_OVERRIDE');
+    return w && w.trim() ? w.trim() : null;
+  }
+
+  /** The workspace id actually addressed — the override if set, else the request's.
+   *  Used for BOTH the bearer's `workspace_id` claim and the body `workspace_id`
+   *  arg so the token claim and the addressed tenant always match (a mismatch
+   *  would trip Outreach's server-side re-gate). */
+  private effectiveWorkspaceId(ctx: FederationContext): string {
+    return this.workspaceOverride ?? ctx.workspaceId;
+  }
+
+  /** Resolve the bearer per the auth mode. `static` forwards OUTREACH_SERVICE_TOKEN;
+   *  `brigade-sts` delegates to the shared BrigadeTokenSource (mint customer-ops CC →
+   *  exchange for aud=outreach). Degrade-clean: a failed exchange returns null and
+   *  the caller sends no bearer (the call then 401s and degrades to empty/null). */
+  private async bearerFor(workspaceId: string): Promise<string | null> {
+    if (this.authMode === 'static') {
+      const t = this.config.get<string>('OUTREACH_SERVICE_TOKEN');
+      return t && t.trim() ? t.trim() : null;
+    }
+    return this.brigade.exchangedToken({
+      audience: this.config.get<string>('OUTREACH_AUDIENCE')?.trim() || 'outreach',
+      scope: this.config.get<string>('OUTREACH_SCOPE')?.trim() || 'outreach:read outreach:send',
+      workspaceId,
+    });
+  }
+
   /**
-   * Build the auth headers for a federation call to Outreach. This is the
-   * Brigade token-mint seam: today it forwards a configured service token; the
-   * Brigade change swaps in an RFC-8693 exchange minting a per-request token with
-   * `aud=outreach` + the addressed `workspace_id` claim. X-Workspace-Id rides
-   * along for Outreach's per-request addressing; Outreach re-gates membership
-   * server-side, so the header is a hint, never the authz boundary.
+   * Build the auth headers for a federation call to Outreach. The bearer comes from
+   * `bearerFor` (a static service token or a Brigade RFC-8693 exchange, per mode),
+   * carrying `aud=outreach` + the addressed `workspace_id` claim. X-Workspace-Id
+   * rides along as a per-request hint; Outreach re-gates membership server-side, so
+   * the header is never the authz boundary.
    */
-  private authHeaders(ctx: FederationContext): Record<string, string> {
+  private async authHeaders(ctx: FederationContext): Promise<Record<string, string>> {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    const token = this.config.get<string>('OUTREACH_SERVICE_TOKEN');
-    if (token && token.trim()) headers['Authorization'] = `Bearer ${token.trim()}`;
-    headers['X-Workspace-Id'] = ctx.workspaceId;
+    const ws = this.effectiveWorkspaceId(ctx);
+    const bearer = await this.bearerFor(ws);
+    if (bearer) headers['Authorization'] = `Bearer ${bearer}`;
+    headers['X-Workspace-Id'] = ws;
     if (ctx.ucUid) headers['X-Uc-Uid'] = ctx.ucUid;
     return headers;
   }
@@ -240,7 +292,7 @@ export class OutreachClient extends OutreachPort {
     try {
       res = await this.fetchWithTimeout(`${base}/mcp`, {
         method: 'POST',
-        headers: this.authHeaders(ctx),
+        headers: await this.authHeaders(ctx),
         body: JSON.stringify(body),
       });
     } catch (err) {
@@ -308,8 +360,7 @@ export class OutreachClient extends OutreachPort {
       return { seam, configured: false, ok: false, status: null, detail: 'not-configured', latencyMs: null };
     }
     const base = this.baseUrl;
-    // Outreach has no workspace override; fall back to the shared health-probe id.
-    const ws = this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ?? '';
+    const ws = this.workspaceOverride ?? this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ?? '';
     const ctx: FederationContext = { workspaceId: ws, ucUid: null, entitlements: [] };
     const body = { jsonrpc: '2.0', id: ++this.rpcId, method: 'tools/list', params: {} };
 
@@ -318,7 +369,7 @@ export class OutreachClient extends OutreachPort {
     try {
       res = await this.fetchWithTimeout(`${base}/mcp`, {
         method: 'POST',
-        headers: this.authHeaders(ctx),
+        headers: await this.authHeaders(ctx),
         body: JSON.stringify(body),
       });
     } catch (err) {
@@ -400,7 +451,9 @@ export class OutreachClient extends OutreachPort {
 
   async listCampaigns(ctx: FederationContext): Promise<OutreachCampaign[]> {
     if (!this.baseUrl) return [];
-    const raw = await this.callTool(ctx, 'list_campaigns', { workspace_id: ctx.workspaceId });
+    const raw = await this.callTool(ctx, 'list_campaigns', {
+      workspace_id: this.effectiveWorkspaceId(ctx),
+    });
     if (!raw) return [];
     const items = Array.isArray(raw['campaigns'])
       ? (raw['campaigns'] as Record<string, unknown>[])
@@ -416,7 +469,7 @@ export class OutreachClient extends OutreachPort {
   async listTouchesForContact(ctx: FederationContext, contactId: string): Promise<OutreachTouch[]> {
     if (!this.baseUrl) return [];
     const raw = await this.callTool(ctx, 'list_touches_for_contact', {
-      workspace_id: ctx.workspaceId,
+      workspace_id: this.effectiveWorkspaceId(ctx),
       contact_id: contactId,
     });
     if (!raw) return [];
@@ -446,7 +499,7 @@ export class OutreachClient extends OutreachPort {
       return null;
     }
     const args: Record<string, unknown> = {
-      workspace_id: ctx.workspaceId,
+      workspace_id: this.effectiveWorkspaceId(ctx),
       campaign_id: enrollment.campaignId,
       contact_id: enrollment.contactId,
       external_source: enrollment.externalSource,
@@ -473,7 +526,7 @@ export class OutreachClient extends OutreachPort {
       return null;
     }
     const args: Record<string, unknown> = {
-      workspace_id: ctx.workspaceId,
+      workspace_id: this.effectiveWorkspaceId(ctx),
       channel_id: request.channelId,
       contact_id: request.contactId,
       body: request.body,
