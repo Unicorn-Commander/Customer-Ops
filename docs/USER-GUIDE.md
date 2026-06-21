@@ -119,6 +119,8 @@ Either way, the underlying **contact lives in Contact‑Ops** — the one phoneb
 ## 9. For admins & operators
 
 - **Health at a glance:** `GET /api/v1/health/integrations` reports every federation seam as `ok` / `auth-error` / `unreachable` / `not-configured` — the fastest way to see which siblings are connected.
+- **Your profile** — **Settings → Profile** shows your suite‑SSO identity and the workspaces you belong to. Name and email are managed in suite SSO, so they're shown read‑only here; sign out from this page.
+- **Workspace & members** — **Settings → Workspace** shows the workspace's identity and its member roster (roles, status, last sign‑in). If you're the **owner**, you can change a member's role or remove them from here — the last owner can't be removed or demoted (so the workspace can't be orphaned), and every change is recorded in the audit trail. New members join through suite SSO.
 - **The audit trail** — open **System → Audit** to see who did what, when. Every relationship write (stage moves, notes, federated actions) and every agent run is recorded. The trail is **append‑only**: entries are never edited or deleted, so it's a faithful record. You only ever see your own workspace's entries.
 - **Personal Access Tokens** — for scripts, integrations, or an MCP agent that needs to act without a browser session. Mint them in **Settings → API tokens**:
   - **The token is shown only once**, right after you create it. Copy it then — you can't see it again. If you lose it, revoke it and mint a new one.

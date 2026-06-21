@@ -3,6 +3,26 @@
 All notable changes to Customer-Ops. Versions track the app milestone; the MCP
 tool surface version (`mcp.service.ts`) tracks alongside.
 
+## [0.10.0] — 2026-06-20 — "Workspace & Profile settings"
+
+Turns the last two "Coming" settings cards into real surfaces.
+
+### Added
+- **Profile** (`Settings → Profile`): a view of your suite‑SSO identity — name,
+  email, username, account status, member‑since, last sign‑in — plus the
+  workspaces you belong to (role + default) and sign‑out. No edit form: identity
+  is managed in suite SSO.
+- **Workspace** (`Settings → Workspace`): the workspace identity (status, posture
+  badges, member count) and the **member roster** (role, status, last sign‑in,
+  with You/Service markers). An OWNER can change a member's role or remove them
+  (focus‑trapped confirm); the backend enforces owner‑only + a **last‑owner
+  lockout guard**, and every membership change is audited. Member mutations are
+  session‑only (a PAT can't manage members); the roster read is `read:overview`.
+  Inviting new members is an honest note (members join via suite SSO), not a fake
+  form.
+- New API: `GET /workspaces/:id`, `GET /workspaces/:id/members`,
+  `PATCH`/`DELETE /workspaces/:id/members/:userKey`.
+
 ## [0.9.0] — 2026-06-20 — "Least-privilege + polish"
 
 Locks the relationship surface to least‑privilege and hardens the edges. PATs
