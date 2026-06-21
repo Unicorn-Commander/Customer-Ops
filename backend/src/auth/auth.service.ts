@@ -5,6 +5,7 @@ import { User } from '@prisma/client';
 import { resolveUserAccess, describeAccessList } from './access-list';
 import { signupMode } from '../common/workspace/feature-flags';
 import { WorkspaceProvisioningService } from '../common/workspace/workspace-provisioning.service';
+import { MembershipService } from '../common/workspace/membership.service';
 
 export interface JwtPayload {
   sub: string;
@@ -39,6 +40,7 @@ export class AuthService {
     private readonly jwtService: JwtService,
     private readonly prisma: PrismaService,
     private readonly provisioning: WorkspaceProvisioningService,
+    private readonly membership: MembershipService,
   ) {
     const meta = describeAccessList();
     this.logger.log(
@@ -73,9 +75,10 @@ export class AuthService {
     if (!user) {
       const access = resolveUserAccess(email);
       if (access.allowed) {
-        // Allow-listed: seed into the bootstrap/default workspace exactly as
-        // before (MembershipService.ensureSeededMembership does the membership
-        // seed when tenancy is live). Behavior is identical in invite + open.
+        // Allow-listed: create the user; the membership is seeded at the END of
+        // this method (ensureSeededMembership) when tenancy is live — at LOGIN, so
+        // the cockpit isn't stranded on an empty workspace list. Identical in
+        // invite + open.
         // Username uniqueness: prefer preferred_username, else email; the unique
         // constraint guarantees we never silently collide.
         const username = profile?.preferred_username || profile?.username || email!;
@@ -109,6 +112,16 @@ export class AuthService {
     }
 
     await this.prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
+
+    // Seed the allow-listed user's membership at LOGIN — not deferred to the first
+    // workspace-scoped route. The dashboard's first call after sign-in is
+    // GET /auth/me/workspaces (a plain list, no seeding), so without this an
+    // allow-listed user on a fresh DB lands on "no workspace membership yet" and
+    // never reaches a route that would seed them (the first-login chicken-and-egg
+    // that surfaced on the prod stand-up). Idempotent + tenancy-gated; a no-op for
+    // self-serve users (who already hold a membership) and when tenancy is off.
+    await this.membership.ensureSeededMembership(user);
+
     return user;
   }
 

@@ -3,6 +3,18 @@
 All notable changes to Customer-Ops. Versions track the app milestone; the MCP
 tool surface version (`mcp.service.ts`) tracks alongside.
 
+## [0.11.1] — 2026-06-21 — "First-login seed fix"
+
+### Fixed
+- **Membership seeded at login.** On a fresh DB with tenancy ON, an allow‑listed
+  user's bootstrap‑workspace membership was only created inside
+  `resolveAndAuthorize` (workspace‑scoped routes); but the dashboard's first call
+  after sign‑in is `GET /auth/me/workspaces` (a plain list, no seed), so the user
+  landed on "no workspace membership yet" and never reached a seeding route.
+  `validateKeycloakUser` now calls `ensureSeededMembership` at the end of login
+  (idempotent, tenancy‑gated, a no‑op for self‑serve users who already hold a
+  membership). Surfaced while standing up production at `unicorncommander.ai`.
+
 ## [0.11.0] — 2026-06-20 — "All federation rides Brigade"
 
 Closes the last static‑token federation seam: Outreach now exchanges through

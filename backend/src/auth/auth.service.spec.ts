@@ -4,6 +4,7 @@ import { User } from '@prisma/client';
 import { AuthService } from './auth.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { WorkspaceProvisioningService } from '../common/workspace/workspace-provisioning.service';
+import { MembershipService } from '../common/workspace/membership.service';
 import { __resetAccessListCacheForTests } from './access-list';
 
 /**
@@ -60,9 +61,12 @@ describe('AuthService.validateKeycloakUser — signup modes', () => {
         })),
     } as unknown as WorkspaceProvisioningService;
 
+    const membership = {
+      ensureSeededMembership: jest.fn(async () => undefined),
+    } as unknown as MembershipService;
     const jwt = { sign: jest.fn(() => 'tok') } as unknown as JwtService;
-    const svc = new AuthService(jwt, prisma, provisioning);
-    return { svc, prisma, provisioning };
+    const svc = new AuthService(jwt, prisma, provisioning, membership);
+    return { svc, prisma, provisioning, membership };
   }
 
   beforeEach(() => {
@@ -107,6 +111,13 @@ describe('AuthService.validateKeycloakUser — signup modes', () => {
       expect(user.email).toBe('aaron@magicunicorn.tech');
       expect(prisma.user.create).toHaveBeenCalledTimes(1); // plain create, allow-list path
       expect(provisioning.provisionSelfServeUser).not.toHaveBeenCalled();
+    });
+
+    it('seeds the allow-listed user membership at LOGIN (closes the first-login chicken-and-egg)', async () => {
+      const { svc, membership } = makeService();
+      const user = await svc.validateKeycloakUser('kc-aaron', aaron);
+      expect(membership.ensureSeededMembership).toHaveBeenCalledTimes(1);
+      expect(membership.ensureSeededMembership).toHaveBeenCalledWith(user);
     });
   });
 
