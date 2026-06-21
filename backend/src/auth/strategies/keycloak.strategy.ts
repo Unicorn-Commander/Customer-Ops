@@ -56,7 +56,44 @@ export class KeycloakStrategy extends PassportStrategy(Strategy, 'keycloak') {
       this.logger.error('Error fetching Keycloak userinfo', error as Error);
     }
 
+    // The entitlement SKUs ride on the Keycloak ACCESS token (the `entitlements`
+    // mapper emits to the access token, not userinfo), so read them there and
+    // carry them on the profile. AuthService bakes them into the minted HS256
+    // session token so the browser path enforces like the forwarded-token path.
+    const entitlements = this.readEntitlementsFromAccessToken(accessToken);
+    if (entitlements.length) {
+      userProfile = { ...userProfile, entitlements };
+    }
+
     const keycloakId = userProfile.sub || userProfile.id;
     return this.authService.validateKeycloakUser(keycloakId, userProfile);
+  }
+
+  /**
+   * Decode (without re-verifying — it came straight from the KC token endpoint
+   * over TLS in the code exchange) the access token and pull the flat
+   * `entitlements` claim. Tolerant of array OR space/comma-delimited string;
+   * any failure yields `[]` (enforce then denies, degrade-clean).
+   */
+  private readEntitlementsFromAccessToken(accessToken: string): string[] {
+    try {
+      const part = accessToken.split('.')[1];
+      if (!part) return [];
+      const json = Buffer.from(part.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString(
+        'utf8',
+      );
+      const claims = JSON.parse(json);
+      const raw = claims?.entitlements;
+      if (Array.isArray(raw)) return raw.map((s) => String(s).trim()).filter(Boolean);
+      if (typeof raw === 'string')
+        return raw
+          .split(/[\s,]+/)
+          .map((s) => s.trim())
+          .filter(Boolean);
+      return [];
+    } catch (error) {
+      this.logger.warn(`Could not read entitlements from Keycloak access token: ${error}`);
+      return [];
+    }
   }
 }

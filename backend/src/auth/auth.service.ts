@@ -12,6 +12,14 @@ export interface JwtPayload {
   email: string;
   role: string;
   username: string;
+  /**
+   * Entitlement SKUs (the suite entitlement gate). Carried into the locally-minted
+   * HS256 session token so the browser path enforces like the forwarded-token path:
+   * the OIDC callback reads them off the verified Keycloak access token and bakes
+   * them in here, and `JwtStrategy.readEntitlements` reads them back on each request.
+   * Absent/empty ⇒ enforce denies (degrade-clean) — see docs/runbooks/entitlement-enforce.md.
+   */
+  entitlements?: string[];
 }
 
 /**
@@ -122,6 +130,20 @@ export class AuthService {
     // self-serve users (who already hold a membership) and when tenancy is off.
     await this.membership.ensureSeededMembership(user);
 
+    // Carry the verified entitlement SKUs onto the resolved user so the OIDC
+    // callback can bake them into the minted HS256 session token (the browser
+    // path). The KeycloakStrategy reads them off the verified KC access token and
+    // passes them on `profile.entitlements`; absent ⇒ [] (enforce denies clean).
+    // (The forwarded realm/Brigade token path doesn't rely on this — JwtStrategy
+    // re-reads entitlements off that token directly on every request.)
+    (user as User & { __entitlements?: string[] }).__entitlements = Array.isArray(
+      (profile as { entitlements?: unknown })?.entitlements,
+    )
+      ? ((profile as { entitlements: unknown[] }).entitlements.map((s) => String(s).trim()).filter(
+          Boolean,
+        ) as string[])
+      : [];
+
     return user;
   }
 
@@ -157,6 +179,10 @@ export class AuthService {
       email: user.email,
       role: 'MEMBER',
       username: user.username,
+      // Verified entitlement SKUs (stamped by validateKeycloakUser off the KC
+      // access token). Baked into the session token so enforce works on the
+      // browser path; [] when the bearer carries none.
+      entitlements: (user as User & { __entitlements?: string[] }).__entitlements ?? [],
     };
     return {
       access_token: this.jwtService.sign(payload),

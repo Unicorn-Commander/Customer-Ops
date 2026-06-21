@@ -121,6 +121,36 @@ describe('AuthService.validateKeycloakUser — signup modes', () => {
     });
   });
 
+  describe('entitlement claim baked into the session token (enforce browser path)', () => {
+    it('stamps verified entitlements off the profile and bakes them into the minted token', async () => {
+      const { svc } = makeService();
+      const user = await svc.validateKeycloakUser('kc-aaron', {
+        ...aaron,
+        entitlements: ['customer-ops', 'ai-metered'],
+      });
+      expect((user as unknown as { __entitlements?: string[] }).__entitlements).toEqual([
+        'customer-ops',
+        'ai-metered',
+      ]);
+      await svc.generateTokenForUser(user);
+      expect(
+        (svc as unknown as { jwtService: { sign: jest.Mock } }).jwtService.sign,
+      ).toHaveBeenCalledWith(
+        expect.objectContaining({ entitlements: ['customer-ops', 'ai-metered'] }),
+      );
+    });
+
+    it('mints an empty entitlements list when the bearer carries none (enforce denies clean)', async () => {
+      const { svc } = makeService();
+      const user = await svc.validateKeycloakUser('kc-aaron', aaron);
+      expect((user as unknown as { __entitlements?: string[] }).__entitlements).toEqual([]);
+      await svc.generateTokenForUser(user);
+      expect(
+        (svc as unknown as { jwtService: { sign: jest.Mock } }).jwtService.sign,
+      ).toHaveBeenCalledWith(expect.objectContaining({ entitlements: [] }));
+    });
+  });
+
   describe('open mode', () => {
     beforeEach(() => {
       process.env.CUSTOMER_OPS_SIGNUP_MODE = 'open';

@@ -3,6 +3,22 @@
 All notable changes to Customer-Ops. Versions track the app milestone; the MCP
 tool surface version (`mcp.service.ts`) tracks alongside.
 
+## [0.11.2] — 2026-06-21 — "Entitlements ride the session token"
+
+### Fixed
+- **Browser-path `enforce` now actually works.** The OIDC login mints a local
+  HS256 **session token**, and its payload carried `{sub, email, role, username}`
+  but **not** the entitlement SKUs — so under `UC_ENTITLEMENT_MODE=enforce` every
+  browser request presented a token with an empty `entitlements` claim and every
+  gate denied (agents / email / AR / outreach), even for an entitled user. The
+  Keycloak callback now reads the verified `entitlements` claim off the KC access
+  token and bakes it into the minted session token: `KeycloakStrategy` extracts it
+  → `validateKeycloakUser` stamps `__entitlements` → `generateTokenForUser` signs
+  it into the payload → `JwtStrategy.readEntitlements` reads it back per request.
+  The forwarded realm/Brigade token path was already correct (entitlements are
+  re-read off that token on every request). This was the last gap before `enforce`
+  is safe on the browser path (surfaced flipping dogfood). +2 specs; tsc clean.
+
 ## [0.11.1] — 2026-06-21 — "First-login seed fix"
 
 ### Fixed
