@@ -54,6 +54,24 @@ export class ApiError extends Error {
 }
 
 /**
+ * Pull the human-readable message out of a failed response. The backend speaks
+ * RFC-7807 `application/problem+json` (`detail` is the occurrence message, e.g.
+ * "Cannot remove the last owner."; `title` is the per-status label) — so we read
+ * `detail` first, then `title`, then `message` (a non-conforming fallback).
+ * Returns '' when there's no usable body so the caller can use a generic line.
+ */
+async function problemDetail(res: Response): Promise<string> {
+  try {
+    const j = await res.json();
+    const d = j?.detail ?? j?.message ?? j?.title;
+    if (Array.isArray(d)) return d.join(', ');
+    return typeof d === 'string' && d.trim() ? d.trim() : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
  * A 401 means the session token is missing or expired — NOT that the backend is
  * unreachable. A stale `user` can linger in localStorage after the token dies,
  * so the app still thinks it's signed in and strands the user on a misleading
@@ -80,7 +98,8 @@ export async function apiGet<T = unknown>(path: string, token?: string): Promise
   });
   if (!res.ok) {
     if (res.status === 401) handleAuthFailure();
-    throw new ApiError(res.status, `GET ${path} failed: ${res.status}`);
+    const detail = await problemDetail(res);
+    throw new ApiError(res.status, detail || `GET ${path} failed: ${res.status}`);
   }
   return (await res.json()) as T;
 }
@@ -101,15 +120,9 @@ async function apiSend<T = unknown>(
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
-    let detail = '';
-    try {
-      const j = await res.json();
-      detail = j?.message ? ` — ${Array.isArray(j.message) ? j.message.join(', ') : j.message}` : '';
-    } catch {
-      /* ignore */
-    }
     if (res.status === 401) handleAuthFailure();
-    throw new ApiError(res.status, `${method} ${path} failed: ${res.status}${detail}`);
+    const detail = await problemDetail(res);
+    throw new ApiError(res.status, detail || `${method} ${path} failed: ${res.status}`);
   }
   return (await res.json()) as T;
 }
@@ -136,15 +149,9 @@ export async function apiDelete<T = void>(path: string): Promise<T> {
     headers: bearer ? { Authorization: `Bearer ${bearer}` } : {},
   });
   if (!res.ok) {
-    let detail = '';
-    try {
-      const j = await res.json();
-      detail = j?.message ? ` — ${Array.isArray(j.message) ? j.message.join(', ') : j.message}` : '';
-    } catch {
-      /* ignore */
-    }
     if (res.status === 401) handleAuthFailure();
-    throw new ApiError(res.status, `DELETE ${path} failed: ${res.status}${detail}`);
+    const detail = await problemDetail(res);
+    throw new ApiError(res.status, detail || `DELETE ${path} failed: ${res.status}`);
   }
   try {
     return (await res.json()) as T;
