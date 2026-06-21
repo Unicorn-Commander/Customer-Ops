@@ -381,8 +381,9 @@ function CreateTokenModal({
             ))}
           </div>
           <p className="text-xs text-tertiary">
-            Scope rules apply to MCP tool calls. Other Customer-Ops endpoints still honor the
-            underlying user role.
+            Scopes are enforced on every call this token makes — REST and MCP — and the token is
+            bound to one workspace. A write scope also grants the matching read. Your own sign-in
+            session is unaffected.
           </p>
         </div>
 

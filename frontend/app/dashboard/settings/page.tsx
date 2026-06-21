@@ -39,18 +39,18 @@ const SECTIONS: Section[] = [
   {
     key: 'profile',
     title: 'Profile',
-    description: 'Your name, sign-in, and notification preferences. Identity is managed through suite SSO.',
+    description: 'Your name, sign-in, and the workspaces you belong to. Identity is managed through suite SSO.',
     icon: UserCircle,
     gradient: 'from-violet-500 to-fuchsia-500',
-    coming: true,
+    href: '/dashboard/settings/profile',
   },
   {
     key: 'workspace',
     title: 'Workspace',
-    description: 'Members, roles, and workspace-level defaults. Each workspace stays fully separated.',
+    description: 'Members, roles, and workspace identity. Each workspace stays fully separated.',
     icon: Building2,
     gradient: 'from-amber-400 to-orange-500',
-    coming: true,
+    href: '/dashboard/settings/workspace',
   },
 ];
 
