@@ -1,4 +1,10 @@
-import { ForbiddenException, Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Membership, MembershipStatus, User, WorkspaceRole } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -175,4 +181,152 @@ export class MembershipService {
   static suiteRoleForAccess(role: WorkspaceRole): WorkspaceRole {
     return role;
   }
+
+  // ── Workspace settings: roster + owner-gated member management ──────────────
+  // memberships is a CONTROL-PLANE table (not RLS-fenced — see the migration),
+  // so these use the plain client and enforce RBAC + safety rails in code.
+
+  /** Workspace mirror row, or 404. */
+  async getWorkspaceOrThrow(workspaceId: string) {
+    const ws = await this.prisma.workspace.findUnique({ where: { id: workspaceId } });
+    if (!ws) throw new NotFoundException('Workspace not found');
+    return ws;
+  }
+
+  /** The acting user's role in a workspace (null if not an active member). */
+  async roleInWorkspace(
+    user: Pick<User, 'id' | 'keycloakId'>,
+    workspaceId: string,
+  ): Promise<WorkspaceRole | null> {
+    const m = await this.prisma.membership.findUnique({
+      where: { userKey_workspaceId: { userKey: MembershipService.membershipKey(user), workspaceId } },
+    });
+    return m && m.status === MembershipStatus.ACTIVE ? m.role : null;
+  }
+
+  /** Guard: only an OWNER may manage members. Throws 403 otherwise. */
+  async assertOwner(user: User, workspaceId: string): Promise<void> {
+    if ((await this.roleInWorkspace(user, workspaceId)) !== WorkspaceRole.OWNER) {
+      throw new ForbiddenException('Only the workspace owner can manage members.');
+    }
+  }
+
+  /**
+   * The member roster (everyone not REVOKED), newest-role first, with the user's
+   * display fields resolved from the users mirror (a member with no local user
+   * row — e.g. a federation service principal — is flagged `is_service`).
+   */
+  async listWorkspaceMembers(
+    workspaceId: string,
+    actingUser: Pick<User, 'id' | 'keycloakId'>,
+  ): Promise<WorkspaceMember[]> {
+    const memberships = await this.prisma.membership.findMany({
+      where: { workspaceId, status: { not: MembershipStatus.REVOKED } },
+      orderBy: [{ role: 'desc' }, { createdAt: 'asc' }],
+    });
+    if (memberships.length === 0) return [];
+
+    const keys = memberships.map((m) => m.userKey);
+    const users = await this.prisma.user.findMany({
+      where: { OR: [{ keycloakId: { in: keys } }, { id: { in: keys } }] },
+    });
+    const byKey = new Map<string, User>();
+    for (const u of users) {
+      if (u.keycloakId) byKey.set(u.keycloakId, u);
+      byKey.set(u.id, u);
+    }
+
+    const me = MembershipService.membershipKey(actingUser);
+    return memberships.map((m) => {
+      const u = byKey.get(m.userKey);
+      const name = u ? `${u.firstName} ${u.lastName}`.trim() || u.username : null;
+      return {
+        user_key: m.userKey,
+        email: u?.email ?? null,
+        display_name: name,
+        username: u?.username ?? null,
+        role: String(m.role).toLowerCase(),
+        status: String(m.status).toLowerCase(),
+        is_default: m.isDefault,
+        is_service: !u,
+        is_you: m.userKey === me,
+        last_login_at: u?.lastLoginAt ?? null,
+        joined_at: m.createdAt,
+      };
+    });
+  }
+
+  /** Count active OWNERs — the last-owner safety rail for demote/revoke. */
+  private countActiveOwners(workspaceId: string): Promise<number> {
+    return this.prisma.membership.count({
+      where: { workspaceId, role: WorkspaceRole.OWNER, status: MembershipStatus.ACTIVE },
+    });
+  }
+
+  /**
+   * Change a member's role. 404 if the target isn't an active/suspended member;
+   * a no-op when unchanged; refuses to demote the LAST owner (lockout guard).
+   * Caller must have already passed assertOwner.
+   */
+  async setMemberRole(
+    workspaceId: string,
+    targetUserKey: string,
+    newRole: WorkspaceRole,
+  ): Promise<Membership> {
+    const target = await this.prisma.membership.findUnique({
+      where: { userKey_workspaceId: { userKey: targetUserKey, workspaceId } },
+    });
+    if (!target || target.status === MembershipStatus.REVOKED) {
+      throw new NotFoundException('Member not found in this workspace');
+    }
+    if (target.role === newRole) return target;
+    if (target.role === WorkspaceRole.OWNER && (await this.countActiveOwners(workspaceId)) <= 1) {
+      throw new BadRequestException('Cannot change the role of the last owner.');
+    }
+    const updated = await this.prisma.membership.update({
+      where: { userKey_workspaceId: { userKey: targetUserKey, workspaceId } },
+      data: { role: newRole },
+    });
+    this.logger.log(`Member ${targetUserKey} role → ${newRole} in workspace ${workspaceId}`);
+    return updated;
+  }
+
+  /**
+   * Revoke a member (soft: status → REVOKED, clears default). 404 if not a
+   * member; refuses to remove the LAST owner. Caller must have passed assertOwner.
+   */
+  async revokeMember(workspaceId: string, targetUserKey: string): Promise<Membership> {
+    const target = await this.prisma.membership.findUnique({
+      where: { userKey_workspaceId: { userKey: targetUserKey, workspaceId } },
+    });
+    if (!target || target.status === MembershipStatus.REVOKED) {
+      throw new NotFoundException('Member not found in this workspace');
+    }
+    if (target.role === WorkspaceRole.OWNER && (await this.countActiveOwners(workspaceId)) <= 1) {
+      throw new BadRequestException('Cannot remove the last owner.');
+    }
+    const updated = await this.prisma.membership.update({
+      where: { userKey_workspaceId: { userKey: targetUserKey, workspaceId } },
+      data: { status: MembershipStatus.REVOKED, isDefault: false },
+    });
+    this.logger.log(`Member ${targetUserKey} revoked from workspace ${workspaceId}`);
+    return updated;
+  }
+}
+
+/** A member-roster row for the Workspace settings surface (suite snake_case). */
+export interface WorkspaceMember {
+  user_key: string;
+  email: string | null;
+  display_name: string | null;
+  username: string | null;
+  role: string;
+  status: string;
+  is_default: boolean;
+  /** No local user row (e.g. a federation/service principal). */
+  is_service: boolean;
+  /** This row is the calling user. */
+  is_you: boolean;
+  last_login_at: Date | null;
+  joined_at: Date;
 }

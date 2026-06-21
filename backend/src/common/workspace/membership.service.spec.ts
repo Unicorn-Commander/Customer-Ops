@@ -1,4 +1,4 @@
-import { ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { MembershipStatus, User, WorkspaceRole } from '@prisma/client';
 import { MembershipService } from './membership.service';
@@ -149,6 +149,123 @@ describe('MembershipService', () => {
       expect(MembershipService.suiteRoleForAccess(WorkspaceRole.OWNER)).toBe(WorkspaceRole.OWNER);
       expect(MembershipService.suiteRoleForAccess(WorkspaceRole.MEMBER)).toBe(WorkspaceRole.MEMBER);
       expect(MembershipService.suiteRoleForAccess(WorkspaceRole.VIEWER)).toBe(WorkspaceRole.VIEWER);
+    });
+  });
+
+  describe('workspace member management (roster + owner-gated mutations)', () => {
+    const m = (userKey: string, role: WorkspaceRole, status: MembershipStatus = MembershipStatus.ACTIVE) => ({
+      userKey,
+      workspaceId: BOOTSTRAP,
+      role,
+      status,
+      isDefault: role === WorkspaceRole.OWNER,
+      createdAt: new Date('2026-06-01T00:00:00Z'),
+    });
+
+    it('listWorkspaceMembers resolves user display, flags is_you + is_service, excludes REVOKED', async () => {
+      const prisma = {
+        membership: {
+          findMany: jest.fn().mockResolvedValue([
+            m('kc-aaron-sub', WorkspaceRole.OWNER),
+            m('federation:customer-ops', WorkspaceRole.MEMBER), // no user row -> service
+          ]),
+        },
+        user: {
+          findMany: jest
+            .fn()
+            .mockResolvedValue([
+              { id: 'local-aaron', keycloakId: 'kc-aaron-sub', email: 'aaron@magicunicorn.tech', firstName: 'Aaron', lastName: 'S', username: 'aaron', lastLoginAt: null },
+            ]),
+        },
+      };
+      const svc = make({}, prisma);
+      const rows = await svc.listWorkspaceMembers(BOOTSTRAP, aaron);
+      // The findMany filter excludes REVOKED (status: { not: REVOKED }).
+      expect(prisma.membership.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { workspaceId: BOOTSTRAP, status: { not: MembershipStatus.REVOKED } } }),
+      );
+      const owner = rows.find((r) => r.user_key === 'kc-aaron-sub')!;
+      expect(owner.role).toBe('owner');
+      expect(owner.is_you).toBe(true);
+      expect(owner.is_service).toBe(false);
+      expect(owner.display_name).toBe('Aaron S');
+      const svcRow = rows.find((r) => r.user_key === 'federation:customer-ops')!;
+      expect(svcRow.is_service).toBe(true);
+      expect(svcRow.email).toBeNull();
+      expect(svcRow.is_you).toBe(false);
+    });
+
+    it('roleInWorkspace returns the active role, null for an inactive/absent membership', async () => {
+      const prisma = {
+        membership: {
+          findUnique: jest
+            .fn()
+            .mockResolvedValueOnce(m('kc-aaron-sub', WorkspaceRole.OWNER))
+            .mockResolvedValueOnce(m('kc-x', WorkspaceRole.MEMBER, MembershipStatus.REVOKED))
+            .mockResolvedValueOnce(null),
+        },
+      };
+      const svc = make({}, prisma);
+      await expect(svc.roleInWorkspace(aaron, BOOTSTRAP)).resolves.toBe(WorkspaceRole.OWNER);
+      await expect(svc.roleInWorkspace(aaron, BOOTSTRAP)).resolves.toBeNull();
+      await expect(svc.roleInWorkspace(aaron, BOOTSTRAP)).resolves.toBeNull();
+    });
+
+    it('assertOwner passes for an OWNER and 403s a non-owner', async () => {
+      const ownerPrisma = { membership: { findUnique: jest.fn().mockResolvedValue(m('kc-aaron-sub', WorkspaceRole.OWNER)) } };
+      await expect(make({}, ownerPrisma).assertOwner(aaron, BOOTSTRAP)).resolves.toBeUndefined();
+      const memberPrisma = { membership: { findUnique: jest.fn().mockResolvedValue(m('kc-aaron-sub', WorkspaceRole.MEMBER)) } };
+      await expect(make({}, memberPrisma).assertOwner(aaron, BOOTSTRAP)).rejects.toThrow(ForbiddenException);
+    });
+
+    it('setMemberRole updates the role, 404s a non-member, no-ops an unchanged role', async () => {
+      const update = jest.fn().mockResolvedValue(m('kc-bob', WorkspaceRole.ADMIN));
+      const prisma = {
+        membership: {
+          findUnique: jest
+            .fn()
+            .mockResolvedValueOnce(m('kc-bob', WorkspaceRole.MEMBER)) // change path
+            .mockResolvedValueOnce(null) // 404 path
+            .mockResolvedValueOnce(m('kc-bob', WorkspaceRole.ADMIN)), // no-op path
+          count: jest.fn().mockResolvedValue(2),
+          update,
+        },
+      };
+      const svc = make({}, prisma);
+      await expect(svc.setMemberRole(BOOTSTRAP, 'kc-bob', WorkspaceRole.ADMIN)).resolves.toBeTruthy();
+      expect(update).toHaveBeenCalledTimes(1);
+      await expect(svc.setMemberRole(BOOTSTRAP, 'kc-bob', WorkspaceRole.ADMIN)).rejects.toThrow(NotFoundException);
+      await svc.setMemberRole(BOOTSTRAP, 'kc-bob', WorkspaceRole.ADMIN); // unchanged -> no extra update
+      expect(update).toHaveBeenCalledTimes(1);
+    });
+
+    it('setMemberRole refuses to demote the LAST owner', async () => {
+      const prisma = {
+        membership: {
+          findUnique: jest.fn().mockResolvedValue(m('kc-aaron-sub', WorkspaceRole.OWNER)),
+          count: jest.fn().mockResolvedValue(1), // only one active owner
+          update: jest.fn(),
+        },
+      };
+      const svc = make({}, prisma);
+      await expect(svc.setMemberRole(BOOTSTRAP, 'kc-aaron-sub', WorkspaceRole.ADMIN)).rejects.toThrow(BadRequestException);
+      expect(prisma.membership.update).not.toHaveBeenCalled();
+    });
+
+    it('revokeMember soft-revokes, but refuses to remove the LAST owner', async () => {
+      const update = jest.fn().mockResolvedValue(m('kc-bob', WorkspaceRole.MEMBER, MembershipStatus.REVOKED));
+      const okPrisma = {
+        membership: { findUnique: jest.fn().mockResolvedValue(m('kc-bob', WorkspaceRole.MEMBER)), count: jest.fn().mockResolvedValue(1), update },
+      };
+      const revoked = await make({}, okPrisma).revokeMember(BOOTSTRAP, 'kc-bob');
+      expect(revoked.status).toBe(MembershipStatus.REVOKED);
+      expect(update).toHaveBeenCalledWith(
+        expect.objectContaining({ data: { status: MembershipStatus.REVOKED, isDefault: false } }),
+      );
+      const lastOwnerPrisma = {
+        membership: { findUnique: jest.fn().mockResolvedValue(m('kc-aaron-sub', WorkspaceRole.OWNER)), count: jest.fn().mockResolvedValue(1), update: jest.fn() },
+      };
+      await expect(make({}, lastOwnerPrisma).revokeMember(BOOTSTRAP, 'kc-aaron-sub')).rejects.toThrow(BadRequestException);
     });
   });
 });
