@@ -130,6 +130,15 @@ export const SEAM_COPY: Record<string, SeamCopy> = {
     sourceOfTruth: 'the outreach surface',
     gradient: 'from-fuchsia-500 to-pink-500',
   },
+  // The Microsoft 365 connector. Unlike the federation seams this is a user-linked
+  // OAuth import (the Integrations page renders its own interactive M365ConnectCard
+  // instead of a generic SeamCard); this copy is the labelled fallback.
+  m365: {
+    name: 'Microsoft 365',
+    federates: 'Your Outlook contacts, imported as leads through the pipeline.',
+    sourceOfTruth: 'your Microsoft 365 account',
+    gradient: 'from-sky-500 to-indigo-500',
+  },
 };
 
 /** Display copy for a seam, with a safe fallback for an unknown identity. */

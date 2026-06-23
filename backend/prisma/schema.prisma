@@ -175,6 +175,23 @@ enum LeadIntakeStatus {
   DISCARDED
 }
 
+// ── Microsoft 365 connector lifecycle (M365Connection) ────
+//
+// The state of a per-user delegated Microsoft 365 (Graph) account link. This is
+// account-linking for an already-authenticated user (a stored, decryptable
+// refresh token attributed to the current session user), NOT a login — see the
+// m365 module + the token-cipher header.
+//   ACTIVE  — the refresh token is live; contacts sync pulls run against it.
+//   REVOKED — the refresh token no longer grants (Microsoft invalid_grant, or
+//             the user disconnected). The link is inert until reconnected.
+//   ERROR   — the last sync failed hard (a transport/Graph 5xx). Retryable; the
+//             refresh token is presumed still valid.
+enum M365ConnectionStatus {
+  ACTIVE
+  REVOKED
+  ERROR
+}
+
 // ============================================================
 // SUITE TENANCY (SUITE-IDENTITY.md §2 — VERBATIM)
 // ============================================================
@@ -251,6 +268,7 @@ model User {
   updatedAt   DateTime  @updatedAt
 
   personalAccessTokens PersonalAccessToken[]
+  m365Connections      M365Connection[]
 
   @@index([email])
   @@index([keycloakId])
@@ -758,4 +776,59 @@ model PersonalAccessToken {
   @@index([revokedAt])
   @@index([workspaceId])
   @@map("personal_access_tokens")
+}
+
+// ============================================================
+// MICROSOFT 365 CONNECTOR (the `m365` source — per-user, app-enforced)
+// ============================================================
+//
+// A signed-in user's delegated Microsoft 365 (Graph) account link. The connector
+// pulls the user's OWN Outlook contacts (v1; mail/calendar designed-in) and
+// funnels each through the EXISTING lead-intake pipeline — it never forks a
+// second phonebook. Everything inert until M365_CLIENT_ID is configured.
+//
+// Like the PAT table this is USER-scoped + app-enforced — deliberately NOT under
+// RLS. The credential resolves at OAuth-callback time (the `state` re-establishes
+// the user) BEFORE any workspace GUC is set, so a `workspace_isolation` policy
+// here would return zero rows. Ownership is enforced in code (where userId) in
+// M365ConnectionStore. The connection carries the `workspaceId` the sync funnels
+// into (the user's at connect time) — a hint, not an RLS predicate.
+//
+// SECRETS: `refreshTokenEnc` / `accessTokenEnc` are AES-256-GCM ciphertext
+// (TokenCipher, keyed by M365_TOKEN_ENC_KEY) — NEVER a plaintext token. They are
+// the only decryptable-secret columns Customer-Ops stores; they must never be
+// logged or returned on the wire (the store's metadata view omits them).
+model M365Connection {
+  id          String   @id @default(uuid())
+  userId      String
+  // The workspace this connection's contact sync funnels leads into (the user's
+  // active workspace at connect time). NOT an RLS predicate — see header.
+  workspaceId String
+  // The Microsoft Graph user identity this link is for (the `User.Read` /id/ +
+  // userPrincipalName) — display + a guard against re-linking a different tenant.
+  m365UserId        String
+  m365UserPrincipal String?
+  // The delegated Graph scopes the consent actually granted.
+  scopes            String[]
+  // AES-256-GCM ciphertext (iv:authTag:ciphertext, base64) — never plaintext.
+  refreshTokenEnc   String
+  accessTokenEnc    String?
+  accessTokenExpires DateTime?
+  status            M365ConnectionStatus @default(ACTIVE)
+  // The Graph delta link for incremental contact sync (replayed next pull so only
+  // changes come back). Null until the first full enumerate returns one.
+  deltaLinkContacts String?
+  lastSyncAt        DateTime?
+  lastSyncStatus    String?
+  lastSyncError     String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // One link per (user, workspace): a user binds one M365 account per workspace.
+  @@unique([userId, workspaceId])
+  @@index([userId])
+  @@index([workspaceId])
+  @@map("m365_connections")
 }

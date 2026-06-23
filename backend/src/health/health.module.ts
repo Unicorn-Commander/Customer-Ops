@@ -8,10 +8,12 @@ import { OutreachOpsModule } from '../outreach-ops/outreach-ops.module';
 import { EmailOpsModule } from '../email-ops/email-ops.module';
 import { MeetingOpsModule } from '../meeting-ops/meeting-ops.module';
 import { ProjectOpsModule } from '../project-ops/project-ops.module';
+import { M365Module } from '../m365/m365.module';
 
 @Module({
   // Each ops module EXPORTS its federation port; importing them lets the
   // HealthController inject the 6 ports for the `/health/integrations` probe.
+  // M365Module exports its health indicator for the `m365` connector seam.
   imports: [
     TerminusModule,
     ContactOpsModule,
@@ -20,6 +22,7 @@ import { ProjectOpsModule } from '../project-ops/project-ops.module';
     EmailOpsModule,
     MeetingOpsModule,
     ProjectOpsModule,
+    M365Module,
   ],
   controllers: [HealthController],
   providers: [PrismaHealthIndicator],

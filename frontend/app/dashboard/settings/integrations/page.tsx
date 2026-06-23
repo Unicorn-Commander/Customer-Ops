@@ -16,10 +16,11 @@
    when it isn't — the badge comes straight from the live probe.
    ========================================================================== */
 
-import { useCallback, useEffect, useState } from 'react';
+import { Suspense, useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import {
-  Network, RefreshCw, AlertCircle, Plug, CheckCircle2, BookOpen, ArrowLeft,
+  Network, RefreshCw, AlertCircle, Plug, CheckCircle2, BookOpen, ArrowLeft, X,
 } from 'lucide-react';
 import { Badge, Button, cn } from '@/components/ui';
 import { IconTile } from '@/components/ui/IconTile';
@@ -27,6 +28,7 @@ import {
   getIntegrationsHealth, seamStatus, seamCopy, latencyLabel,
   type SeamHealth,
 } from '@/lib/integrations';
+import { M365ConnectCard } from '@/components/integrations/M365ConnectCard';
 
 /* The README's "How it federates" section — operator guidance lives there. */
 const FEDERATES_GUIDE =
@@ -108,8 +110,57 @@ function SeamSkeleton() {
   );
 }
 
+/* ── Microsoft 365 OAuth return banner ───────────────────────────────────────
+   The connector's callback 302s back to this page with ?m365=connected|error.
+   Read it (the SSO-callback pattern) and show a dismissible banner. Reads
+   useSearchParams, so it lives inside a Suspense boundary (Next 15 requirement). */
+function M365ReturnBanner() {
+  const params = useSearchParams();
+  const outcome = params.get('m365');
+  const [dismissed, setDismissed] = useState(false);
+
+  if (!outcome || dismissed) return null;
+  const ok = outcome === 'connected';
+
+  return (
+    <div
+      role="status"
+      className={cn(
+        'flex items-start gap-3 rounded-token-lg border px-4 py-3 text-sm',
+        ok
+          ? 'border-success/30 bg-success-subtle text-success'
+          : 'border-warning/30 bg-warning-subtle text-warning',
+      )}
+    >
+      {ok ? (
+        <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" strokeWidth={2.25} aria-hidden />
+      ) : (
+        <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" strokeWidth={2.25} aria-hidden />
+      )}
+      <div className="min-w-0 flex-1">
+        <p className="font-medium">
+          {ok ? 'Microsoft 365 connected' : 'Microsoft 365 didn’t connect'}
+        </p>
+        <p className="mt-0.5 opacity-90">
+          {ok
+            ? 'Your account is linked. Use “Sync now” on the Microsoft 365 card to import your contacts.'
+            : 'The connection wasn’t completed. You can try again from the Microsoft 365 card below.'}
+        </p>
+      </div>
+      <button
+        type="button"
+        onClick={() => setDismissed(true)}
+        aria-label="Dismiss"
+        className="ml-auto shrink-0 rounded-token p-1 opacity-70 transition-opacity hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current/40"
+      >
+        <X className="h-4 w-4" strokeWidth={2.25} />
+      </button>
+    </div>
+  );
+}
+
 /* ── the page ───────────────────────────────────────────────────────────────── */
-export default function IntegrationsPage() {
+function IntegrationsPageInner() {
   const [seams, setSeams] = useState<SeamHealth[] | null>(null);
   const [checkedAt, setCheckedAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -132,6 +183,9 @@ export default function IntegrationsPage() {
   useEffect(() => { void load(); }, [load]);
 
   const loading = seams === null && !error;
+  // The `m365` seam has its own interactive M365ConnectCard (click-to-connect),
+  // so drop it from the generic read-only grid to avoid a duplicate tile.
+  const gridSeams = seams?.filter((s) => s.seam !== 'm365') ?? null;
   const connectedCount = seams?.filter((s) => seamStatus(s).status === 'connected').length ?? 0;
 
   return (
@@ -172,6 +226,9 @@ export default function IntegrationsPage() {
         </div>
       </header>
 
+      {/* ── Microsoft 365 OAuth return banner (?m365=connected|error) ── */}
+      <M365ReturnBanner />
+
       {/* ── Error ── */}
       {error && seams === null && (
         <div className="flex items-start gap-3 rounded-token-lg border border-danger/30 bg-danger-subtle px-4 py-3 text-sm text-danger">
@@ -186,14 +243,17 @@ export default function IntegrationsPage() {
         </div>
       )}
 
-      {/* ── Seam grid ── */}
+      {/* ── Seam grid ── The Microsoft 365 connect card leads (it's the one
+          click-to-connect integration); the rest are the read-only federation seams. */}
       {loading ? (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {[0, 1, 2, 3, 4, 5].map((i) => <SeamSkeleton key={i} />)}
+          <M365ConnectCard />
+          {[0, 1, 2, 3, 4].map((i) => <SeamSkeleton key={i} />)}
         </div>
-      ) : seams && seams.length > 0 ? (
+      ) : gridSeams ? (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {seams.map((s) => <SeamCard key={s.seam} seam={s} />)}
+          <M365ConnectCard />
+          {gridSeams.map((s) => <SeamCard key={s.seam} seam={s} />)}
         </div>
       ) : seams ? (
         <div className="rounded-token-lg border border-subtle bg-surface-raised p-8 text-center text-sm text-tertiary">
@@ -207,8 +267,8 @@ export default function IntegrationsPage() {
           <p className="flex items-start gap-2 text-xs leading-relaxed text-tertiary">
             <Plug className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted" strokeWidth={2.25} />
             <span>
-              Seams are configured at the infrastructure level (env + the sibling app), so connecting one is an
-              operator task today — self-serve connect is coming.
+              Microsoft 365 connects from here. The federation seams are configured at the
+              infrastructure level (env + the sibling app), so connecting one is an operator task.
             </span>
           </p>
           <div className="flex shrink-0 items-center gap-3">
@@ -229,5 +289,15 @@ export default function IntegrationsPage() {
         </div>
       )}
     </div>
+  );
+}
+
+/* The page reads ?m365= via useSearchParams (in the banner), so the tree is
+   wrapped in a Suspense boundary — Next 15's requirement for useSearchParams. */
+export default function IntegrationsPage() {
+  return (
+    <Suspense fallback={null}>
+      <IntegrationsPageInner />
+    </Suspense>
   );
 }
