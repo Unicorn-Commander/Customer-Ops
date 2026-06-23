@@ -3,6 +3,32 @@
 All notable changes to Customer-Ops. Versions track the app milestone; the MCP
 tool surface version (`mcp.service.ts`) tracks alongside.
 
+## [0.12.0] — 2026-06-23 — "M365 connector + the constellation mark"
+
+### Added
+- **Microsoft 365 (Graph) connector — dormant.** A signed-in user can link their
+  own Microsoft 365 account (MSAL delegated OAuth) and pull their Outlook
+  **contacts** into Customer-Ops. Every contact funnels through the EXISTING
+  lead-intake pipeline (`source: m365`) — no second phonebook; it inherits the
+  identity precedence, Contact-Ops upsert, dedup, and provisional fallback for
+  free. The per-user refresh token is stored AES-256-GCM-encrypted in a non-RLS
+  `m365_connections` table (the PAT-table precedent: code-level `where:{userId}`
+  ownership fence), behind a signed single-use OAuth `state`, with paging +
+  429/`Retry-After` backoff and delta-sync on a one-shot spine. Surfaced as a
+  "Connect Microsoft 365" card on **Settings → Integrations** plus an `m365` seam
+  in `GET /health/integrations`. **The whole connector ships inert** — a no-op
+  until `M365_CLIENT_ID` + the four other `M365_*` vars are set (an Azure app
+  registration), with no code change at go-live. Migration
+  `20260623000000_m365_connections` (additive, non-RLS). +57 backend specs.
+
+### Changed
+- **Brand: the relationship constellation replaces the handshake.** The logo and
+  app icon are now the "one coral focal node held in a cyan node-and-edge web"
+  mark (retiring the two-unicorns-shaking-hooves). Updates the in-app brand mark
+  (sidebar / login / loading / mobile / help), the favicon (`app/icon.png`), and
+  the docs brand assets; the README logo is the opaque-dark lockup with a
+  transparent variant alongside.
+
 ## [0.11.2] — 2026-06-21 — "Entitlements ride the session token"
 
 ### Fixed

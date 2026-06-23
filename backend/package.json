@@ -1,6 +1,6 @@
 {
   "name": "customer-ops-backend",
-  "version": "0.11.2",
+  "version": "0.12.0",
   "description": "Customer Ops Backend API — the relationship / funnel cockpit of the Unicorn Commander suite",
   "author": "Magic Unicorn",
   "private": true,
