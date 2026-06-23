@@ -30,6 +30,7 @@ import { AuditModule } from './audit/audit.module';
 import { WorkspaceAdminModule } from './common/workspace/workspace-admin.module';
 import { LeadIntakeModule } from './lead-intake/lead-intake.module';
 import { GraphModule } from './graph/graph.module';
+import { M365Module } from './m365/m365.module';
 
 @Module({
   imports: [
@@ -89,6 +90,10 @@ import { GraphModule } from './graph/graph.module';
     // FALKORDB_URL). After CustomersModule — the ingest/query phases compose the
     // relationship + federation data this module already wires.
     GraphModule,
+    // The Microsoft 365 (Graph) connector — a signed-in user links their own M365
+    // account and pulls contacts INTO the cockpit through the lead-intake funnel.
+    // DORMANT without M365_CLIENT_ID. After LeadIntakeModule — it funnels through it.
+    M365Module,
     // Phase 5 — the relationship agents (compose the federation ports + inference).
     AgentsModule,
     // The Relations Officer — the conversational orchestrator (advisor + operator

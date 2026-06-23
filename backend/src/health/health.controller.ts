@@ -10,6 +10,7 @@ import { OutreachPort } from '../outreach-ops/outreach-ops.port';
 import { EmailOpsPort } from '../email-ops/email-ops.port';
 import { MeetingOpsPort } from '../meeting-ops/meeting-ops.port';
 import { ProjectOpsPort } from '../project-ops/project-ops.port';
+import { M365HealthIndicator } from '../m365/m365.health';
 
 @ApiTags('health')
 // Named throttlers ('short' + 'long') require an explicit map in
@@ -28,6 +29,7 @@ export class HealthController {
     private emailOps: EmailOpsPort,
     private meetingOps: MeetingOpsPort,
     private projectOps: ProjectOpsPort,
+    private m365: M365HealthIndicator,
   ) {}
 
   @Get()
@@ -63,9 +65,11 @@ export class HealthController {
    * Per-seam federation health. Probes EACH of the 6 sibling-app seams with a
    * lightweight, side-effect-free MCP `tools/list` (via the same transport/auth a
    * real read uses) so a SILENT auth failure (a 401/403 that otherwise hides
-   * behind a degrade-clean empty panel) becomes visible. Unauthenticated like the
-   * other `/health` routes — it exposes only seam up/down + a short probe detail,
-   * never tenant data. Each `ping()` never throws, so this always returns 200.
+   * behind a degrade-clean empty panel) becomes visible, PLUS the `m365` connector
+   * seam (configuration-only — its target is Microsoft Graph, not a UC seam).
+   * Unauthenticated like the other `/health` routes — it exposes only seam up/down
+   * + a short probe detail, never tenant data. Each `ping()` never throws, so this
+   * always returns 200.
    */
   @Get('integrations')
   @ApiOperation({ summary: 'Federation seam health (per sibling-app integration)' })
@@ -78,6 +82,7 @@ export class HealthController {
       this.emailOps.ping(),
       this.meetingOps.ping(),
       this.projectOps.ping(),
+      this.m365.ping(),
     ]);
     return { seams, checkedAt: new Date().toISOString() };
   }
