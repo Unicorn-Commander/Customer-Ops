@@ -19,6 +19,7 @@ import { ContactOpsModule } from './contact-ops/contact-ops.module';
 import { AccountingOpsModule } from './accounting-ops/accounting-ops.module';
 import { OutreachOpsModule } from './outreach-ops/outreach-ops.module';
 import { EmailOpsModule } from './email-ops/email-ops.module';
+import { ConversationsOpsModule } from './conversations-ops/conversations-ops.module';
 import { MeetingOpsModule } from './meeting-ops/meeting-ops.module';
 import { ProjectOpsModule } from './project-ops/project-ops.module';
 import { AgentInferenceModule } from './agents/inference/agent-inference.module';
@@ -64,6 +65,10 @@ import { M365Module } from './m365/m365.module';
     // Phase 4 — the Outreach + Email surfaces (the Outreach + Email-Ops app seams).
     OutreachOpsModule,
     EmailOpsModule,
+    // The omni-channel conversation surface — first channel: the worker's device
+    // (iMessage + SMS) via the UUDC `messages.*` bridge. DORMANT without
+    // CONVERSATIONS_OPS_BASE_URL.
+    ConversationsOpsModule,
     // Phase 5 — the Meeting-Ops signal seam + the 4-lane inference port.
     MeetingOpsModule,
     // The Project-Ops delivery/projects federation seam (customer-360 projects).

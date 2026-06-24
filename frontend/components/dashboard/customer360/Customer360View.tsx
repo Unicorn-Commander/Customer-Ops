@@ -10,6 +10,7 @@ import { ContactCard } from './ContactCard';
 import { AgentsPanel } from './AgentsPanel';
 import { InvoicesPanel } from './InvoicesPanel';
 import { EmailPanel } from './EmailPanel';
+import { ConversationsPanel } from './ConversationsPanel';
 import { OutreachPanel } from './OutreachPanel';
 import { MeetingsPanel } from './MeetingsPanel';
 import { ProjectsPanel } from './ProjectsPanel';
@@ -43,7 +44,7 @@ export function Customer360View({
   busy: boolean;
   handlers: Customer360Handlers;
 }) {
-  const { relationship: rel, contact, contactFederation, timeline, invoices, outreach, email, meetings, projects } = data;
+  const { relationship: rel, contact, contactFederation, timeline, invoices, outreach, email, conversations, meetings, projects } = data;
   const [mobileTab, setMobileTab] = useState<'panels' | 'activity'>('panels');
 
   const customerName = contact?.displayName ?? `Contact ${rel.contactId.slice(0, 8)}`;
@@ -71,6 +72,12 @@ export function Customer360View({
         customerId={customerId}
         panel={email}
         defaultToAddress={primaryEmail}
+        onChanged={handlers.onChanged}
+      />
+      <ConversationsPanel
+        workspaceId={workspaceId}
+        customerId={customerId}
+        panel={conversations}
         onChanged={handlers.onChanged}
       />
       <OutreachPanel workspaceId={workspaceId} customerId={customerId} panel={outreach} onChanged={handlers.onChanged} />

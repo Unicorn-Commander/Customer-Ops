@@ -212,6 +212,34 @@ export interface EmailPanel {
   sent: EmailLink[];
 }
 
+/** A federated device conversation (iMessage/SMS) with a contact handle. */
+export interface ConversationThread {
+  id: string;
+  handle: string;
+  channel: string; // 'iMessage' | 'SMS'
+  displayName: string | null;
+  lastMessageAt: string | null;
+  lastSnippet: string | null;
+  lastFromMe: boolean;
+}
+
+/**
+ * The customer-360 conversations panel: the federated device messaging threads
+ * (iMessage + SMS, via the UUDC bridge) + the degrade-clean / entitlement
+ * affordances.
+ *   - `configured` false → the device bridge is not connected; show "connect".
+ *   - `entitled` false    → caller lacks customer-ops; reads only.
+ *   - `canSend`           → configured && entitled.
+ */
+export interface ConversationsPanel {
+  federated: boolean;
+  source: string; // 'conversations-ops'
+  configured: boolean;
+  entitled: boolean;
+  canSend: boolean;
+  threads: ConversationThread[];
+}
+
 /** A federated Meeting-Ops meeting (header only; no transcript). */
 export interface MeetingItem {
   id: string;
@@ -316,6 +344,7 @@ export interface Customer360 {
   invoices: InvoicePanel;
   outreach: OutreachPanel;
   email: EmailPanel;
+  conversations: ConversationsPanel;
   meetings: MeetingPanel;
   projects: ProjectPanel;
 }

@@ -8,6 +8,7 @@ import { ContactOpsPort } from '../contact-ops/contact-ops.port';
 import { AccountingOpsPort } from '../accounting-ops/accounting-ops.port';
 import { OutreachPort } from '../outreach-ops/outreach-ops.port';
 import { EmailOpsPort } from '../email-ops/email-ops.port';
+import { ConversationsOpsPort } from '../conversations-ops/conversations-ops.port';
 import { MeetingOpsPort } from '../meeting-ops/meeting-ops.port';
 import { ProjectOpsPort } from '../project-ops/project-ops.port';
 import { M365HealthIndicator } from '../m365/m365.health';
@@ -27,6 +28,7 @@ export class HealthController {
     private accountingOps: AccountingOpsPort,
     private outreach: OutreachPort,
     private emailOps: EmailOpsPort,
+    private conversationsOps: ConversationsOpsPort,
     private meetingOps: MeetingOpsPort,
     private projectOps: ProjectOpsPort,
     private m365: M365HealthIndicator,
@@ -80,6 +82,7 @@ export class HealthController {
       this.accountingOps.ping(),
       this.outreach.ping(),
       this.emailOps.ping(),
+      this.conversationsOps.ping(),
       this.meetingOps.ping(),
       this.projectOps.ping(),
       this.m365.ping(),

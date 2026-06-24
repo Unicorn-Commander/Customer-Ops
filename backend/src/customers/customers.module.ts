@@ -5,6 +5,7 @@ import { ContactOpsModule } from '../contact-ops/contact-ops.module';
 import { AccountingOpsModule } from '../accounting-ops/accounting-ops.module';
 import { OutreachOpsModule } from '../outreach-ops/outreach-ops.module';
 import { EmailOpsModule } from '../email-ops/email-ops.module';
+import { ConversationsOpsModule } from '../conversations-ops/conversations-ops.module';
 import { MeetingOpsModule } from '../meeting-ops/meeting-ops.module';
 import { ProjectOpsModule } from '../project-ops/project-ops.module';
 import { LeadIntakeModule } from '../lead-intake/lead-intake.module';
@@ -44,6 +45,7 @@ import { CustomersController } from './customers.controller';
     AccountingOpsModule,
     OutreachOpsModule,
     EmailOpsModule,
+    ConversationsOpsModule,
     MeetingOpsModule,
     ProjectOpsModule,
     // Phase 6: provides LeadLabelResolver (provisional cockpit labels). @Optional

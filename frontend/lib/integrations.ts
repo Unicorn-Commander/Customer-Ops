@@ -112,6 +112,12 @@ export const SEAM_COPY: Record<string, SeamCopy> = {
     sourceOfTruth: 'the mail surface',
     gradient: 'from-sky-400 to-blue-500',
   },
+  'conversations-ops': {
+    name: 'Messages',
+    federates: 'iMessage & SMS with your contacts, from your device (via UUDC).',
+    sourceOfTruth: 'your device messages',
+    gradient: 'from-teal-400 to-emerald-500',
+  },
   'meeting-ops': {
     name: 'Meeting-Ops',
     federates: 'Meetings, summaries & action items from conversation intelligence.',

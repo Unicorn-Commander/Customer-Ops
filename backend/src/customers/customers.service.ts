@@ -43,6 +43,11 @@ import { AuditService } from '../audit/audit.service';
 import { ContactOpsPort, FederationContext } from '../contact-ops/contact-ops.port';
 import { FederatedContact } from '../contact-ops/contact-ops.types';
 import {
+  ConversationsOpsPort,
+  FederationContext as ConversationsFederationContext,
+} from '../conversations-ops/conversations-ops.port';
+import { ConversationThread } from '../conversations-ops/conversations-ops.types';
+import {
   AccountingOpsPort,
   FederationContext as InvoiceFederationContext,
 } from '../accounting-ops/accounting-ops.port';
@@ -170,6 +175,12 @@ export class CustomersService {
     // Phase 6: resolves a real label for a PROVISIONAL contactId ('prov:…') from
     // the lead-intake buffer while Contact-Ops is dormant. @Optional so the
     // relationship layer has no hard dependency on the ingestion module.
+    // The omni-channel conversations seam (device messaging via UUDC). @Optional
+    // + guarded so customer-360 tests that don't provide it still construct; the
+    // real CustomersModule binds it. DORMANT until CONVERSATIONS_OPS_BASE_URL.
+    @Optional()
+    @Inject(ConversationsOpsPort)
+    private readonly conversationsOps?: ConversationsOpsPort,
     @Optional()
     @Inject(LeadLabelResolver)
     private readonly leadLabels?: LeadLabelResolver,
@@ -281,7 +292,8 @@ export class CustomersService {
     // run OUTSIDE the DB tx. Fan them out concurrently so the 360's latency is
     // max(panel) not sum(panel) — a single slow sibling no longer stacks onto
     // every other. (Each build*Panel already parallelizes its own sub-calls.)
-    const [invoices, outreachPanel, emailPanel, meetingPanel, projectPanel] = await Promise.all([
+    const [invoices, outreachPanel, emailPanel, meetingPanel, projectPanel, conversationsPanel] =
+      await Promise.all([
       // Accounting-Ops: poll each linked invoice's live status; refresh the cache.
       this.buildInvoicePanel(user, invoiceLinks, requestedWorkspaceId),
       // Outreach app: live campaigns/touches + the local enrollment links.
@@ -292,6 +304,9 @@ export class CustomersService {
       this.buildMeetingPanel(user, relationship.contactId, requestedWorkspaceId),
       // Project-Ops: the delivery work for this account (matched on contact org/name).
       this.buildProjectPanel(user, contact, requestedWorkspaceId),
+      // Device messaging (UUDC): the worker's iMessage/SMS with the contact's
+      // handles, resolved from the already-federated `contact`.
+      this.buildConversationsPanel(user, contact, requestedWorkspaceId),
     ]);
 
     return {
@@ -321,6 +336,8 @@ export class CustomersService {
       meetings: meetingPanel,
       // ── Project-Ops panel (federated delivery / project signal) ──
       projects: projectPanel,
+      // ── Omni-channel device conversations panel (UUDC iMessage/SMS) ──
+      conversations: conversationsPanel,
     };
   }
 
@@ -1616,6 +1633,65 @@ export class CustomersService {
       threads,
       // The local outbound links THIS app initiated (de-dupe memory + cache).
       sent: links.map((l) => this.serializeEmailLink(l)),
+    };
+  }
+
+  /** Build the Conversations federation identity (workspace + actor + entitlements). */
+  private async conversationsFederationContext(
+    user: User & Partial<WithWorkspaceClaim>,
+    requestedWorkspaceId?: string | null,
+  ): Promise<ConversationsFederationContext> {
+    const workspaceId = await this.workspaces.resolveAuthorized(user, requestedWorkspaceId);
+    return { workspaceId, ucUid: ucUidOf(user) || null, entitlements: entitlementsOf(user) };
+  }
+
+  /**
+   * Assemble the customer-360 conversations panel: the worker's device messaging
+   * threads (iMessage + SMS) with the contact's handles, federated from the UUDC
+   * device bridge. Never throws (best-effort); degrade-clean + entitlement
+   * affordances mirror the email panel. Reads are viewer-level; only sending is
+   * gated. Customer-Ops stores no message — the device is the conversation SoR.
+   */
+  private async buildConversationsPanel(
+    user: User & Partial<WithWorkspaceClaim>,
+    contact: FederatedContact | null,
+    requestedWorkspaceId?: string | null,
+  ) {
+    const configured = this.conversationsOps?.isConfigured() ?? false;
+    const fedCtx =
+      configured && this.conversationsOps
+        ? await this.conversationsFederationContext(user, requestedWorkspaceId)
+        : null;
+    const entitled =
+      fedCtx && this.conversationsOps
+        ? this.conversationsOps.checkEntitlement(fedCtx).allowed
+        : false;
+
+    // The contact's handles (phone e164 + email) — what device conversations key on.
+    const handles = contact
+      ? [...contact.phones.map((p) => p.e164), ...contact.emails.map((e) => e.address)].filter(
+          (h): h is string => typeof h === 'string' && h.length > 0,
+        )
+      : [];
+
+    let threads: ConversationThread[] = [];
+    if (configured && fedCtx && this.conversationsOps && handles.length > 0) {
+      try {
+        threads = await this.conversationsOps.listConversationsForContact(fedCtx, handles);
+      } catch (err) {
+        this.logger.warn(`Conversations panel federation failed: ${(err as Error).message}`);
+      }
+    }
+
+    return {
+      federated: configured,
+      source: 'conversations-ops',
+      configured,
+      entitled,
+      // Sending a message requires customer-ops; reading conversations does not.
+      canSend: configured && entitled,
+      // The live device conversations with the contact (federated; never stored).
+      threads,
     };
   }
 

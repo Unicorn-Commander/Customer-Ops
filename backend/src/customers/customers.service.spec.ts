@@ -1355,9 +1355,10 @@ describe('CustomersService — *ForUser audit side-effects (Phase 7; AuditServic
       email,
       meeting,
       project,
+      undefined, // conversationsOps (@Optional)
       undefined, // leadLabels (@Optional)
       undefined, // graphIngest (@Optional)
-      audit, // @Optional, 10th slot
+      audit, // @Optional, 11th slot
     );
     return { svc, audit, lastTx, workspaces };
   }
