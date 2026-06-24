@@ -76,4 +76,50 @@ describe('ConversationsOpsClient', () => {
       await expect(c.listConversationsForContact(ctx([]), ['a@b.com'])).resolves.toEqual([]);
     });
   });
+
+  describe('mtls transport (direct-to-device) — degrade-clean without material', () => {
+    const PEM_CERT = '-----BEGIN CERTIFICATE-----\nMIIBfake\n-----END CERTIFICATE-----';
+    const PEM_KEY = '-----BEGIN PRIVATE KEY-----\nMIIBfake\n-----END PRIVATE KEY-----';
+
+    it('is NOT configured when mtls is selected but cert/key are missing', () => {
+      const c = client({
+        CONVERSATIONS_OPS_BASE_URL: 'https://100.64.0.1:47000',
+        CONVERSATIONS_OPS_TRANSPORT: 'mtls',
+      });
+      expect(c.isConfigured()).toBe(false);
+    });
+
+    it('reads degrade clean to [] when mtls material is missing (no connection attempt)', async () => {
+      const c = client({
+        CONVERSATIONS_OPS_BASE_URL: 'https://100.64.0.1:47000',
+        CONVERSATIONS_OPS_TRANSPORT: 'mtls',
+      });
+      await expect(c.listConversationsForContact(ctx(), ['+15551234567'])).resolves.toEqual([]);
+    });
+
+    it('IS configured when mtls is selected with inline-PEM cert + key', () => {
+      const c = client({
+        CONVERSATIONS_OPS_BASE_URL: 'https://100.64.0.1:47000',
+        CONVERSATIONS_OPS_TRANSPORT: 'mtls',
+        CONVERSATIONS_OPS_CLIENT_CERT: PEM_CERT,
+        CONVERSATIONS_OPS_CLIENT_KEY: PEM_KEY,
+      });
+      expect(c.isConfigured()).toBe(true);
+    });
+
+    it('treats an unreadable cert path as missing material (degrade-clean)', () => {
+      const c = client({
+        CONVERSATIONS_OPS_BASE_URL: 'https://100.64.0.1:47000',
+        CONVERSATIONS_OPS_TRANSPORT: 'mtls',
+        CONVERSATIONS_OPS_CLIENT_CERT: '/no/such/cert.pem',
+        CONVERSATIONS_OPS_CLIENT_KEY: '/no/such/key.pem',
+      });
+      expect(c.isConfigured()).toBe(false);
+    });
+
+    it('default transport stays http (configured on base URL alone)', () => {
+      const c = client({ CONVERSATIONS_OPS_BASE_URL: 'https://gw.example/mcp' });
+      expect(c.isConfigured()).toBe(true);
+    });
+  });
 });

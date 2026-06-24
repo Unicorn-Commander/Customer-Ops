@@ -10,14 +10,25 @@
  * client parses both that and `structuredContent`, exactly like the Email-Ops
  * client, so the same callTool works against either server.
  *
- * AUTH: the auth MODE mirrors the Email-Ops / Contact-Ops clients —
+ * TRANSPORT (CONVERSATIONS_OPS_TRANSPORT):
+ *   - `http` (default): plain HTTPS to a gateway that terminates the device's mTLS
+ *     and re-gates the forwarded bearer. Use this once the control-plane MCP gateway
+ *     is stood up.
+ *   - `mtls`: connect DIRECTLY to a device's :47000 over the tailnet. The UUDC agent
+ *     serves mTLS and REQUIRES a client certificate (WebPkiClientVerifier), so a
+ *     bearer alone can never reach it — this mode presents a client cert/key (+CA)
+ *     and is the only path to a real device until the gateway exists. Materials come
+ *     from CONVERSATIONS_OPS_CLIENT_CERT / _CLIENT_KEY / _CA_CERT (each either inline
+ *     PEM or a file path); CONVERSATIONS_OPS_TLS_SERVERNAME overrides the verified
+ *     hostname when the base URL targets a tailnet IP. TLS verification stays ON.
+ *
+ * AUTH (the bearer MODE, orthogonal to transport — a gateway still checks it):
  *   - `static` (default): forward a configured service token
  *     (CONVERSATIONS_OPS_SERVICE_TOKEN);
  *   - `brigade-sts`: mint a customer-ops client-credentials token and exchange it
  *     at Brigade (RFC-8693) for an addressed, workspace-bound token.
- * (Direct mTLS to a device's :47000 is the eventual transport once the live agent
- * is stood up — a Phase-2b add behind a `mtls` mode; the seam is dormant until
- * then so this v1 ships the bearer transport only.)
+ * In pure `mtls` direct-to-device mode the client cert IS the auth (the agent has no
+ * bearer middleware), so a bearer is optional there.
  *
  * ENTITLEMENT: sending a message requires `customer-ops` (the worker's own
  * cockpit + device). `checkEntitlement` is the pure gate; send re-checks
@@ -29,6 +40,8 @@
  * renders the conversations slot as "connect" and makes no call.
  */
 
+import * as https from 'node:https';
+import * as fs from 'node:fs';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { BrigadeTokenSource } from '../common/federation/brigade-token-source';
@@ -40,7 +53,6 @@ import {
   EntitlementDecision,
 } from './conversations-ops.types';
 import { SeamHealth } from '../health/seam-health';
-import { shortBody } from '../health/probe-util';
 
 interface JsonRpcResult {
   structuredContent?: Record<string, unknown>;
@@ -53,6 +65,20 @@ interface JsonRpcResponse {
   id: string | number | null;
   result?: JsonRpcResult;
   error?: { code: number; message: string };
+}
+
+/** Transport-agnostic HTTP response shape (fetch and node:https normalize to this). */
+interface PostResponse {
+  ok: boolean;
+  status: number;
+  text: string;
+}
+
+/** Loaded mTLS client material for direct-to-device reach. */
+interface MtlsMaterial {
+  cert: string;
+  key: string;
+  ca?: string;
 }
 
 /** Canonical suite SKU string (must match Lago/Keycloak). */
@@ -88,10 +114,16 @@ export class ConversationsOpsClient extends ConversationsOpsPort {
           'message call is made until configured. (The UUDC agent + live transport ' +
           'is the next track; this seam is mockable + degrade-clean until it lands.)',
       );
+    } else if (this.transport === 'mtls' && this.mtlsMaterial() === null) {
+      this.logger.error(
+        `CONVERSATIONS_OPS_TRANSPORT=mtls but client cert/key are missing or unreadable — ` +
+          `the device messaging seam is DORMANT (no direct-to-device reach). Set ` +
+          `CONVERSATIONS_OPS_CLIENT_CERT and _CLIENT_KEY (inline PEM or a path).`,
+      );
     } else {
       this.logger.log(
         `Conversations federation target: ${this.baseUrl}${this.mcpPath} ` +
-          `(entitlement=${this.mode()}, auth=${this.authMode})`,
+          `(transport=${this.transport}, entitlement=${this.mode()}, auth=${this.authMode})`,
       );
     }
   }
@@ -128,7 +160,53 @@ export class ConversationsOpsClient extends ConversationsOpsPort {
   }
 
   isConfigured(): boolean {
-    return this.baseUrl !== null;
+    if (this.baseUrl === null) return false;
+    // mtls direct-to-device is only usable with client material in hand.
+    if (this.transport === 'mtls') return this.mtlsMaterial() !== null;
+    return true;
+  }
+
+  /** Transport selector. `mtls` = connect directly to a device's :47000 (the agent
+   *  requires a client cert); `http` (default) = plain HTTPS to a gateway. */
+  private get transport(): 'http' | 'mtls' {
+    return this.config.get<string>('CONVERSATIONS_OPS_TRANSPORT')?.trim().toLowerCase() === 'mtls'
+      ? 'mtls'
+      : 'http';
+  }
+
+  /** Override the TLS-verified hostname (SNI) — needed when the base URL targets a
+   *  tailnet IP but the device cert is issued for a name. Null = verify the URL host. */
+  private get tlsServerName(): string | null {
+    const s = this.config.get<string>('CONVERSATIONS_OPS_TLS_SERVERNAME');
+    return s && s.trim() ? s.trim() : null;
+  }
+
+  private mtlsCache: MtlsMaterial | null | undefined;
+
+  /** Resolve a cert/key/ca env value that is EITHER inline PEM or a file path.
+   *  Returns null if unset or (for a path) unreadable. */
+  private resolvePem(varName: string): string | null {
+    const raw = this.config.get<string>(varName);
+    const v = raw && raw.trim() ? raw.trim() : null;
+    if (!v) return null;
+    if (v.includes('-----BEGIN')) return v; // inline PEM
+    try {
+      return fs.readFileSync(v, 'utf8');
+    } catch (err) {
+      this.logger.warn(`${varName}: could not read PEM at "${v}": ${(err as Error).message}`);
+      return null;
+    }
+  }
+
+  /** Load (once) the mTLS client material. cert+key are mandatory; ca is optional
+   *  (falls back to the system trust store). Returns null if cert or key is missing. */
+  private mtlsMaterial(): MtlsMaterial | null {
+    if (this.mtlsCache !== undefined) return this.mtlsCache;
+    const cert = this.resolvePem('CONVERSATIONS_OPS_CLIENT_CERT');
+    const key = this.resolvePem('CONVERSATIONS_OPS_CLIENT_KEY');
+    const ca = this.resolvePem('CONVERSATIONS_OPS_CA_CERT') ?? undefined;
+    this.mtlsCache = cert && key ? { cert, key, ca } : null;
+    return this.mtlsCache;
   }
 
   /** Build the auth headers for a federation call. `static` forwards a configured
@@ -229,13 +307,9 @@ export class ConversationsOpsClient extends ConversationsOpsPort {
       params: { name, arguments: args },
     };
 
-    let res: Response;
+    let res: PostResponse;
     try {
-      res = await this.fetchWithTimeout(`${base}${this.mcpPath}`, {
-        method: 'POST',
-        headers: await this.authHeaders(ctx),
-        body: JSON.stringify(body),
-      });
+      res = await this.post(`${base}${this.mcpPath}`, await this.authHeaders(ctx), JSON.stringify(body));
     } catch (err) {
       this.logger.warn(`Conversations MCP ${name} transport error: ${(err as Error).message}`);
       return null;
@@ -246,7 +320,7 @@ export class ConversationsOpsClient extends ConversationsOpsPort {
       return null;
     }
 
-    const payload = this.parseRpc(await res.text());
+    const payload = this.parseRpc(res.text);
     if (!payload) {
       this.logger.warn(`Conversations MCP ${name} unparseable response`);
       return null;
@@ -307,6 +381,60 @@ export class ConversationsOpsClient extends ConversationsOpsPort {
     }
   }
 
+  /** POST a JSON body over the configured transport, normalized to {ok,status,text}.
+   *  Routes to direct-device mTLS (node:https) or the gateway (fetch). May throw on a
+   *  transport error — callers catch. */
+  private async post(
+    url: string,
+    headers: Record<string, string>,
+    body: string,
+  ): Promise<PostResponse> {
+    if (this.transport === 'mtls') return this.postMtls(url, headers, body);
+    const res = await this.fetchWithTimeout(url, { method: 'POST', headers, body });
+    return { ok: res.ok, status: res.status, text: await res.text() };
+  }
+
+  /** Direct mTLS POST to a device's :47000. Presents the client cert; TLS verification
+   *  stays on (system trust + optional CA), with an optional servername override. */
+  private postMtls(
+    url: string,
+    headers: Record<string, string>,
+    body: string,
+  ): Promise<PostResponse> {
+    const mat = this.mtlsMaterial();
+    if (!mat) return Promise.reject(new Error('mtls transport selected but client material is missing'));
+    const u = new URL(url);
+    const payload = Buffer.from(body, 'utf8');
+    return new Promise<PostResponse>((resolve, reject) => {
+      const req = https.request(
+        {
+          method: 'POST',
+          hostname: u.hostname,
+          port: u.port || 443,
+          path: `${u.pathname}${u.search}`,
+          headers: { ...headers, 'Content-Length': payload.byteLength },
+          cert: mat.cert,
+          key: mat.key,
+          ca: mat.ca,
+          servername: this.tlsServerName ?? undefined,
+          timeout: this.timeoutMs,
+        },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (c: Buffer) => chunks.push(c));
+          res.on('end', () => {
+            const status = res.statusCode ?? 0;
+            resolve({ ok: status >= 200 && status < 300, status, text: Buffer.concat(chunks).toString('utf8') });
+          });
+        },
+      );
+      req.on('timeout', () => req.destroy(new Error(`mtls request timeout after ${this.timeoutMs}ms`)));
+      req.on('error', reject);
+      req.write(payload);
+      req.end();
+    });
+  }
+
   // --- health probe ------------------------------------------------------
 
   async ping(): Promise<SeamHealth> {
@@ -320,13 +448,9 @@ export class ConversationsOpsClient extends ConversationsOpsPort {
     const body = { jsonrpc: '2.0', id: ++this.rpcId, method: 'tools/list', params: {} };
 
     const startedAt = Date.now();
-    let res: Response;
+    let res: PostResponse;
     try {
-      res = await this.fetchWithTimeout(`${base}${this.mcpPath}`, {
-        method: 'POST',
-        headers: await this.authHeaders(ctx),
-        body: JSON.stringify(body),
-      });
+      res = await this.post(`${base}${this.mcpPath}`, await this.authHeaders(ctx), JSON.stringify(body));
     } catch (err) {
       return {
         seam,
@@ -341,10 +465,11 @@ export class ConversationsOpsClient extends ConversationsOpsPort {
     if (res.status === 200) {
       return { seam, configured: true, ok: true, status: 200, detail: 'ok', latencyMs };
     }
+    const snippet = res.text.replace(/\s+/g, ' ').trim().slice(0, 200);
     const detail =
       res.status === 401 || res.status === 403
-        ? `auth-error: ${await shortBody(res)}`
-        : `unreachable: HTTP ${res.status} ${await shortBody(res)}`.trim();
+        ? `auth-error: ${snippet}`
+        : `unreachable: HTTP ${res.status} ${snippet}`.trim();
     return { seam, configured: true, ok: false, status: res.status, detail, latencyMs };
   }
 
