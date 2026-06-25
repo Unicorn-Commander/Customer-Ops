@@ -108,5 +108,8 @@ describe('EntitlementsService', () => {
     it('is idempotent on an already-suite SKU', () => {
       expect(s.toSkuList(['customer-ops'])).toEqual(['customer-ops']);
     });
+    it('maps magic_outreach -> outreach (keeping the raw key) for the Outreach gate', () => {
+      expect(s.toSkuList(['magic_outreach']).sort()).toEqual(['magic_outreach', 'outreach'].sort());
+    });
   });
 });

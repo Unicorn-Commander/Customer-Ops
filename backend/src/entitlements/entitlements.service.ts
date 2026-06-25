@@ -46,6 +46,16 @@ interface CacheEntry {
 
 const MAX_ENTRIES = 5000;
 
+// Endpoint feature_keys that are NOT in the `*_ops_access` family but map onto a
+// suite SKU a federation gate matches. `magic_outreach` is Magic Unicorn
+// Outreach's existing feature_key (a separate app, not a launch SKU — so it is not
+// in the 8-key `*_ops_access` lineup); the Outreach dual-SKU gate matches
+// `outreach` (outreach-ops SKU_OUTREACH). The endpoint surfaces magic_outreach
+// whenever the org holds it (via tier or org-grant).
+const KEY_ALIASES: Record<string, string> = {
+  magic_outreach: 'outreach',
+};
+
 @Injectable()
 export class EntitlementsService {
   private readonly logger = new Logger(EntitlementsService.name);
@@ -155,19 +165,29 @@ export class EntitlementsService {
   }
 
   /**
-   * Map the endpoint's `*_access` feature_keys onto the suite SKU vocabulary the
-   * federation gates normalize (`customer_ops_access` -> `customer-ops`), keeping
-   * BOTH forms so the launch gate (raw key) and the dual-SKU gates (suite SKU)
-   * both match. e.g. ['customer_ops_access','email_ops_access']
-   *   -> ['customer_ops_access','customer-ops','email_ops_access','email-ops'].
+   * Map the endpoint's feature_keys onto the suite SKU vocabulary the federation
+   * gates normalize, keeping the RAW key too so the launch gate (raw key) and the
+   * dual-SKU gates (suite SKU) both match:
+   *   - `*_ops_access` -> strip `_access`, `_`->`-`  (customer_ops_access -> customer-ops)
+   *   - KEY_ALIASES                                  (magic_outreach -> outreach)
+   * e.g. ['customer_ops_access','email_ops_access','magic_outreach']
+   *   -> ['customer_ops_access','customer-ops','email_ops_access','email-ops',
+   *       'magic_outreach','outreach'].
    */
   toSkuList(featureKeys: string[]): string[] {
     const out = new Set<string>();
     for (const raw of featureKeys) {
       if (!raw) continue;
       out.add(raw);
-      const suite = raw.replace(/_access$/i, '').replace(/_/g, '-');
-      if (suite && suite !== raw) out.add(suite);
+      // The `*_ops_access` family -> suite SKU (strip `_access`, `_`->`-`). Only
+      // these; a flat key like `magic_outreach` is handled by KEY_ALIASES, not by
+      // a blind `_`->`-` (which would emit a spurious `magic-outreach`).
+      if (/_access$/i.test(raw)) {
+        const suite = raw.replace(/_access$/i, '').replace(/_/g, '-');
+        if (suite && suite !== raw) out.add(suite);
+      }
+      const alias = KEY_ALIASES[raw];
+      if (alias) out.add(alias);
     }
     return [...out];
   }
