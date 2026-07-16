@@ -555,7 +555,11 @@ export class ConversationsOpsClient extends ConversationsOpsPort {
       to: request.to,
       body: request.body,
       service: request.channel ?? '',
-      dry_run: false,
+      // Activating the read-side bridge must never implicitly activate outbound
+      // messaging.  Operators have to opt in separately after proving a target.
+      dry_run:
+        this.config.get<string>('CONVERSATIONS_OPS_LIVE_SEND_ENABLED')?.trim().toLowerCase() !==
+        'true',
     });
     if (!raw) return null;
     const cs = (raw['changeSet'] ?? raw['change_set']) as Record<string, unknown> | undefined;

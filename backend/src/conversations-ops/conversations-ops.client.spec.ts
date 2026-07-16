@@ -77,6 +77,45 @@ describe('ConversationsOpsClient', () => {
     });
   });
 
+  describe('outbound safety gate', () => {
+    it('keeps sends dry-run by default when the channel is activated', async () => {
+      const c = client({
+        CONVERSATIONS_OPS_BASE_URL: 'https://gw.example/mcp',
+        UC_ENTITLEMENT_MODE: 'open',
+      });
+      const call = jest
+        .spyOn(c as any, 'callTool')
+        .mockResolvedValue({ changeSet: { applied: false }, serviceUsed: 'iMessage' });
+
+      await c.sendMessage(ctx(), { to: '+15551234567', body: 'safe test', externalRef: 'r1' });
+
+      expect(call).toHaveBeenCalledWith(
+        expect.anything(),
+        'messages.send',
+        expect.objectContaining({ dry_run: true }),
+      );
+    });
+
+    it('permits a live send only with an explicit true opt-in', async () => {
+      const c = client({
+        CONVERSATIONS_OPS_BASE_URL: 'https://gw.example/mcp',
+        UC_ENTITLEMENT_MODE: 'open',
+        CONVERSATIONS_OPS_LIVE_SEND_ENABLED: 'true',
+      });
+      const call = jest
+        .spyOn(c as any, 'callTool')
+        .mockResolvedValue({ changeSet: { applied: true }, serviceUsed: 'iMessage' });
+
+      await c.sendMessage(ctx(), { to: '+15551234567', body: 'live test', externalRef: 'r2' });
+
+      expect(call).toHaveBeenCalledWith(
+        expect.anything(),
+        'messages.send',
+        expect.objectContaining({ dry_run: false }),
+      );
+    });
+  });
+
   describe('mtls transport (direct-to-device) — degrade-clean without material', () => {
     const PEM_CERT = '-----BEGIN CERTIFICATE-----\nMIIBfake\n-----END CERTIFICATE-----';
     const PEM_KEY = '-----BEGIN PRIVATE KEY-----\nMIIBfake\n-----END PRIVATE KEY-----';
