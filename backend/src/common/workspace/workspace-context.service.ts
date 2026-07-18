@@ -73,6 +73,21 @@ export class WorkspaceContextService {
   }
 
   /**
+   * Read-only counterpart of runForUser: same workspace resolution + RLS GUC,
+   * but the transaction is marked READ ONLY. Use on pure-read request handlers
+   * (e.g. the pipeline board) so Postgres rejects an accidental write and the
+   * read never pays for write-side bookkeeping. `fn` must not mutate.
+   */
+  async runForUserReadOnly<T>(
+    user: User & Partial<WithWorkspaceClaim>,
+    fn: (tx: WorkspaceTxClient) => Promise<T>,
+    requestedWorkspaceId?: string | null,
+  ): Promise<T> {
+    const workspaceId = await this.resolveAuthorized(user, requestedWorkspaceId);
+    return this.prisma.withWorkspaceReadOnly(workspaceId, ucUidOf(user), fn);
+  }
+
+  /**
    * Lower-level: run `fn` inside an explicit workspace's RLS transaction. For
    * system jobs / already-resolved workspace ids that don't carry a request user.
    */

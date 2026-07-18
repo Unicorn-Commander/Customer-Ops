@@ -56,7 +56,7 @@ export class M365OAuthService {
   async complete(code: string, state: string): Promise<{ userId: string; workspaceId: string }> {
     this.requireConfigured();
     // The state IS the security boundary — verify + single-use consume FIRST.
-    const claims = this.state.verifyAndConsume(state);
+    const claims = await this.state.verifyAndConsume(state);
 
     const token = await this.msal.acquireTokenByCode(code);
     if (!token.refreshToken) {

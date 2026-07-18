@@ -62,6 +62,31 @@ services:
       start_period: 20s
 
   # ---------------------------------------------------------------------------
+  # Redis 7 — the shared-state plane. This stack drops the backend's
+  # container_name and invites `--scale customer-ops-backend=N`, so the backend's
+  # single-use nonces / Relations-Officer pending confirms / rate-limit counters
+  # MUST live off-process — otherwise a 2nd replica reintroduces the exact
+  # in-process replay / lost-confirm / split-budget bugs the reliability work
+  # fixes. Private (NOT on web); appendonly persistence so a pending confirm
+  # survives a restart. The backend reads it via REDIS_URL below.
+  # ---------------------------------------------------------------------------
+  customer-ops-redis:
+    image: redis:7-alpine
+    container_name: customer-ops-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - customer-ops-redisdata:/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
   # Backend — NestJS (port 3211). On start: `prisma migrate deploy` then
   # `node dist/main`. Routed by Traefik on the SAME host under /api.
   # ---------------------------------------------------------------------------
@@ -69,10 +94,20 @@ services:
     build:
       context: ../backend
       dockerfile: Dockerfile
-    container_name: customer-ops-backend
+    # NO container_name: a pinned name forbids a 2nd instance (Docker requires
+    # unique container names), so `docker compose up --scale customer-ops-backend=N`
+    # would fail. Compose derives a unique per-replica name; Traefik discovers the
+    # replicas by label and load-balances them. The backend is stateless — shared
+    # state (single-use nonces / pending confirms / rate limits) lives in Redis,
+    # wired via REDIS_URL below to the in-stack customer-ops-redis — so replicas
+    # are interchangeable. Scaling without this shared plane is UNSAFE.
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      # The shared-state plane (see customer-ops-redis). Set here so this stack is
+      # scale-safe out of the box; override in .env to point at an external Redis.
+      - REDIS_URL=${REDIS_URL:-redis://customer-ops-redis:6379}
     # Tenancy go-live (flipped 2026-06-20): the runtime DATABASE_URL is now the
     # NOBYPASSRLS `customer_ops_app` role, which has NO DDL rights — so run
     # `prisma migrate deploy` under ADMIN_DATABASE_URL (customer_ops_admin), then
@@ -84,6 +119,8 @@ services:
       - "3211"
     depends_on:
       customer-ops-postgres:
+        condition: service_healthy
+      customer-ops-redis:
         condition: service_healthy
     networks:
       - internal
@@ -165,6 +202,8 @@ services:
 volumes:
   customer-ops-pgdata:
     name: customer-ops-pgdata
+  customer-ops-redisdata:
+    name: customer-ops-redisdata
 
 networks:
   # The EXISTING external Traefik ingress network (verified via docker inspect

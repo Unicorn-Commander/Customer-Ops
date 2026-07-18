@@ -4,6 +4,8 @@ import { User } from '@prisma/client';
 import { WorkspaceContextService } from '../../common/workspace/workspace-context.service';
 import { M365Config } from '../m365.config';
 import { M365StateService } from './m365-state.service';
+import { SingleUseTokenStore } from '../../common/security/single-use-token.store';
+import { RedisService } from '../../common/redis/redis.service';
 import { M365OAuthService } from './m365-oauth.service';
 import { MsalClientFactory } from './msal-client.factory';
 import { M365ConnectionStore } from '../store/m365-connection.store';
@@ -37,7 +39,9 @@ function makeConfig(over: Record<string, string | undefined> = {}): M365Config {
 function build(configOver: Record<string, string | undefined> = {}) {
   const config = makeConfig(configOver);
   const jwt = new JwtService({ secret: JWT_SECRET });
-  const state = new M365StateService(jwt, config);
+  // In-process single-use store (RedisService with no client → in-memory guard).
+  const singleUse = new SingleUseTokenStore({ client: null } as unknown as RedisService);
+  const state = new M365StateService(jwt, config, singleUse);
   const workspaces = { resolveAuthorized: jest.fn().mockResolvedValue(WS) } as unknown as WorkspaceContextService;
 
   // A cipher stub that makes encryption observable WITHOUT echoing the plaintext
