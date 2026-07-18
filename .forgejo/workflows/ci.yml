@@ -150,20 +150,14 @@ jobs:
       - name: Build (next build)
         run: npm run build
 
-      - name: Lint (eslint)
-        # Run linting only when an ESLint config is present. The frontend package
-        # does not yet ship one (and `next lint` prompts interactively when it is
-        # missing, which would hang/false-fail CI). Adding ESLint config + deps to
-        # the frontend is out of this change's scope; the moment such a config
-        # lands (e.g. eslint.config.mjs / .eslintrc.*), this step lints for real
-        # and a lint error fails the job. Backend lint above is the load-bearing
-        # lint gate today.
-        run: |
-          if ls .eslintrc.* .eslintrc eslint.config.* >/dev/null 2>&1; then
-            npm run lint
-          else
-            echo "::warning title=frontend eslint::No ESLint config in frontend/ — skipping. Add one (e.g. eslint-config-next) to enable frontend linting in CI."
-          fi
+      - name: Lint (next lint)
+        # Real, load-bearing frontend lint gate. The frontend ships an ESLint
+        # config (.eslintrc.json → next/core-web-vitals + next/typescript) and
+        # the eslint / eslint-config-next devDeps, so `next lint` runs
+        # non-interactively (no install prompt) and `--max-warnings=0` makes any
+        # lint warning or error FAIL the job. `npm run lint` is `next lint
+        # --max-warnings=0`.
+        run: npm run lint
 
   # --------------------------------------------------------------------------
   # TENANCY — the hermetic, exit-coded RLS acceptance harness. It boots its OWN
@@ -179,6 +173,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # Fail fast with a clear message if the runner has no reachable Docker
+      # daemon: verify-tenancy.sh boots its own throwaway Postgres via
+      # `docker run`, so a missing daemon would otherwise fail deeper in the
+      # harness with a less obvious error.
+      - name: Preflight — Docker daemon reachable
+        run: docker info
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -204,6 +205,8 @@ jobs:
   # AUDIT — the dependency-CVE gate. This is the single `npm audit` step for the
   # repo (the CVE remediation work updates deps; this validates the result).
   # Fails on any high or critical advisory in the production dependency tree.
+  # NOTE: this job may be red until the dependency-CVE remediation task lands —
+  # it goes green once the flagged high/critical advisories are cleared.
   # --------------------------------------------------------------------------
   audit:
     name: audit (npm audit --audit-level=high)
