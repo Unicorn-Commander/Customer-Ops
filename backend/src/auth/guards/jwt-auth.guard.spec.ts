@@ -104,6 +104,31 @@ describe('JwtAuthGuard', () => {
       expect((request as any).user.__ucUid).toBe('kc-1');
     });
 
+    it('stamps __entitlements from the PAT mint-time snapshot (the zero-entitlement fix)', async () => {
+      const request = patReq('co_pat_ok', { workspaceId: WS });
+      const { ctx, reflector } = makeCtx({ request, meta: { requiredScopes: ['read:customers'] } });
+      const resolved = {
+        user: { ...aaron },
+        token: { id: 'pat-1', scopes: ['read:customers'], workspaceId: WS, entitlements: ['customer-ops', 'ai-metered'] },
+        workspaceId: WS,
+        entitlements: ['customer-ops', 'ai-metered'],
+      };
+      const guard = makeGuard(reflector, jest.fn().mockResolvedValue(resolved));
+      await expect(guard.canActivate(ctx)).resolves.toBe(true);
+      // A PAT has no live token claim — without this stamp entitlementsOf(user) is
+      // [] and every gated action 403s under enforce even for a paying user.
+      expect((request as any).user.__entitlements).toEqual(['customer-ops', 'ai-metered']);
+    });
+
+    it('stamps [] when the PAT carries no snapshot (secure default, never over-grants)', async () => {
+      const request = patReq('co_pat_ok', { workspaceId: WS });
+      const { ctx, reflector } = makeCtx({ request, meta: { requiredScopes: ['read:customers'] } });
+      // resolution() builds a token WITHOUT an entitlements field (pre-snapshot token).
+      const guard = makeGuard(reflector, jest.fn().mockResolvedValue(resolution(['read:customers'])));
+      await expect(guard.canActivate(ctx)).resolves.toBe(true);
+      expect((request as any).user.__entitlements).toEqual([]);
+    });
+
     it('honors write ⊇ read (write:customers token reaches a read:customers route)', async () => {
       const { ctx, reflector } = makeCtx({
         request: patReq('co_pat_ok', { workspaceId: WS }),

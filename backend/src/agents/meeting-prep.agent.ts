@@ -37,7 +37,7 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { CustomerActivityKind, User } from '@prisma/client';
 import { WorkspaceContextService } from '../common/workspace/workspace-context.service';
 import { WorkspaceTxClient } from '../prisma/prisma.service';
-import { WithWorkspaceClaim, entitlementsOf, ucUidOf } from '../common/workspace/workspace.util';
+import { WithWorkspaceClaim, ucUidOf } from '../common/workspace/workspace.util';
 import { ContactOpsPort } from '../contact-ops/contact-ops.port';
 import { MeetingOpsPort } from '../meeting-ops/meeting-ops.port';
 import { OutreachPort } from '../outreach-ops/outreach-ops.port';
@@ -82,6 +82,9 @@ export class MeetingPrepAgent {
     // Runtime, workspace-scoped kill switch: halt the agent run at dispatch when
     // this workspace is paused (re-read every call — a flip takes effect now).
     await this.workspaces.assertAgentsNotPaused(workspaceId);
+    // Bind the entitlement claim to the acting workspace once (intersect with its
+    // server-side entitlements); every gate below consumes this bound set.
+    const entitlements = await this.workspaces.effectiveEntitlements(user, workspaceId);
 
     // 1) LOCAL relationship (RLS tx; 404 if absent in the workspace).
     const rel = await this.workspaces.runForUser(
@@ -103,7 +106,7 @@ export class MeetingPrepAgent {
       this.outreach.isConfigured()
         ? this.outreach
             .listTouchesForContact(
-              { workspaceId, ucUid: ucUid || null, entitlements: entitlementsOf(user) },
+              { workspaceId, ucUid: ucUid || null, entitlements },
               rel.contactId,
             )
             .catch((): OutreachTouch[] => [])
@@ -155,7 +158,7 @@ export class MeetingPrepAgent {
     const infCtx: InferenceContext = {
       workspaceId,
       ucUid: ucUid || null,
-      entitlements: entitlementsOf(user),
+      entitlements,
     };
     const gate = this.inference.checkEntitlement(infCtx, tier);
     const configured = this.inference.isConfigured();

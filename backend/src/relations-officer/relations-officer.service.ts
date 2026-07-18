@@ -130,10 +130,13 @@ export class RelationsOfficerService {
     // customer-360; otherwise a short pipeline summary.
     const grounding = await this.buildGrounding(user, customerId, requestedWorkspaceId);
 
+    const workspaceId = await this.workspaces.resolveAuthorized(user, requestedWorkspaceId);
     const infCtx: InferenceContext = {
-      workspaceId: await this.workspaces.resolveAuthorized(user, requestedWorkspaceId),
+      workspaceId,
       ucUid: ucUidOf(user) || null,
-      entitlements: entitlementsOf(user),
+      // Bind the entitlement claim to the acting workspace (intersect with its
+      // server-side entitlements) — not the bare per-user token claim.
+      entitlements: await this.workspaces.effectiveEntitlements(user, workspaceId),
     };
 
     const messages = [

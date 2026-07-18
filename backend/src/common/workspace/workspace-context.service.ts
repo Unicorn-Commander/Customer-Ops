@@ -5,6 +5,9 @@ import { PrismaService, WorkspaceTxClient } from '../../prisma/prisma.service';
 import { MembershipService } from './membership.service';
 import {
   DEFAULT_WORKSPACE_FALLBACK,
+  entitlementsOf,
+  intersectEntitlements,
+  parseWorkspaceEntitlements,
   resolveWorkspaceId,
   ucUidOf,
   WithWorkspaceClaim,
@@ -60,6 +63,40 @@ export class WorkspaceContextService {
   ): Promise<string> {
     const claim = requestedWorkspaceId ?? this.resolve(user);
     return this.membership.resolveAndAuthorize(user, claim);
+  }
+
+  /**
+   * The acting workspace's server-side entitlement SKUs, read from the
+   * Workspace.entitlementCache mirror — or `null` when the workspace has no
+   * server-side source (cache column null, or no local mirror row, e.g. the
+   * flag-off default-workspace path). `null` means "trust the token claim"; a
+   * present (possibly empty) cache is authoritative. Workspace is a control
+   * table (not RLS-fenced), so this reads the plain client — no GUC needed.
+   */
+  async workspaceEntitlements(workspaceId: string): Promise<string[] | null> {
+    const ws = await this.prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: { entitlementCache: true },
+    });
+    if (!ws) return null;
+    return parseWorkspaceEntitlements(ws.entitlementCache);
+  }
+
+  /**
+   * The entitlement SKUs to gate on for `user` acting in `workspaceId`: the
+   * caller's token/PAT claim (`entitlementsOf`) BOUND to the workspace by
+   * intersecting it with the workspace's server-side entitlements. This is the
+   * (user, workspace) binding every federation/inference gate consumes — a token
+   * carrying `customer-ops` from another org is denied it in a workspace whose
+   * server-side cache lacks it, while a workspace with no cache falls back to the
+   * claim (today's behavior). Callers pass the workspace they have ALREADY
+   * resolved+authorized (resolveAuthorized), so this adds no membership decision.
+   */
+  async effectiveEntitlements(
+    user: User & Partial<WithWorkspaceClaim>,
+    workspaceId: string,
+  ): Promise<string[]> {
+    return intersectEntitlements(entitlementsOf(user), await this.workspaceEntitlements(workspaceId));
   }
 
   /**

@@ -2,6 +2,7 @@ import { ForbiddenException, NotFoundException } from '@nestjs/common';
 import { CustomerActivityKind, User } from '@prisma/client';
 import { LeadTriageAgent } from './lead-triage.agent';
 import { WorkspaceContextService } from '../common/workspace/workspace-context.service';
+import { entitlementsOf } from '../common/workspace/workspace.util';
 import { ContactOpsPort } from '../contact-ops/contact-ops.port';
 import { MeetingOpsPort } from '../meeting-ops/meeting-ops.port';
 import { OutreachPort } from '../outreach-ops/outreach-ops.port';
@@ -121,6 +122,9 @@ function makeAgent(opts?: {
   const workspaces = {
     resolveAuthorized: jest.fn().mockResolvedValue(WS),
     assertAgentsNotPaused: jest.fn().mockResolvedValue(undefined),
+    // Workspace has no server-side cache in these unit specs → the (user,workspace)
+    // bind is the identity: effective == the token/PAT claim on the user.
+    effectiveEntitlements: jest.fn(async (u: any) => entitlementsOf(u)),
     runForUser: jest.fn(async (_u: User, fn: any) => fn(lastTx.current)),
   } as unknown as WorkspaceContextService;
 

@@ -60,6 +60,25 @@ describe('PatService', () => {
     expect((stored as any).plaintext).toBeUndefined();
   });
 
+  it('create SNAPSHOTS the minting session user entitlements; findByPlaintext carries them', async () => {
+    // The mint route is JWT-only, so the session user carries the live SKU claim.
+    const paying = { ...aaron, __entitlements: ['customer-ops', 'ai-metered'] } as User & {
+      __entitlements: string[];
+    };
+    const res = await service.create(paying, { name: 'agentic token', scopes: ['run:agents'] });
+    expect(res.entitlements).toEqual(['customer-ops', 'ai-metered']);
+    expect(store[0].entitlements).toEqual(['customer-ops', 'ai-metered']);
+
+    const resolved = await service.findByPlaintext(res.plaintext);
+    // This is exactly what the auth chokepoint stamps onto __entitlements.
+    expect(resolved!.entitlements).toEqual(['customer-ops', 'ai-metered']);
+  });
+
+  it('create snapshots [] when the session user carries no entitlements (no over-grant)', async () => {
+    const res = await service.create(aaron, { name: 'plain token' });
+    expect(res.entitlements).toEqual([]);
+  });
+
   it('create rejects an empty name and unknown scopes', async () => {
     await expect(service.create(aaron, { name: '  ' })).rejects.toBeInstanceOf(BadRequestException);
     await expect(service.create(aaron, { name: 'x', scopes: ['read:customers', 'bogus:scope'] })).rejects.toBeInstanceOf(

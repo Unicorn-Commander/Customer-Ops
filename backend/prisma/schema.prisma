@@ -773,6 +773,12 @@ model PersonalAccessToken {
   prefix      String    @default("co_pat_")
   tokenHash   String    @unique
   scopes      String[]
+  // SKUs snapshotted at mint from the minting session user's verified
+  // entitlements. A PAT has no live token claim, so the auth chokepoint stamps
+  // these onto request.user.__entitlements; the entitlement gates then intersect
+  // them with the acting workspace's server-side entitlements. See
+  // jwt-auth.guard.ts + WorkspaceContextService.effectiveEntitlements.
+  entitlements String[]  @default([])
   lastUsedAt  DateTime?
   expiresAt   DateTime? // null = no expiry
   createdAt   DateTime  @default(now())
