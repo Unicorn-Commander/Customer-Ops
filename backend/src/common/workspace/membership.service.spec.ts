@@ -268,4 +268,56 @@ describe('MembershipService', () => {
       await expect(make({}, lastOwnerPrisma).revokeMember(BOOTSTRAP, 'kc-aaron-sub')).rejects.toThrow(BadRequestException);
     });
   });
+
+  // ── Kill switch: workspace-scoped, runtime-mutable (Workspace.agentsPaused) ──
+  describe('kill switch (agentsPaused)', () => {
+    const WS_A = 'ws-a';
+    const WS_B = 'ws-b';
+
+    it('areAgentsPaused reflects the workspace row, PER workspace', async () => {
+      const findUnique = jest.fn(({ where: { id } }: any) =>
+        Promise.resolve(id === WS_A ? { agentsPaused: true } : { agentsPaused: false }),
+      );
+      const svc = make({}, { workspace: { findUnique } });
+      await expect(svc.areAgentsPaused(WS_A)).resolves.toBe(true); // paused
+      await expect(svc.areAgentsPaused(WS_B)).resolves.toBe(false); // not paused
+      // Read at CALL time (runtime) — one DB read per check, no boot snapshot.
+      expect(findUnique).toHaveBeenCalledTimes(2);
+    });
+
+    it('areAgentsPaused defaults to false when the workspace mirror is absent', async () => {
+      const svc = make({}, { workspace: { findUnique: jest.fn().mockResolvedValue(null) } });
+      await expect(svc.areAgentsPaused('missing')).resolves.toBe(false);
+    });
+
+    it('assertAgentsNotPaused throws 403 when engaged, resolves when not — per workspace', async () => {
+      const findUnique = jest.fn(({ where: { id } }: any) =>
+        Promise.resolve(id === WS_A ? { agentsPaused: true } : { agentsPaused: false }),
+      );
+      const svc = make({}, { workspace: { findUnique } });
+      await expect(svc.assertAgentsNotPaused(WS_A)).rejects.toThrow(ForbiddenException);
+      await expect(svc.assertAgentsNotPaused(WS_A)).rejects.toThrow(/paused/i);
+      await expect(svc.assertAgentsNotPaused(WS_B)).resolves.toBeUndefined();
+    });
+
+    it('setAgentsPaused flips the flag on the workspace row and returns the new state', async () => {
+      const update = jest.fn().mockResolvedValue({ agentsPaused: true });
+      const prisma = {
+        workspace: {
+          findUnique: jest.fn().mockResolvedValue({ id: WS_A }), // getWorkspaceOrThrow
+          update,
+        },
+      };
+      const svc = make({}, prisma);
+      await expect(svc.setAgentsPaused(WS_A, true)).resolves.toBe(true);
+      expect(update).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: WS_A }, data: { agentsPaused: true } }),
+      );
+    });
+
+    it('setAgentsPaused 404s when the workspace mirror is absent', async () => {
+      const svc = make({}, { workspace: { findUnique: jest.fn().mockResolvedValue(null), update: jest.fn() } });
+      await expect(svc.setAgentsPaused('missing', true)).rejects.toThrow(NotFoundException);
+    });
+  });
 });

@@ -71,6 +71,9 @@ export class NextBestActionAgent {
   ): Promise<NextBestActionResult> {
     const ucUid = ucUidOf(user);
     const workspaceId = await this.workspaces.resolveAuthorized(user, requestedWorkspaceId);
+    // Runtime, workspace-scoped kill switch: halt the agent run at dispatch when
+    // this workspace is paused (re-read every call — a flip takes effect now).
+    await this.workspaces.assertAgentsNotPaused(workspaceId);
 
     // 1) LOCAL relationship (RLS tx; 404 if absent in the workspace).
     const rel = await this.workspaces.runForUser(

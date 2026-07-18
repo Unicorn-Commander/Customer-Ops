@@ -1228,7 +1228,7 @@ export class CustomersService {
   ) {
     const ucUid = ucUidOf(user);
     const fedCtx = await this.emailFederationContext(user, requestedWorkspaceId);
-    const mode = dto.mode ?? 'send';
+    const mode = dto.mode ?? 'draft';
 
     if (!this.emailOps.isConfigured()) {
       throw new BadRequestException(
@@ -1243,6 +1243,13 @@ export class CustomersService {
         `Email ${mode} denied for ${ucUid} (ws=${fedCtx.workspaceId}): ${gate.reason}`,
       );
       throw new ForbiddenException(gate.reason);
+    }
+
+    // Runtime kill switch (workspace-scoped): halt outbound SENDS at dispatch
+    // when this workspace is paused. Drafts stay allowed — they only stage the
+    // agent-inbox approval surface (a human approves before anything leaves).
+    if (mode === 'send') {
+      await this.workspaces.assertAgentsNotPaused(fedCtx.workspaceId);
     }
 
     // Resolve the recipient: the explicit override, else the federated contact's

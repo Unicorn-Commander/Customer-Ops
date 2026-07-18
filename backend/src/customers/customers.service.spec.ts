@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { AuditAction, CustomerActivityKind, RelationshipStage, User } from '@prisma/client';
 import { CustomersService } from './customers.service';
 import { WorkspaceContextService } from '../common/workspace/workspace-context.service';
@@ -228,6 +228,7 @@ function makeService(opts?: {
   const lastTx = { current: null as any };
   const workspaces = {
     resolveAuthorized: jest.fn().mockResolvedValue(WS),
+    assertAgentsNotPaused: jest.fn().mockResolvedValue(undefined),
     runForUser: jest.fn(async (_user: User, fn: any) => fn(lastTx.current)),
     runForUserReadOnly: jest.fn(async (_user: User, fn: any) => fn(lastTx.current)),
     runInWorkspace: jest.fn(async (_ws: string, _uc: any, fn: any) => fn(lastTx.current)),
@@ -1050,7 +1051,8 @@ describe('CustomersService — Email-Ops federation (Phase 4; Email-Ops app mock
       const { tx, activities, emailLinks } = makeTx(makeRow({ id: 'cust-1', contactId: 'contact-42' }));
       lastTx.current = tx;
 
-      const result = await svc.sendEmailForUser(aaron, 'cust-1', sendDto, WS);
+      // mode is explicit here — the default is now 'draft' (see the safe-default test below).
+      const result = await svc.sendEmailForUser(aaron, 'cust-1', { ...sendDto, mode: 'send' }, WS);
 
       expect(email.composeEmail).toHaveBeenCalledTimes(1);
       const [ctx, req] = (email.composeEmail as jest.Mock).mock.calls[0];
@@ -1083,6 +1085,52 @@ describe('CustomersService — Email-Ops federation (Phase 4; Email-Ops app mock
       const [, req] = (email.composeEmail as jest.Mock).mock.calls[0];
       expect(req.mode).toBe('draft');
       expect(emailLinks[0]).toMatchObject({ mode: 'draft', lastStatus: 'pending_approval' });
+    });
+
+    it('SAFE DEFAULT: mode omitted → DRAFTS (stages for approval, does NOT send)', async () => {
+      const draftEmail = entitledEmail({
+        composeEmail: jest.fn().mockResolvedValue({ ...COMPOSE_RESULT, id: 'msg-3', status: 'pending_approval', mode: 'draft' }),
+      });
+      const { svc, email, workspaces, lastTx } = makeService({ email: draftEmail });
+      const { tx, emailLinks } = makeTx(makeRow({ id: 'cust-1', contactId: 'contact-42' }));
+      lastTx.current = tx;
+
+      // No `mode` on the dto — the send default must resolve to 'draft'.
+      await svc.sendEmailForUser(aaron, 'cust-1', sendDto, WS);
+      const [, req] = (email.composeEmail as jest.Mock).mock.calls[0];
+      expect(req.mode).toBe('draft');
+      expect(emailLinks[0]).toMatchObject({ mode: 'draft', lastStatus: 'pending_approval' });
+      // A draft is NOT gated by the outbound kill switch (only mode=send is).
+      expect(workspaces.assertAgentsNotPaused).not.toHaveBeenCalled();
+    });
+
+    it('KILL SWITCH: workspace paused → mode=send is HALTED (403), NO Email-Ops call, no link write', async () => {
+      const { svc, email, workspaces, lastTx } = makeService({ email: entitledEmail() });
+      const { tx } = makeTx(makeRow({ id: 'cust-1', contactId: 'contact-42' }));
+      lastTx.current = tx;
+      // Runtime, workspace-scoped kill switch engaged for this workspace.
+      (workspaces.assertAgentsNotPaused as jest.Mock).mockRejectedValue(
+        new ForbiddenException('Agent and outbound activity is paused for this workspace.'),
+      );
+
+      await expect(
+        svc.sendEmailForUser(aaron, 'cust-1', { ...sendDto, mode: 'send' }, WS),
+      ).rejects.toThrow(/paused/i);
+
+      expect(workspaces.assertAgentsNotPaused).toHaveBeenCalledWith(WS);
+      expect(email.composeEmail).not.toHaveBeenCalled();
+      expect(tx.customerEmailLink.create).not.toHaveBeenCalled();
+    });
+
+    it('KILL SWITCH: workspace NOT paused → mode=send proceeds and calls Email-Ops', async () => {
+      const { svc, email, workspaces, lastTx } = makeService({ email: entitledEmail() });
+      const { tx } = makeTx(makeRow({ id: 'cust-1', contactId: 'contact-42' }));
+      lastTx.current = tx;
+
+      await svc.sendEmailForUser(aaron, 'cust-1', { ...sendDto, mode: 'send' }, WS);
+
+      expect(workspaces.assertAgentsNotPaused).toHaveBeenCalledWith(WS);
+      expect(email.composeEmail).toHaveBeenCalledTimes(1);
     });
 
     it('falls back to the FEDERATED contact primary email when toAddress is omitted', async () => {

@@ -36,6 +36,7 @@ import { WorkspaceMembershipGuard } from './workspace-membership.guard';
 import { WorkspaceRoleGuard } from './workspace-role.guard';
 import { ucUidOf, WithWorkspaceClaim } from './workspace.util';
 import { UpdateMemberRoleDto } from './dto/update-member-role.dto';
+import { SetAgentPauseDto } from './dto/set-agent-pause.dto';
 
 type AuthedUser = User & Partial<WithWorkspaceClaim>;
 
@@ -68,6 +69,8 @@ export class WorkspaceController {
       hipaa_mode: ws.hipaaMode,
       gdpr_mode: ws.gdprMode,
       data_residency: ws.dataResidency,
+      // The runtime kill switch state (so the settings UI can render the toggle).
+      agents_paused: ws.agentsPaused,
       created_at: ws.createdAt,
       your_role: yourRole ? String(yourRole).toLowerCase() : null,
       member_count: members.filter((m) => m.status === 'active').length,
@@ -84,6 +87,31 @@ export class WorkspaceController {
     ]);
     // `canManage` lets the UI show/hide the owner-only controls without guessing.
     return { members, your_role: yourRole ? String(yourRole).toLowerCase() : null, can_manage: yourRole === 'OWNER' };
+  }
+
+  @Patch('agent-pause')
+  @JwtOnly()
+  @ApiOperation({
+    summary:
+      'Toggle the workspace kill switch (owner only). paused=true halts agent ' +
+      'runs + outbound sends for this workspace at dispatch — runtime, no restart.',
+  })
+  async setAgentPause(
+    @CurrentUser() user: AuthedUser,
+    @Param('workspaceId') workspaceId: string,
+    @Body() dto: SetAgentPauseDto,
+  ) {
+    await this.membership.assertOwner(user, workspaceId);
+    const paused = await this.membership.setAgentsPaused(workspaceId, dto.paused);
+    await this.audit.log({
+      workspaceId,
+      userId: ucUidOf(user),
+      action: AuditAction.UPDATE,
+      resource: 'workspace',
+      resourceId: workspaceId,
+      details: { agentsPaused: paused },
+    });
+    return { workspace_id: workspaceId, agents_paused: paused };
   }
 
   @Patch('members/:userKey')

@@ -211,6 +211,54 @@ export class MembershipService {
     }
   }
 
+  // ── Kill switch: workspace-scoped, runtime-mutable agent/outbound halt ───────
+  // The flag lives on the workspace mirror (a control-plane row, NOT RLS-fenced),
+  // so it is read/written with the plain client. It is CHECKED at dispatch time
+  // (every agent run + outbound send re-reads it) — flipping it takes effect
+  // immediately, no restart. Mirrors Contact-Ops / Email-Ops (agentsPaused).
+
+  /** True iff agent runs + outbound sends are paused for this workspace. */
+  async areAgentsPaused(workspaceId: string): Promise<boolean> {
+    const ws = await this.prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: { agentsPaused: true },
+    });
+    return !!ws?.agentsPaused;
+  }
+
+  /**
+   * Dispatch guard: throw 403 when the workspace kill switch is engaged. Called
+   * at the start of every agent run and before every outbound send, so a flip
+   * halts activity for THAT workspace immediately (per-workspace, runtime).
+   */
+  async assertAgentsNotPaused(workspaceId: string): Promise<void> {
+    if (await this.areAgentsPaused(workspaceId)) {
+      throw new ForbiddenException(
+        'Agent and outbound activity is paused for this workspace (kill switch ' +
+          'engaged). A workspace owner can resume it in workspace settings.',
+      );
+    }
+  }
+
+  /**
+   * Toggle the workspace kill switch and return the new state. 404 if the
+   * workspace mirror is absent; a no-op when unchanged. The caller MUST have
+   * already passed assertOwner (owner-gated at the route/tool, mirroring the
+   * member-management mutations above).
+   */
+  async setAgentsPaused(workspaceId: string, paused: boolean): Promise<boolean> {
+    await this.getWorkspaceOrThrow(workspaceId);
+    const updated = await this.prisma.workspace.update({
+      where: { id: workspaceId },
+      data: { agentsPaused: paused },
+      select: { agentsPaused: true },
+    });
+    this.logger.log(
+      `Workspace ${workspaceId} kill switch → agentsPaused=${updated.agentsPaused}`,
+    );
+    return updated.agentsPaused;
+  }
+
   /**
    * The member roster (everyone not REVOKED), newest-role first, with the user's
    * display fields resolved from the users mirror (a member with no local user

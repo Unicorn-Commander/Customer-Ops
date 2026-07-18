@@ -220,6 +220,10 @@ model Workspace {
   // A control-plane column (workspaces is NOT RLS-fenced); set owner-gated.
   retentionDays         Int?
   status                String                 @default("active") // active|suspended|archived|deleting
+  // Runtime, workspace-scoped kill switch. When true, agent runs + outbound
+  // sends for this workspace are halted at dispatch (no restart needed). Owner-
+  // gated toggle. Mirrors Contact-Ops / Email-Ops (Workspace.agentsPaused).
+  agentsPaused          Boolean                @default(false)
   entitlementCache      Json? // offline/dedicated only; null on shared SaaS
   syncedAt              DateTime               @default(now())
   createdAt             DateTime               @default(now())

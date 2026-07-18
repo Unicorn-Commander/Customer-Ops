@@ -1,4 +1,4 @@
-import { NotFoundException } from '@nestjs/common';
+import { ForbiddenException, NotFoundException } from '@nestjs/common';
 import { CustomerActivityKind, User } from '@prisma/client';
 import { LeadTriageAgent } from './lead-triage.agent';
 import { WorkspaceContextService } from '../common/workspace/workspace-context.service';
@@ -120,6 +120,7 @@ function makeAgent(opts?: {
   const lastTx = { current: null as any };
   const workspaces = {
     resolveAuthorized: jest.fn().mockResolvedValue(WS),
+    assertAgentsNotPaused: jest.fn().mockResolvedValue(undefined),
     runForUser: jest.fn(async (_u: User, fn: any) => fn(lastTx.current)),
   } as unknown as WorkspaceContextService;
 
@@ -174,6 +175,35 @@ describe('LeadTriageAgent (all ports + inference MOCKED)', () => {
     // NO side effect: the agent never moved the stage or wrote the customer.
     expect(tx.customer.findUnique).toHaveBeenCalled();
     expect((tx.customer as any).update).toBeUndefined();
+  });
+
+  it('KILL SWITCH: workspace paused → the run is HALTED at dispatch (throws, no inference, no local read)', async () => {
+    const { agent, inference, workspaces, lastTx } = makeAgent();
+    const { tx } = makeTx(makeRow());
+    lastTx.current = tx;
+    // Runtime kill switch engaged for this workspace: the dispatch guard rejects.
+    (workspaces.assertAgentsNotPaused as jest.Mock).mockRejectedValue(
+      new ForbiddenException('Agent and outbound activity is paused for this workspace.'),
+    );
+
+    await expect(agent.triage(aaron, 'cust-1', WS)).rejects.toThrow(/paused/i);
+
+    // Halted BEFORE any work: no inference spend, no relationship read.
+    expect(workspaces.assertAgentsNotPaused).toHaveBeenCalledWith(WS);
+    expect(inference.complete).not.toHaveBeenCalled();
+    expect(tx.customer.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('KILL SWITCH: workspace NOT paused → the run proceeds normally', async () => {
+    const { agent, inference, workspaces, lastTx } = makeAgent();
+    const { tx } = makeTx(makeRow());
+    lastTx.current = tx;
+    // Default guard resolves (unset) — the run is allowed.
+    const result = await agent.triage(aaron, 'cust-1', WS);
+
+    expect(workspaces.assertAgentsNotPaused).toHaveBeenCalledWith(WS);
+    expect(inference.complete).toHaveBeenCalledTimes(1);
+    expect(result.score).toBe(82);
   });
 
   it('DEGRADE-CLEAN: inference unconfigured → signal snapshot only, null score, NO inference call, still logs', async () => {
