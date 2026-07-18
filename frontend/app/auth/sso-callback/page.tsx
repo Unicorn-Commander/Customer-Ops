@@ -1,15 +1,17 @@
 'use client';
 
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Radar, ShieldCheck, AlertTriangle, ArrowLeft } from 'lucide-react';
-import { apiGet, setSession, clearSession, CustomerOpsUser } from '@/lib/api';
+import { apiGet, exchangeSsoCode, setSession, clearSession, CustomerOpsUser } from '@/lib/api';
 
 /**
- * SSO return leg. Keycloak hands back here with a `token` query param; we validate
- * it by fetching the profile, persist the session, and bounce to the cockpit.
- * Presentation matches the cinematic login screen (glass + ambient field) so the
- * sign-in flow reads as one continuous surface — no jump to a legacy card.
+ * SSO return leg. Keycloak hands back here with a single-use `code` query param
+ * (NOT the session token — that must never travel in a URL). We POST the code to
+ * exchange it for the token, validate the token by fetching the profile, persist
+ * the session, and bounce to the cockpit. Presentation matches the cinematic
+ * login screen (glass + ambient field) so the sign-in flow reads as one
+ * continuous surface — no jump to a legacy card.
  */
 
 /** The shared cinematic shell (ambient field + centered glass card). */
@@ -55,18 +57,33 @@ function SsoCallbackInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [error, setError] = useState<string | null>(null);
+  // The SSO code is single-use. React StrictMode double-invokes effects in dev,
+  // so without this gate the second pass re-POSTs the now-dead code, 400s, and
+  // the catch below calls clearSession() — wiping the session the first pass
+  // just set. Redeem exactly once.
+  const consumed = useRef(false);
 
   useEffect(() => {
-    const token = searchParams.get('token');
-    if (!token) {
-      setError('No authentication token returned from SSO.');
+    if (consumed.current) return;
+    consumed.current = true;
+
+    const code = searchParams.get('code');
+    if (!code) {
+      setError('No authentication code returned from SSO.');
       return;
+    }
+    // Scrub the single-use code from the URL now that we've read it — it must
+    // not linger in the address bar, browser history, or Referer headers.
+    if (typeof window !== 'undefined') {
+      window.history.replaceState(null, '', window.location.pathname);
     }
     (async () => {
       try {
-        // Validate the token by fetching the profile, then persist the session.
-        const user = await apiGet<CustomerOpsUser>('/auth/profile', token);
-        setSession(token, user);
+        // Swap the single-use code for the session token over POST (the token
+        // never rides a URL), validate it by fetching the profile, then persist.
+        const { access_token } = await exchangeSsoCode(code);
+        const user = await apiGet<CustomerOpsUser>('/auth/profile', access_token);
+        setSession(access_token, user);
         router.replace('/dashboard');
       } catch {
         clearSession();
