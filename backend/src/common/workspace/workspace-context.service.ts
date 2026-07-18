@@ -39,6 +39,16 @@ export class WorkspaceContextService {
   }
 
   /**
+   * Dispatch guard for the runtime, workspace-scoped kill switch: throw 403 when
+   * the workspace has agents/outbound paused. Delegates to MembershipService (the
+   * flag owner) so agent + send paths depend only on this seam. Re-read on every
+   * call — a toggle takes effect immediately, no restart.
+   */
+  async assertAgentsNotPaused(workspaceId: string): Promise<void> {
+    return this.membership.assertAgentsNotPaused(workspaceId);
+  }
+
+  /**
    * Resolve the active workspace for `user` AND authorize membership (a no-op
    * while CUSTOMER_OPS_TENANCY_ENABLED is off — see MembershipService). Use this
    * on workspace-scoped request paths; it 403s when tenancy is live and the

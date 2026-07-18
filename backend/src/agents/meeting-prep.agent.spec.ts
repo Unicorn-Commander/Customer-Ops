@@ -152,6 +152,7 @@ function makeAgent(opts?: {
   const lastTx = { current: null as any };
   const workspaces = {
     resolveAuthorized: jest.fn().mockResolvedValue(WS),
+    assertAgentsNotPaused: jest.fn().mockResolvedValue(undefined),
     runForUser: jest.fn(async (_u: User, fn: any) => fn(lastTx.current)),
   } as unknown as WorkspaceContextService;
 

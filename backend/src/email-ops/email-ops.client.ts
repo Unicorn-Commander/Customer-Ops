@@ -528,16 +528,9 @@ export class EmailOpsClient extends EmailOpsPort {
     if (!this.baseUrl) return null;
     // Defense-in-depth: the service pre-checks, but never make the call without
     // the dual-SKU gate (or the open bootstrap) passing.
-    // Runtime kill switch: EMAIL_OUTBOUND_KILL=true blocks all sends (agent
-    // safety — a human flips this env var and restarts to stop a runaway loop).
-    // Drafts are always allowed (human must approve before the kill matters).
-    if (request.mode === 'send' && this.config.get<string>('EMAIL_OUTBOUND_KILL')?.trim().toLowerCase() === 'true') {
-      this.logger.warn(
-        `EMAIL_OUTBOUND_KILL is active — blocking send for workspace=${ctx.workspaceId}`,
-      );
-      return null;
-    }
-
+    // NOTE: the outbound kill switch is now workspace-scoped + runtime-mutable
+    // (Workspace.agentsPaused), enforced at dispatch in CustomersService before
+    // this client is reached — not a boot-snapshot env var.
     const gate = this.checkEntitlement(ctx);
     if (!gate.allowed) {
       this.logger.warn(

@@ -417,7 +417,8 @@ export class McpService {
           'Send or draft an outbound email to this customer’s contact via the ' +
           'Email-Ops app. mode=draft (DEFAULT) stages the agent-inbox approval ' +
           'surface (safe — a human approves before it leaves); mode=send queues ' +
-          'delivery now but may be blocked by the EMAIL_OUTBOUND_KILL kill switch. ' +
+          'delivery now but is blocked when the workspace kill switch is engaged ' +
+          '(the owner-gated, runtime agents-paused flag). ' +
           'Idempotent on a deterministic external_ref. Requires BOTH customer-ops ' +
           'and email-ops entitlements. The Email-Ops app owns the mailbox + message ' +
           '— Customer-Ops stores no message body.',

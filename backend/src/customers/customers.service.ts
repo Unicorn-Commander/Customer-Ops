@@ -1154,6 +1154,13 @@ export class CustomersService {
       throw new ForbiddenException(gate.reason);
     }
 
+    // Runtime kill switch (workspace-scoped): halt outbound SENDS at dispatch
+    // when this workspace is paused. Drafts stay allowed — they only stage the
+    // agent-inbox approval surface (a human approves before anything leaves).
+    if (mode === 'send') {
+      await this.workspaces.assertAgentsNotPaused(fedCtx.workspaceId);
+    }
+
     // Resolve the recipient: the explicit override, else the federated contact's
     // primary email (federate, don't store). 400 when neither is available.
     let toAddress = dto.toAddress?.trim() || null;
