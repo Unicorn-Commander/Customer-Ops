@@ -1137,7 +1137,7 @@ export class CustomersService {
   ) {
     const ucUid = ucUidOf(user);
     const fedCtx = await this.emailFederationContext(user, requestedWorkspaceId);
-    const mode = dto.mode ?? 'send';
+    const mode = dto.mode ?? 'draft';
 
     if (!this.emailOps.isConfigured()) {
       throw new BadRequestException(

@@ -415,11 +415,12 @@ export class McpService {
         title: 'Send customer email',
         description:
           'Send or draft an outbound email to this customer’s contact via the ' +
-          'Email-Ops app. mode=send queues delivery now; mode=draft stages the ' +
-          'agent-inbox approval surface (the safe default for an agent — a human ' +
-          'approves before it leaves). Idempotent on a deterministic external_ref. ' +
-          'Requires BOTH customer-ops and email-ops entitlements. The Email-Ops app ' +
-          'owns the mailbox + message — Customer-Ops stores no message body.',
+          'Email-Ops app. mode=draft (DEFAULT) stages the agent-inbox approval ' +
+          'surface (safe — a human approves before it leaves); mode=send queues ' +
+          'delivery now but may be blocked by the EMAIL_OUTBOUND_KILL kill switch. ' +
+          'Idempotent on a deterministic external_ref. Requires BOTH customer-ops ' +
+          'and email-ops entitlements. The Email-Ops app owns the mailbox + message ' +
+          '— Customer-Ops stores no message body.',
         inputSchema: {
           customer_id: z.string(),
           workspace_id: z.string().optional(),
