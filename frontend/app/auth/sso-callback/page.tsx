@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Radar, ShieldCheck, AlertTriangle, ArrowLeft } from 'lucide-react';
 import { apiGet, exchangeSsoCode, setSession, clearSession, CustomerOpsUser } from '@/lib/api';
@@ -57,12 +57,25 @@ function SsoCallbackInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [error, setError] = useState<string | null>(null);
+  // The SSO code is single-use. React StrictMode double-invokes effects in dev,
+  // so without this gate the second pass re-POSTs the now-dead code, 400s, and
+  // the catch below calls clearSession() — wiping the session the first pass
+  // just set. Redeem exactly once.
+  const consumed = useRef(false);
 
   useEffect(() => {
+    if (consumed.current) return;
+    consumed.current = true;
+
     const code = searchParams.get('code');
     if (!code) {
       setError('No authentication code returned from SSO.');
       return;
+    }
+    // Scrub the single-use code from the URL now that we've read it — it must
+    // not linger in the address bar, browser history, or Referer headers.
+    if (typeof window !== 'undefined') {
+      window.history.replaceState(null, '', window.location.pathname);
     }
     (async () => {
       try {
