@@ -7,6 +7,12 @@ import compression from 'compression';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { helmetOptions, bodyLimit } from './common/security/security.config';
+import {
+  assertFederationOverrideSafe,
+  collectActiveOverrideEnvs,
+} from './common/security/federation-override-guard';
+import { tenancyEnabled } from './common/workspace/feature-flags';
+import { PrismaService } from './prisma/prisma.service';
 
 async function bootstrap() {
   // Typed as NestExpressApplication so we can cap body sizes via the platform's
@@ -21,6 +27,37 @@ async function bootstrap() {
   });
   const configService = app.get(ConfigService);
   const logger = new Logger('Bootstrap');
+
+  // Federation workspace-override guard (cross-tenant-leak blocker). A
+  // *_WORKSPACE_OVERRIDE env pins every federated call to one canonical workspace
+  // — safe ONLY on a single-workspace dogfood stack. If an override is set while
+  // tenancy is multi OR more than one workspace row exists, REFUSE to start rather
+  // than silently route one tenant's federated calls at another tenant's workspace.
+  // Runs before listen(); Prisma is already connected via AppModule's onModuleInit.
+  {
+    const activeOverrides = collectActiveOverrideEnvs(process.env);
+    if (activeOverrides.length > 0) {
+      const prisma = app.get(PrismaService);
+      const workspaceCount = await prisma.workspace.count();
+      try {
+        assertFederationOverrideSafe({
+          activeOverrides,
+          workspaceCount,
+          tenancyMulti: tenancyEnabled(),
+        });
+      } catch (err) {
+        logger.error(
+          `FATAL: refusing to start — ${(err as Error).message}`,
+        );
+        await app.close();
+        throw err;
+      }
+      logger.log(
+        `Federation override guard OK (${activeOverrides.join(', ')}; ` +
+          `${workspaceCount} workspace row(s), tenancyMulti=${tenancyEnabled()}).`,
+      );
+    }
+  }
 
   // Trust the reverse proxy in front of us (Traefik/nginx in every deploy) so
   // req.ip resolves from X-Forwarded-For. Without this, every request behind the
