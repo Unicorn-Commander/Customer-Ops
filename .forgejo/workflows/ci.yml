@@ -1,0 +1,230 @@
+# ============================================================================
+# Customer-Ops CI — Forgejo Actions
+# ----------------------------------------------------------------------------
+# Runs on every pull request and on push to main. Four independent jobs, each
+# green/red on its own:
+#
+#   backend  — install, generate the Prisma client, typecheck, lint, and run the
+#              FULL jest suite against a real Postgres 17 service container. The
+#              service lets the RLS integration proof
+#              (backend/src/customers/customers.rls.int.spec.ts) actually RUN as
+#              the NOBYPASSRLS `customer_ops_app` role instead of skipping via
+#              its `describeIfDb` guard — the tenant fence is proven on every PR.
+#   frontend — install, typecheck, production build, and lint.
+#   tenancy  — the exit-coded, hermetic scripts/verify-tenancy.sh (boots its own
+#              throwaway Postgres via docker and proves the RLS contract on every
+#              scoped table). Requires a docker-enabled runner.
+#   audit    — `npm audit --omit=dev --audit-level=high` for both packages (the
+#              single dependency-CVE gate for the repo).
+#
+# A failing typecheck, lint, test, tenancy assertion, or high-severity CVE fails
+# its job and therefore the check on the PR.
+# ============================================================================
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Cancel superseded runs on the same ref (a new push to a PR branch supersedes
+# the previous run) so CI capacity isn't spent on stale commits.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # --------------------------------------------------------------------------
+  # BACKEND — typecheck + lint + full jest (WITH a Postgres service so the RLS
+  # integration spec runs, not skips).
+  # --------------------------------------------------------------------------
+  backend:
+    name: backend (typecheck · lint · test+RLS)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    # Postgres 17 service. It boots as `customer_ops_admin` (the object owner /
+    # migration runner). `prisma migrate deploy` (run below) idempotently creates
+    # the full suite tenancy role split — including the NOBYPASSRLS runtime role
+    # `customer_ops_app` with the deterministic dev password `verify_app` — and
+    # all RLS policies + grants, exactly as the backend entrypoint does at boot.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: customer_ops_admin
+          POSTGRES_PASSWORD: verify_admin
+          POSTGRES_DB: customerops
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U customer_ops_admin -d customerops"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+
+    env:
+      # The migration runner connects as the BYPASSRLS owner to apply DDL.
+      ADMIN_DATABASE_URL: postgresql://localhost:5432/customer_ops
+      # The RLS integration spec connects as the NOBYPASSRLS runtime role — this
+      # is what flips `describeIfDb` from `describe.skip` to `describe`, so the
+      # fence is actually exercised.
+      CUSTOMER_OPS_RLS_TEST_DATABASE_URL: postgresql://localhost:5432/customer_ops
+      # The spec's out-of-band owner client (seeds/cleans the non-RLS control
+      # table). Falls back to the app URL if unset; we point it at the owner.
+      CUSTOMER_OPS_RLS_OWNER_DATABASE_URL: postgresql://localhost:5432/customer_ops
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Prisma generate
+        run: npx prisma generate
+
+      - name: Typecheck (tsc --noEmit)
+        run: npx tsc --noEmit
+
+      - name: Lint (eslint)
+        # No --fix in CI: report only, so a real lint error FAILS the job. Spec
+        # files are excluded by .eslintrc.js (ignorePatterns) and are typechecked
+        # + executed by ts-jest instead.
+        run: npx eslint "src/**/*.ts"
+
+      - name: Apply migrations to the service DB (schema + RLS + roles)
+        # As the owner/admin — the same command the backend entrypoint runs. This
+        # creates the customer_ops_app runtime role (NOBYPASSRLS, password
+        # verify_app) so the RLS spec below can connect as it.
+        run: npx prisma migrate deploy
+        env:
+          DATABASE_URL: ${{ env.ADMIN_DATABASE_URL }}
+
+      - name: Test (jest --ci, incl. the RLS integration proof)
+        # DATABASE_URL is set for any code path that reads it; the RLS spec uses
+        # CUSTOMER_OPS_RLS_TEST_DATABASE_URL (app role) + the owner URL above.
+        run: npx jest --ci
+        env:
+          DATABASE_URL: ${{ env.ADMIN_DATABASE_URL }}
+
+  # --------------------------------------------------------------------------
+  # FRONTEND — typecheck + production build + lint.
+  # --------------------------------------------------------------------------
+  frontend:
+    name: frontend (typecheck · build · lint)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck (tsc --noEmit)
+        run: npx tsc --noEmit
+
+      - name: Build (next build)
+        run: npm run build
+
+      - name: Lint (next lint)
+        # Real, load-bearing frontend lint gate. The frontend ships an ESLint
+        # config (.eslintrc.json → next/core-web-vitals + next/typescript) and
+        # the eslint / eslint-config-next devDeps, so `next lint` runs
+        # non-interactively (no install prompt) and `--max-warnings=0` makes any
+        # lint warning or error FAIL the job. `npm run lint` is `next lint
+        # --max-warnings=0`.
+        run: npm run lint
+
+  # --------------------------------------------------------------------------
+  # TENANCY — the hermetic, exit-coded RLS acceptance harness. It boots its OWN
+  # throwaway Postgres via `docker run`, so this job needs a docker-enabled
+  # runner (docker CLI + a reachable daemon). It proves the DB half of the suite
+  # tenancy contract (fail-closed reads, WITH CHECK, cross-tenant isolation) on
+  # every scoped table.
+  # --------------------------------------------------------------------------
+  tenancy:
+    name: tenancy (verify-tenancy.sh)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Fail fast with a clear message if the runner has no reachable Docker
+      # daemon: verify-tenancy.sh boots its own throwaway Postgres via
+      # `docker run`, so a missing daemon would otherwise fail deeper in the
+      # harness with a less obvious error.
+      - name: Preflight — Docker daemon reachable
+        run: docker info
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      # The harness resolves the Prisma CLI from backend/node_modules/.bin/prisma
+      # (or npx). Install backend deps so that binary exists.
+      - name: Install backend dependencies
+        run: npm ci
+        working-directory: backend
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+        working-directory: backend
+
+      - name: Verify tenant fence (scripts/verify-tenancy.sh)
+        run: bash scripts/verify-tenancy.sh
+
+  # --------------------------------------------------------------------------
+  # AUDIT — the dependency-CVE gate. This is the single `npm audit` step for the
+  # repo (the CVE remediation work updates deps; this validates the result).
+  # Fails on any high or critical advisory in the production dependency tree.
+  # NOTE: this job may be red until the dependency-CVE remediation task lands —
+  # it goes green once the flagged high/critical advisories are cleared.
+  # --------------------------------------------------------------------------
+  audit:
+    name: audit (npm audit --audit-level=high)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Audit backend production dependencies
+        run: npm audit --omit=dev --audit-level=high
+        working-directory: backend
+
+      - name: Audit frontend production dependencies
+        run: npm audit --omit=dev --audit-level=high
+        working-directory: frontend
