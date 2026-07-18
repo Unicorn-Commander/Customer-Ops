@@ -143,7 +143,7 @@ Inbound signal (a reply, a click, a bounce) flows back as a **stage change**, so
 
 ## Quickstart
 
-> Requires Docker + Docker Compose. The stack is self‑contained; the federated seams and AI are optional and degrade‑clean, so the cockpit runs fully on its own from the first boot.
+> Requires Docker + Docker Compose, plus a one-time external network: create it once with `docker network create unicorn-network` before `docker compose up` (the compose attaches to this shared FalkorDB network). The federated seams and AI are optional and degrade‑clean, so the cockpit runs on its own from the first boot.
 
 ```bash
 git clone https://git.unicorncommander.ai/UnicornCommander/Customer-Ops.git
@@ -220,6 +220,12 @@ Customer-Ops/
 | 📓 Runbooks | [`docs/runbooks/`](docs/runbooks/) — deploy · backup/restore · tenancy · inference · entitlements |
 | ⚖️ Legal & trust | [`docs/legal/`](docs/legal/) — privacy · DPA · ToS · AUP · security |
 | 📜 Changelog | [`CHANGELOG.md`](CHANGELOG.md) |
+
+---
+
+## License
+
+Apache-2.0 (see [`LICENSE`](LICENSE)).
 
 ---
 

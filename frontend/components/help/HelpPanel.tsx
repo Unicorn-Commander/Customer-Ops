@@ -24,7 +24,7 @@ import {
 } from 'lucide-react';
 import { IconTile } from '../ui/IconTile';
 import { cn } from '../ui/cn';
-import { HELP_TOPICS, routeTopic, type HelpBlock, type HelpTopic } from '@/lib/help-content';
+import { HELP_TOPICS, USER_GUIDE_URL, routeTopic, type HelpBlock, type HelpTopic } from '@/lib/help-content';
 
 /* ---------------------------------------------------------------------------
    Reduced-motion hook (local, matching the suite's overlay components).
@@ -189,7 +189,7 @@ export function HelpPanel({
   onClose,
   pathname,
   onReplayIntro,
-  guideHref = 'https://git.unicorncommander.ai/UnicornCommander/Customer-Ops/src/branch/main/docs/USER-GUIDE.md',
+  guideHref = USER_GUIDE_URL,
 }: HelpPanelProps) {
   const reduced = usePrefersReducedMotion();
 

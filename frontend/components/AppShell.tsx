@@ -15,7 +15,7 @@ import { HelpCenter } from './help/HelpCenter';
 import { IconTile } from './ui/IconTile';
 import { cn } from './ui/cn';
 
-const DEMO_USER: CustomerOpsUser = { id: 'demo', email: 'aaron@magicunicorn.tech', username: 'aaron', firstName: 'Aaron', lastName: 'Stransky' };
+const DEMO_USER: CustomerOpsUser = { id: 'demo', email: 'demo@example.com', username: 'aaron', firstName: 'Aaron', lastName: 'Stransky' };
 
 function titleFor(pathname: string): { title: string; sub: string } {
   if (pathname.startsWith('/dashboard/leads')) return { title: 'Lead Ingestion', sub: 'The intake firehose for the lead pipeline' };

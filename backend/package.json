@@ -4,7 +4,7 @@
   "description": "Customer Ops Backend API — the relationship / funnel cockpit of the Unicorn Commander suite",
   "author": "Magic Unicorn",
   "private": true,
-  "license": "MIT",
+  "license": "Apache-2.0",
   "scripts": {
     "prebuild": "rimraf dist",
     "build": "nest build",
