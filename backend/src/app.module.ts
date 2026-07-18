@@ -30,6 +30,7 @@ import { AuditModule } from './audit/audit.module';
 import { WorkspaceAdminModule } from './common/workspace/workspace-admin.module';
 import { LeadIntakeModule } from './lead-intake/lead-intake.module';
 import { GraphModule } from './graph/graph.module';
+import { GdprModule } from './gdpr/gdpr.module';
 import { M365Module } from './m365/m365.module';
 
 @Module({
@@ -90,6 +91,11 @@ import { M365Module } from './m365/m365.module';
     // FALKORDB_URL). After CustomersModule — the ingest/query phases compose the
     // relationship + federation data this module already wires.
     GraphModule,
+    // The GDPR data-lifecycle surface: right-to-erasure + portability export +
+    // workspace offboarding + the flag-gated dormant-record retention sweep.
+    // After GraphModule — it uses GraphIngestService for the FalkorDB cleanup and
+    // AuditModule for the DELETE/EXPORT trail.
+    GdprModule,
     // The Microsoft 365 (Graph) connector — a signed-in user links their own M365
     // account and pulls contacts INTO the cockpit through the lead-intake funnel.
     // DORMANT without M365_CLIENT_ID. After LeadIntakeModule — it funnels through it.
