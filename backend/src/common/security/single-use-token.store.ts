@@ -11,9 +11,10 @@ import { RedisService } from '../redis/redis.service';
  * replayed token that lands on a 2nd replica would not be seen as consumed.
  *
  * This store moves that boundary to shared Redis when configured, using an
- * atomic `SET key value NX PX ttl`: the FIRST caller creates the key (→ "first
- * use"), any later caller finds it already present (→ "replay"). The key
- * self-expires at the token's own TTL so the set can never grow unbounded.
+ * atomic `SET key value NX EX ttlSeconds` (node-redis `{ NX: true, EX: ttl }`,
+ * TTL in SECONDS): the FIRST caller creates the key (→ "first use"), any later
+ * caller finds it already present (→ "replay"). The key self-expires at the
+ * token's own TTL so the set can never grow unbounded.
  *
  * DEGRADE-CLEAN: with no Redis (or on a transient Redis error) it falls back to
  * an in-process Map with lazy TTL pruning — the exact v1 single-replica
