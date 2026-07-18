@@ -1,0 +1,77 @@
+# Customer-Ops CI Pipeline — Woodpecker CI
+# Targets unicorn-woodpecker-server on centerdeep
+
+when:
+  - branch: main
+  - branch: "[0-9]*"
+  - event: tag
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: woodpecker
+      POSTGRES_PASSWORD: woodpecker
+      POSTGRES_DB: customer_ops_test
+
+steps:
+  # ------------------------------------------------------------------
+  # 1. Install dependencies
+  # ------------------------------------------------------------------
+  install:
+    image: node:20-slim
+    commands:
+      - cd backend && npm ci
+    environment:
+      NODE_ENV: development
+
+  # ------------------------------------------------------------------
+  # 2. Security audit — fail on HIGH
+  # ------------------------------------------------------------------
+  audit:
+    image: node:20-slim
+    depends_on:
+      - install
+    commands:
+      - cd backend && npm audit --audit-level=high
+    environment:
+      NODE_ENV: development
+
+  # ------------------------------------------------------------------
+  # 3. Lint
+  # ------------------------------------------------------------------
+  lint:
+    image: node:20-slim
+    depends_on:
+      - install
+    commands:
+      - cd backend && npm run lint
+    environment:
+      NODE_ENV: development
+
+  # ------------------------------------------------------------------
+  # 4. Build
+  # ------------------------------------------------------------------
+  build:
+    image: node:20-slim
+    depends_on:
+      - install
+    commands:
+      - cd backend && npm run build
+    environment:
+      NODE_ENV: production
+
+  # ------------------------------------------------------------------
+  # 5. Tests
+  # ------------------------------------------------------------------
+  test:
+    image: node:20-slim
+    depends_on:
+      - install
+    commands:
+      - apt-get update && apt-get install -y --no-install-recommends postgresql-client 2>&1 >/dev/null
+      - until pg_isready -h postgres -U woodpecker -d customer_ops_test; do sleep 2; done
+      - cd backend && npm test
+    environment:
+      DATABASE_URL: postgresql://localhost:5432/customer_ops
+      ENV: test
