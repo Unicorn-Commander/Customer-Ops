@@ -214,6 +214,11 @@ model Workspace {
   hipaaMode             Boolean                @default(false)
   gdprMode              Boolean                @default(false)
   dataResidency         String?                @default("us-east")
+  // GDPR data-retention window (days). NULL == retention disabled for this
+  // workspace (the default) — the DORMANT-record retention sweep purges NOTHING
+  // unless BOTH this is set (> 0) AND CUSTOMER_OPS_RETENTION_SWEEP_ENABLED is on.
+  // A control-plane column (workspaces is NOT RLS-fenced); set owner-gated.
+  retentionDays         Int?
   status                String                 @default("active") // active|suspended|archived|deleting
   entitlementCache      Json? // offline/dedicated only; null on shared SaaS
   syncedAt              DateTime               @default(now())

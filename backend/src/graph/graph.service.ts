@@ -480,6 +480,69 @@ export class GraphService {
    * controller does not catch it → Nest serializes it as a 503 → the frontend
    * falls back to its DB-derived graph.
    */
+  // Erasure (GDPR data lifecycle) — the DELETE-side counterparts to the upsert
+  // primitives. Both re-assert the tenant via the redundant `workspaceId`
+  // property in the MATCH (defense-in-depth alongside the per-workspace graph
+  // key) and DETACH DELETE so a node's incident edges are removed with it (no
+  // dangling relationships). Values ride as $params; the graphKey came through
+  // the tenancy chokepoint. These are the ONLY graph writes that remove data.
+
+  /**
+   * DETACH DELETE the nodes with the given `key`s WITHIN this workspace's graph
+   * (the `workspaceId` tripwire means a key from another tenant — impossible via
+   * the per-workspace key, but re-asserted — deletes nothing). Used by a
+   * single-customer GDPR erasure to drop that data subject's PII-bearing node
+   * (Person) and relationship node (Deal) plus every edge incident to them.
+   *
+   * Best-effort under the degrade-clean contract: when FalkorDB is dormant there
+   * is nothing to clean (the graph was never written), so it no-ops and returns 0
+   * rather than throwing — the authoritative erasure is the Postgres delete.
+   *
+   * @returns the number of node keys submitted (0 when dormant / empty input).
+   */
+  async deleteNodesByKeys(graphKey: string, keys: string[]): Promise<number> {
+    const clean = keys.filter((k): k is string => typeof k === 'string' && k.trim().length > 0);
+    if (clean.length === 0) return 0;
+    if (!this.falkor.isConfigured) return 0;
+    const workspaceId = workspaceIdFromKey(graphKey);
+    const g = this.falkor.graph(graphKey);
+    await g.query(
+      `UNWIND $keys AS k
+       MATCH (n { key: k, workspaceId: $workspaceId })
+       DETACH DELETE n`,
+      { params: { keys: clean, workspaceId } },
+    );
+    return clean.length;
+  }
+
+  /**
+   * Purge the ENTIRE per-workspace graph — every node + edge — for workspace
+   * offboarding. The graph key is per-workspace by construction, so
+   * `GRAPH.DELETE` (the FalkorDB client's `graph.delete()`) drops exactly this
+   * tenant's data and nothing else; the next write re-materializes an empty graph.
+   *
+   * Best-effort/degrade-clean: dormant → no-op (nothing was ever written). A
+   * delete error (e.g. the graph key doesn't exist yet) is swallowed to a clean
+   * `false` — offboarding must not be blocked by a graph that was never populated.
+   *
+   * @returns true when a live graph was dropped, false when dormant / absent.
+   */
+  async purgeWorkspaceGraph(graphKey: string): Promise<boolean> {
+    if (!this.falkor.isConfigured) return false;
+    // Assert the key is well-formed (throws on garbage — never GRAPH.DELETE a
+    // hand-built key). The tail must be this workspace's id.
+    workspaceIdFromKey(graphKey);
+    try {
+      await this.falkor.graph(graphKey).delete();
+      return true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // A not-yet-materialized graph is a successful no-op, not a failure.
+      this.logger.debug(`purgeWorkspaceGraph: ${msg}`);
+      return false;
+    }
+  }
+
   private assertGraphAvailable(): void {
     if (!this.falkor.isConfigured) {
       throw new ServiceUnavailableException(
