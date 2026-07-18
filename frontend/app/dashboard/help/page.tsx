@@ -18,11 +18,10 @@ import { LifeBuoy, BookOpen, Sparkles, ShieldCheck } from 'lucide-react';
 import { cn } from '@/components/ui';
 import { IconTile } from '@/components/ui/IconTile';
 import { OnboardingTour, markOnboarded } from '@/components/help/OnboardingTour';
-import { HELP_TOPICS, type HelpBlock } from '@/lib/help-content';
+import { HELP_TOPICS, USER_GUIDE_URL, type HelpBlock } from '@/lib/help-content';
 
 /* The full user guide — same target the drawer footer links to. */
-const GUIDE_HREF =
-  'https://git.unicorncommander.ai/UnicornCommander/Customer-Ops/src/branch/main/docs/USER-GUIDE.md';
+const GUIDE_HREF = USER_GUIDE_URL;
 
 /* ── one block (paragraph or bullet list) — matches HelpPanel's renderer ────── */
 function Block({ block }: { block: HelpBlock }) {

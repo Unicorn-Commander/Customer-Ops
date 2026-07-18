@@ -32,7 +32,7 @@ import { M365ConnectCard } from '@/components/integrations/M365ConnectCard';
 
 /* The README's "How it federates" section — operator guidance lives there. */
 const FEDERATES_GUIDE =
-  'https://git.unicorncommander.ai/UnicornCommander/Customer-Ops/src/branch/main/README.md#how-it-federates';
+  'https://docs.customer-ops.example.com#how-it-federates';
 
 /* ── a single seam card ─────────────────────────────────────────────────────── */
 function SeamCard({ seam }: { seam: SeamHealth }) {

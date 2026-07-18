@@ -83,7 +83,7 @@ async function bootstrap() {
           'from the sibling *-ops apps. Bearer auth accepts a JWT (local session, Keycloak ' +
           'realm, or Brigade federation) or a scoped Personal Access Token (`co_pat_`).',
       )
-      .setVersion('0.9')
+      .setVersion('0.12.0')
       .addBearerAuth(
         {
           type: 'http',

@@ -1,10 +1,12 @@
 # Customer-Ops — Frontend
 
-Next.js 15 (App Router) shell for the Customer-Ops relationship / funnel cockpit.
+Next.js 15 (App Router) frontend for the Customer-Ops relationship / funnel cockpit.
 
-**Phase 1 scope:** SSO sign-in + an empty authenticated dashboard shell. The CRM
-cockpit (contact 360, lead → prospect → customer pipeline, invoicing/outreach
-surfaces) is Phase 2.
+**Current (v0.12.0):** the full relationship cockpit — SSO sign-in, the dashboard
+and pipeline (Lead → Prospect → Customer), the customer-360, and the relationship
+graph. The customer-360 federates the world around a contact — contacts, invoices,
+meetings, email, projects, and outreach — live from the sibling *-ops apps, so it
+always shows the real source, never a copy.
 
 ## Auth flow (suite-canonical SSO)
 
