@@ -32,7 +32,7 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { CustomerActivityKind, User } from '@prisma/client';
 import { WorkspaceContextService } from '../common/workspace/workspace-context.service';
 import { WorkspaceTxClient } from '../prisma/prisma.service';
-import { WithWorkspaceClaim, entitlementsOf, ucUidOf } from '../common/workspace/workspace.util';
+import { WithWorkspaceClaim, ucUidOf } from '../common/workspace/workspace.util';
 import { ContactOpsPort } from '../contact-ops/contact-ops.port';
 import { CustomersService } from '../customers/customers.service';
 import { AgentInferencePort, InferenceContext } from './inference/agent-inference.port';
@@ -60,6 +60,9 @@ export class CollectionsNudgeAgent {
   ): Promise<CollectionsNudgeResult> {
     const ucUid = ucUidOf(user);
     const workspaceId = await this.workspaces.resolveAuthorized(user, requestedWorkspaceId);
+    // Bind the entitlement claim to the acting workspace (intersect with its
+    // server-side entitlements) rather than the bare per-user token claim.
+    const entitlements = await this.workspaces.effectiveEntitlements(user, workspaceId);
 
     // 1) LOCAL relationship (RLS tx; 404 if absent).
     const rel = await this.workspaces.runForUser(
@@ -100,7 +103,7 @@ export class CollectionsNudgeAgent {
     const infCtx: InferenceContext = {
       workspaceId,
       ucUid: ucUid || null,
-      entitlements: entitlementsOf(user),
+      entitlements,
     };
     const gate = this.inference.checkEntitlement(infCtx, tier);
     const configured = this.inference.isConfigured();

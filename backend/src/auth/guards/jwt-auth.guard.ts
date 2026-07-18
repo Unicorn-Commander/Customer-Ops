@@ -109,6 +109,17 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
       }
 
       (resolved.user as any).__ucUid = resolved.user.keycloakId ?? resolved.user.id;
+      // A PAT carries no token of its own, so it has NO live `entitlements`
+      // claim — leaving `__entitlements` unset makes `entitlementsOf(user)`
+      // return [] and every gated federation/inference action 403 under
+      // UC_ENTITLEMENT_MODE=enforce, even for a paying customer (the money bug).
+      // Stamp the SKUs snapshotted onto the token at mint time (the minting
+      // session user's verified entitlements) so the gates see the paying user's
+      // SKUs. The (user, workspace) binding still holds: each gate INTERSECTS
+      // this claim with the acting workspace's server-side entitlements via
+      // WorkspaceContextService.effectiveEntitlements — a snapshot from another
+      // org grants nothing in a workspace whose cache lacks the SKU.
+      (resolved.user as any).__entitlements = resolved.token.entitlements ?? [];
       (request as any).user = resolved.user;
       (request as any).pat = resolved.token;
 

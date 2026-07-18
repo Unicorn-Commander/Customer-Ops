@@ -36,7 +36,7 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { CustomerActivityKind, User } from '@prisma/client';
 import { WorkspaceContextService } from '../common/workspace/workspace-context.service';
 import { WorkspaceTxClient } from '../prisma/prisma.service';
-import { WithWorkspaceClaim, entitlementsOf, ucUidOf } from '../common/workspace/workspace.util';
+import { WithWorkspaceClaim, ucUidOf } from '../common/workspace/workspace.util';
 import { ContactOpsPort } from '../contact-ops/contact-ops.port';
 import { MeetingOpsPort } from '../meeting-ops/meeting-ops.port';
 import { OutreachPort } from '../outreach-ops/outreach-ops.port';
@@ -83,6 +83,9 @@ export class FollowUpDrafterAgent {
   ): Promise<FollowUpDraftResult> {
     const ucUid = ucUidOf(user);
     const workspaceId = await this.workspaces.resolveAuthorized(user, requestedWorkspaceId);
+    // Bind the entitlement claim to the acting workspace once (intersect with its
+    // server-side entitlements); every gate below consumes this bound set.
+    const entitlements = await this.workspaces.effectiveEntitlements(user, workspaceId);
 
     // 1) LOCAL relationship (RLS tx).
     const rel = await this.workspaces.runForUser(
@@ -99,7 +102,7 @@ export class FollowUpDrafterAgent {
       this.outreach.isConfigured()
         ? this.outreach
             .listTouchesForContact(
-              { workspaceId, ucUid: ucUid || null, entitlements: entitlementsOf(user) },
+              { workspaceId, ucUid: ucUid || null, entitlements },
               rel.contactId,
             )
             .catch((): OutreachTouch[] => [])
@@ -130,7 +133,7 @@ export class FollowUpDrafterAgent {
     const infCtx: InferenceContext = {
       workspaceId,
       ucUid: ucUid || null,
-      entitlements: entitlementsOf(user),
+      entitlements,
     };
     const gate = this.inference.checkEntitlement(infCtx, tier);
     const configured = this.inference.isConfigured();

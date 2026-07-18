@@ -2,6 +2,7 @@ import { BadRequestException, ConflictException, NotFoundException } from '@nest
 import { AuditAction, CustomerActivityKind, RelationshipStage, User } from '@prisma/client';
 import { CustomersService } from './customers.service';
 import { WorkspaceContextService } from '../common/workspace/workspace-context.service';
+import { entitlementsOf } from '../common/workspace/workspace.util';
 import { ContactOpsPort } from '../contact-ops/contact-ops.port';
 import { AccountingOpsPort } from '../accounting-ops/accounting-ops.port';
 import { OutreachPort } from '../outreach-ops/outreach-ops.port';
@@ -228,6 +229,7 @@ function makeService(opts?: {
   const lastTx = { current: null as any };
   const workspaces = {
     resolveAuthorized: jest.fn().mockResolvedValue(WS),
+    effectiveEntitlements: jest.fn(async (u: any) => entitlementsOf(u)),
     runForUser: jest.fn(async (_user: User, fn: any) => fn(lastTx.current)),
     runInWorkspace: jest.fn(async (_ws: string, _uc: any, fn: any) => fn(lastTx.current)),
   } as unknown as WorkspaceContextService;
@@ -1341,6 +1343,7 @@ describe('CustomersService — *ForUser audit side-effects (Phase 7; AuditServic
     const lastTx = { current: null as any };
     const workspaces = {
       resolveAuthorized: jest.fn().mockResolvedValue(WS),
+    effectiveEntitlements: jest.fn(async (u: any) => entitlementsOf(u)),
       runForUser: jest.fn(async (_user: User, fn: any) => fn(lastTx.current)),
       runInWorkspace: jest.fn(async (_ws: string, _uc: any, fn: any) => fn(lastTx.current)),
     } as unknown as WorkspaceContextService;

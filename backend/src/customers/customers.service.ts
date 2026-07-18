@@ -38,7 +38,7 @@ import { randomUUID } from 'crypto';
 import { AuditAction, CustomerActivityKind, Prisma, RelationshipStage, User } from '@prisma/client';
 import { WorkspaceContextService } from '../common/workspace/workspace-context.service';
 import { WorkspaceTxClient } from '../prisma/prisma.service';
-import { WithWorkspaceClaim, entitlementsOf, ucUidOf } from '../common/workspace/workspace.util';
+import { WithWorkspaceClaim, ucUidOf } from '../common/workspace/workspace.util';
 import { AuditService } from '../audit/audit.service';
 import { ContactOpsPort, FederationContext } from '../contact-ops/contact-ops.port';
 import { FederatedContact } from '../contact-ops/contact-ops.types';
@@ -663,7 +663,7 @@ export class CustomersService {
     return {
       workspaceId,
       ucUid: ucUidOf(user) || null,
-      entitlements: entitlementsOf(user),
+      entitlements: await this.workspaces.effectiveEntitlements(user, workspaceId),
     };
   }
 
@@ -1466,7 +1466,11 @@ export class CustomersService {
     requestedWorkspaceId?: string | null,
   ): Promise<ProjectFederationContext> {
     const workspaceId = await this.workspaces.resolveAuthorized(user, requestedWorkspaceId);
-    return { workspaceId, ucUid: ucUidOf(user) || null, entitlements: entitlementsOf(user) };
+    return {
+      workspaceId,
+      ucUid: ucUidOf(user) || null,
+      entitlements: await this.workspaces.effectiveEntitlements(user, workspaceId),
+    };
   }
 
   /**
@@ -1515,7 +1519,11 @@ export class CustomersService {
     requestedWorkspaceId?: string | null,
   ): Promise<OutreachFederationContext> {
     const workspaceId = await this.workspaces.resolveAuthorized(user, requestedWorkspaceId);
-    return { workspaceId, ucUid: ucUidOf(user) || null, entitlements: entitlementsOf(user) };
+    return {
+      workspaceId,
+      ucUid: ucUidOf(user) || null,
+      entitlements: await this.workspaces.effectiveEntitlements(user, workspaceId),
+    };
   }
 
   /** Build the Email-Ops federation identity (workspace + actor + entitlements). */
@@ -1524,7 +1532,11 @@ export class CustomersService {
     requestedWorkspaceId?: string | null,
   ): Promise<EmailFederationContext> {
     const workspaceId = await this.workspaces.resolveAuthorized(user, requestedWorkspaceId);
-    return { workspaceId, ucUid: ucUidOf(user) || null, entitlements: entitlementsOf(user) };
+    return {
+      workspaceId,
+      ucUid: ucUidOf(user) || null,
+      entitlements: await this.workspaces.effectiveEntitlements(user, workspaceId),
+    };
   }
 
   /**

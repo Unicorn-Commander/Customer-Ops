@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, Logger, NotFoundException } from '@nes
 import { PersonalAccessToken, User } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { MembershipService } from '../../common/workspace/membership.service';
+import { entitlementsOf, WithWorkspaceClaim } from '../../common/workspace/workspace.util';
 import { PAT_AVAILABLE_SCOPES, PAT_PREFIX, PatScope } from './pat.constants';
 import { generatePat, isPatToken, verifyPat } from './pat.util';
 
@@ -23,6 +24,8 @@ export interface CreatePatResult {
   prefix: string;
   name: string;
   scopes: string[];
+  /** SKUs snapshotted from the minting session user at create time. */
+  entitlements: string[];
   workspaceId: string | null;
   expiresAt: Date | null;
   createdAt: Date;
@@ -46,6 +49,8 @@ export interface PatResolution {
   token: PersonalAccessToken;
   /** The workspace this PAT is bound to; the auth chokepoint fences on it. */
   workspaceId: string | null;
+  /** SKUs snapshotted at mint; the chokepoint stamps them as __entitlements. */
+  entitlements: string[];
 }
 
 /**
@@ -72,7 +77,10 @@ export class PatService {
    * caller's default membership) — a no-op echo while tenancy is off, a hard
    * 403 on a non-member workspace when it is on.
    */
-  async create(user: User, input: CreatePatInput): Promise<CreatePatResult> {
+  async create(
+    user: User & Partial<WithWorkspaceClaim>,
+    input: CreatePatInput,
+  ): Promise<CreatePatResult> {
     const name = (input.name ?? '').trim();
     if (!name) throw new BadRequestException('Token name is required');
     if (name.length > 100) throw new BadRequestException('Token name must be 100 characters or less');
@@ -80,16 +88,32 @@ export class PatService {
     const scopes = this.normalizeScopes(input.scopes);
     const expiresAt = this.normalizeExpiry(input.expiresAt);
     const workspaceId = await this.membership.resolveAndAuthorize(user, input.workspaceId ?? null);
+    // Snapshot the minting session user's verified entitlement SKUs. A PAT has
+    // no live token claim, so this frozen snapshot (bound to the token's
+    // workspace) is what the auth chokepoint later stamps as __entitlements — the
+    // gates then intersect it with the acting workspace's server-side
+    // entitlements, so the snapshot never over-grants. The mint route is
+    // JWT-only, so `user.__entitlements` here is the session token's live claim.
+    const entitlements = entitlementsOf(user);
 
     const { plaintext, hash: hashPromise } = generatePat();
     const tokenHash = await hashPromise;
 
     const row = await this.prisma.personalAccessToken.create({
-      data: { userId: user.id, workspaceId, name, prefix: PAT_PREFIX, tokenHash, scopes, expiresAt },
+      data: {
+        userId: user.id,
+        workspaceId,
+        name,
+        prefix: PAT_PREFIX,
+        tokenHash,
+        scopes,
+        entitlements,
+        expiresAt,
+      },
     });
 
     this.logger.log(
-      `Minted PAT ${row.id} for user ${user.id} (workspace=${workspaceId}, scopes=[${scopes.join(',')}], expiresAt=${expiresAt?.toISOString() ?? 'never'})`,
+      `Minted PAT ${row.id} for user ${user.id} (workspace=${workspaceId}, scopes=[${scopes.join(',')}], entitlements=[${entitlements.join(',')}], expiresAt=${expiresAt?.toISOString() ?? 'never'})`,
     );
 
     return {
@@ -98,6 +122,7 @@ export class PatService {
       prefix: row.prefix,
       name: row.name,
       scopes: row.scopes,
+      entitlements: row.entitlements,
       workspaceId: row.workspaceId,
       expiresAt: row.expiresAt,
       createdAt: row.createdAt,
@@ -135,7 +160,12 @@ export class PatService {
 
       const { user, ...bare } = token;
       const bareToken = bare as PersonalAccessToken;
-      return { user, token: bareToken, workspaceId: bareToken.workspaceId };
+      return {
+        user,
+        token: bareToken,
+        workspaceId: bareToken.workspaceId,
+        entitlements: bareToken.entitlements ?? [],
+      };
     }
 
     return null;

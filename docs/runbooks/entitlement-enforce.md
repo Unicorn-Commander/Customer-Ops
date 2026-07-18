@@ -111,6 +111,62 @@ a license to emit a divergent shape.
 An **absent / empty / malformed** claim ⇒ `[]` ⇒ under `enforce` the gate
 **denies** (degrade-clean), under `open` it allows + WARNs.
 
+### 1d. The PAT lane (`co_pat_`) — no token, so a mint-time SKU snapshot
+
+A **Personal Access Token** carries NO bearer token, hence no live `entitlements`
+claim. Before this fix the auth chokepoint stamped `__workspaceClaim` + `__ucUid`
+onto a PAT request but **not** `__entitlements`, so `entitlementsOf(user)` returned
+`[]` and **every gated MCP action 403'd under `enforce` even for a paying user**
+(agentic drafts, AR/email/outreach writes). That is the money bug this lane fixes.
+
+How a PAT gets its SKUs now:
+
+```
+ mint (JWT-only route)                 auth chokepoint (per request)         gate
+ ─────────────────────                 ────────────────────────────         ────
+ session user's verified      ──▶      PAT.entitlements snapshot     ──▶     effective =
+ __entitlements SNAPSHOTTED             stamped onto request.user             snapshot ∩ workspace
+ onto PersonalAccessToken               .__entitlements                       (see §1e)
+ .entitlements at create
+```
+
+- The snapshot is taken at **mint** from the minting session user's verified
+  claim (the PAT create route is `@JwtOnly`, so the session token's SKUs are
+  present) and frozen on the token row (`PersonalAccessToken.entitlements`).
+- `JwtAuthGuard` stamps that snapshot onto `request.user.__entitlements` when it
+  resolves a `co_pat_` bearer, so the SAME `entitlementsOf(user)` reader feeds the
+  gates for a PAT exactly as for a JWT.
+- **Snapshot staleness**: like a PAT's scopes, its entitlements are frozen at
+  mint. A downgrade after mint is caught by (a) the workspace-cache intersection
+  (§1e) on any node that keeps `entitlementCache` current, and (b) PAT expiry /
+  revoke. A pre-fix PAT (no snapshot, empty column) resolves to `[]` and stays
+  **denied** under enforce until re-minted — secure-by-default, never over-grants.
+
+### 1e. Binding entitlements to the acting (user, workspace)
+
+The claim (JWT or PAT snapshot) is **per user**. A gate binds it to the workspace
+being acted in by **intersecting** it with that workspace's server-side
+entitlements before checking a SKU:
+
+```
+ effectiveEntitlements(user, workspaceId)
+   = entitlementsOf(user)  ∩  Workspace.entitlementCache[workspaceId]
+```
+
+- `Workspace.entitlementCache` **null / no mirror row** ⇒ *no server-side source*
+  ⇒ the claim stands unchanged (today's shared-SaaS default — the token is already
+  minted for its `workspace_id`). Flipping enforce changes nothing here.
+- `entitlementCache` **present** (offline/dedicated nodes, or once the mirror is
+  populated) ⇒ it is authoritative: a caller whose token/PAT carries `customer-ops`
+  from **another org** is denied it in a workspace whose cache lacks it — even
+  though the raw claim has it. A present-but-empty `[]` cache denies everything.
+
+This is resolved in ONE place —
+`WorkspaceContextService.effectiveEntitlements(user, workspaceId)` — and every
+gate call-site (`customers.service.ts` federation contexts, the relationship
+agents, the relations-officer) consumes it in place of the bare
+`entitlementsOf(user)`.
+
 ---
 
 ## 2. Per-app pre-flip checklist (ALL must be true before `enforce`)
@@ -147,6 +203,14 @@ flip the dogfood node first, soak, then the customer node.
 - [ ] Confirm a token **without** `customer-ops` is cleanly **denied** (agent
       returns "not entitled", AR/email/outreach return the not-entitled
       affordance) — not a 500.
+- [ ] **PAT lane (§1d):** mint a `co_pat_` for the test paying user and hit a
+      gated MCP tool (e.g. `triage_customer`) — confirm it is **entitled**, not
+      403'd. A PAT minted BEFORE this fix shipped (empty `entitlements` column)
+      will be denied until re-minted; that is expected, re-mint it.
+- [ ] **Cross-org bind (§1e), only where `entitlementCache` is populated:** confirm
+      a token/PAT carrying a SKU bought in another workspace does **not** unlock a
+      workspace whose `entitlementCache` lacks it. (Where the cache is null this is
+      a no-op — the claim stands.)
 
 **App posture (Customer-Ops side — already true in code, verify env):**
 
@@ -216,9 +280,21 @@ is not wired. Entitlement only gates a seam that IS configured.
 **Claim extractor / context plumbing (do not fork — one chokepoint):**
 - `auth/strategies/jwt.strategy.ts` → `readEntitlements()` (the tolerant claim
   reader) + `validate()` (stamps `user.__entitlements` off the **verified** token).
-- `common/workspace/workspace.util.ts` → `entitlementsOf(user)` (reads it back).
-- Each agent + `customers/customers.service.ts` build their federation context
-  with `entitlements: entitlementsOf(user)`.
-- CI proof: `agents/inference/entitlement-claim-flow.spec.ts` (claim → gate
-  end-to-end), `auth/strategies/jwt.strategy.spec.ts` (the reader),
+- `auth/guards/jwt-auth.guard.ts` → for a `co_pat_` bearer, stamps
+  `user.__entitlements` off the PAT's mint-time snapshot (`§1d`) — the PAT has no
+  token of its own.
+- `auth/pat/pat.service.ts` → snapshots the minting user's SKUs onto
+  `PersonalAccessToken.entitlements` at create.
+- `common/workspace/workspace.util.ts` → `entitlementsOf(user)` (reads it back) +
+  `parseWorkspaceEntitlements` / `intersectEntitlements` (the `§1e` bind).
+- `common/workspace/workspace-context.service.ts` →
+  `effectiveEntitlements(user, workspaceId)` = claim ∩ workspace cache. Each agent
+  + `customers/customers.service.ts` + `relations-officer` build their federation
+  / inference context with `entitlements: await …effectiveEntitlements(user, ws)`
+  (NOT the bare `entitlementsOf(user)`).
+- CI proof: `agents/inference/entitlement-claim-flow.spec.ts` (JWT claim → gate),
+  `common/workspace/entitlement-workspace-binding.spec.ts` (PAT snapshot → gate +
+  the (user, workspace) bind, incl. cross-org deny), `auth/guards/jwt-auth.guard.spec.ts`
+  (PAT `__entitlements` stamp), `auth/pat/pat.service.spec.ts` (the snapshot),
+  `auth/strategies/jwt.strategy.spec.ts` (the reader),
   `agents/inference/agent-inference.client.spec.ts` (the pure gate).
