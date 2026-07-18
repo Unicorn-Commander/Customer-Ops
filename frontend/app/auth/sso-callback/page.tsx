@@ -3,13 +3,15 @@
 import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Radar, ShieldCheck, AlertTriangle, ArrowLeft } from 'lucide-react';
-import { apiGet, setSession, clearSession, CustomerOpsUser } from '@/lib/api';
+import { apiGet, exchangeSsoCode, setSession, clearSession, CustomerOpsUser } from '@/lib/api';
 
 /**
- * SSO return leg. Keycloak hands back here with a `token` query param; we validate
- * it by fetching the profile, persist the session, and bounce to the cockpit.
- * Presentation matches the cinematic login screen (glass + ambient field) so the
- * sign-in flow reads as one continuous surface — no jump to a legacy card.
+ * SSO return leg. Keycloak hands back here with a single-use `code` query param
+ * (NOT the session token — that must never travel in a URL). We POST the code to
+ * exchange it for the token, validate the token by fetching the profile, persist
+ * the session, and bounce to the cockpit. Presentation matches the cinematic
+ * login screen (glass + ambient field) so the sign-in flow reads as one
+ * continuous surface — no jump to a legacy card.
  */
 
 /** The shared cinematic shell (ambient field + centered glass card). */
@@ -57,16 +59,18 @@ function SsoCallbackInner() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const token = searchParams.get('token');
-    if (!token) {
-      setError('No authentication token returned from SSO.');
+    const code = searchParams.get('code');
+    if (!code) {
+      setError('No authentication code returned from SSO.');
       return;
     }
     (async () => {
       try {
-        // Validate the token by fetching the profile, then persist the session.
-        const user = await apiGet<CustomerOpsUser>('/auth/profile', token);
-        setSession(token, user);
+        // Swap the single-use code for the session token over POST (the token
+        // never rides a URL), validate it by fetching the profile, then persist.
+        const { access_token } = await exchangeSsoCode(code);
+        const user = await apiGet<CustomerOpsUser>('/auth/profile', access_token);
+        setSession(access_token, user);
         router.replace('/dashboard');
       } catch {
         clearSession();

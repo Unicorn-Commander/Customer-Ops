@@ -2,8 +2,10 @@
  * Minimal browser API client for Customer-Ops (Phase 1).
  *
  * The auth model mirrors the suite pattern: the backend owns the Keycloak OIDC
- * dance and issues a local session JWT, which the browser stores in
- * localStorage and sends as a Bearer token. This is intentionally tiny — the
+ * dance and issues a local session JWT. The token is NEVER delivered in a URL —
+ * the callback redirect carries a single-use exchange `code` which the SPA swaps
+ * for the token over POST (`exchangeSsoCode`). The token is then held in
+ * localStorage and sent as a Bearer header. This is intentionally tiny — the
  * Phase 2 cockpit replaces it with a typed data layer.
  */
 
@@ -88,6 +90,25 @@ function handleAuthFailure(): void {
 /** The backend SSO entry point — redirects the browser to Keycloak. */
 export function ssoLoginUrl(): string {
   return `${API_BASE}/auth/keycloak`;
+}
+
+/**
+ * Exchange the single-use SSO code (delivered on the callback redirect) for the
+ * session token. Unauthenticated by design — the code IS the (one-time) proof.
+ * The token comes back in the response body, never a URL, so it never reaches
+ * server access logs, Referer headers, or browser history.
+ */
+export async function exchangeSsoCode(code: string): Promise<{ access_token: string }> {
+  const res = await fetch(`${API_BASE}/auth/sso/exchange`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code }),
+  });
+  if (!res.ok) {
+    const detail = await problemDetail(res);
+    throw new ApiError(res.status, detail || `SSO code exchange failed: ${res.status}`);
+  }
+  return (await res.json()) as { access_token: string };
 }
 
 /** Authenticated GET against the backend. Throws on non-2xx. */
