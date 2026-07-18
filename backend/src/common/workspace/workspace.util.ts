@@ -168,8 +168,36 @@ export function parseWorkspaceEntitlements(cache: unknown): string[] | null {
  *   - otherwise ⇒ the INTERSECTION (by `entitlementKey`) — a caller whose token
  *     carries `customer-ops` from ANOTHER org is denied it in a workspace whose
  *     server-side cache lacks it. Never grants a SKU the claim did not carry.
+ *
+ * ⚠️ KNOWN LIMIT — shared-SaaS cross-org (task 29817abc / gate finding):
+ * On shared SaaS, `Workspace.entitlementCache` is NULL by design (see the
+ * `entitlementCache` column comment in schema.prisma: "offline/dedicated only;
+ * null on shared SaaS"), so this function takes the `workspace == null` branch
+ * and the (user, workspace) bind is a NO-OP there. That is only SAFE if Keycloak
+ * mints a token whose `entitlements` claim is already scoped to the token's
+ * `workspace_id` — i.e. the token is the per-(user, workspace) authority. If a
+ * token can instead carry a user's UNION of SKUs across every org they belong to,
+ * a member of workspace W2 could exercise a `customer-ops` SKU that only their
+ * OTHER org (W1) actually holds. This repo has NO server-side entitlements source
+ * to close that gap: `entitlementCache` is read-only here (nothing writes it), and
+ * uc-entitlements lives in ops-center/Keycloak, not as a client we can call. We do
+ * NOT fail this branch closed because on shared SaaS the cache is ALWAYS null —
+ * denying here would deny every paying user on every gate.
+ *
+ * TODO(29817abc, product decision for Aaron): to actually ENFORCE cross-org on
+ * shared SaaS, pick one — (a) have Keycloak emit a per-workspace-scoped
+ * `entitlements` claim (the token already binds user×workspace, and the assertion
+ * above becomes an invariant), OR (b) add a uc-entitlements source/client that
+ * resolves a workspace's SKUs server-side and populate `entitlementCache` (then
+ * this branch stops being null on shared SaaS and the intersection enforces).
+ * Until one lands, shared-SaaS cross-org enforcement rests on assumption (a).
+ * See docs/runbooks/entitlement-enforce.md §1e.
  */
 export function intersectEntitlements(claimed: string[], workspace: string[] | null): string[] {
+  // No server-side source (null). Trust the claim — see the KNOWN LIMIT above:
+  // this is a deliberate no-op on shared SaaS, NOT an oversight. Once a source
+  // exists (populated cache or per-workspace Keycloak claim), this stops being
+  // reached / becomes an enforcing intersection.
   if (workspace == null) return [...claimed];
   const allow = new Set(workspace.map(entitlementKey));
   return claimed.filter((sku) => allow.has(entitlementKey(sku)));

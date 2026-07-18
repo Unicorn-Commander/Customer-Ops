@@ -167,6 +167,39 @@ gate call-site (`customers.service.ts` federation contexts, the relationship
 agents, the relations-officer) consumes it in place of the bare
 `entitlementsOf(user)`.
 
+> **⚠️ KNOWN LIMIT — shared-SaaS cross-org enforcement is NOT closed here
+> (task 29817abc).** On shared SaaS `Workspace.entitlementCache` is **null by
+> design** (see the column comment in `schema.prisma`), so the bind takes the
+> null branch and is a **no-op** — `intersectEntitlements(claim, null)` returns
+> the claim unchanged. That is only safe **if Keycloak mints a token whose
+> `entitlements` claim is already scoped to the token's `workspace_id`** (the
+> token is then the per-`(user, workspace)` authority). If a token instead carries
+> a user's **union of SKUs across every org they belong to**, a member of
+> workspace W2 could exercise a `customer-ops` SKU that only their *other* org (W1)
+> holds. This repo has **no server-side entitlements source** to close that gap:
+> `entitlementCache` is read-only here (nothing in this repo writes it), and
+> `uc-entitlements` lives in ops-center/Keycloak, not as a client Customer-Ops can
+> call. We deliberately do **not** fail this branch closed, because on shared SaaS
+> the cache is *always* null — denying there would deny **every paying user on
+> every gate**.
+>
+> **To actually enforce cross-org on shared SaaS (product decision for Aaron),
+> pick one:**
+> 1. **Per-workspace Keycloak claim** — have `uc-entitlements` emit an
+>    `entitlements` claim scoped to the token's `workspace_id` (not the user's
+>    union). No code change here; the null-branch assumption above becomes a
+>    guaranteed invariant. *Lowest-lift; recommended if the mapper can do it.*
+> 2. **A server-side uc-entitlements source** — add a client that resolves a
+>    workspace's active SKUs server-side and populate `Workspace.entitlementCache`
+>    on shared SaaS. Then the branch stops being null and the intersection
+>    enforces (identical to today's offline/dedicated behavior). *Higher-lift;
+>    needs a new client + a sync path.*
+>
+> Until (1) or (2) lands, shared-SaaS cross-org rests on assumption (1)'s
+> unverified form. Offline/dedicated nodes (populated `entitlementCache`) already
+> enforce and are unaffected. Tracked as the `TODO(29817abc)` in
+> `intersectEntitlements` (`backend/src/common/workspace/workspace.util.ts`).
+
 ---
 
 ## 2. Per-app pre-flip checklist (ALL must be true before `enforce`)
