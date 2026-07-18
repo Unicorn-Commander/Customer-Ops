@@ -20,11 +20,13 @@
  *      MCP_TOOL_NO_SCOPE are exempt.
  */
 
+import { WorkspaceRole } from '@prisma/client';
 import {
   MCP_TOOL_NO_SCOPE,
   MCP_TOOL_SCOPE_MAP,
   expandScopes,
 } from '../auth/pat/pat.constants';
+import { roleMeetsMinimum } from '../common/workspace/workspace-role.util';
 
 /** A tool-result envelope that surfaces a denial to the MCP client (not a throw). */
 export interface McpDenial {
@@ -58,6 +60,72 @@ export function workspaceDenial(toolName: string, bound: string, requested: stri
     requested_workspace: requested,
     hint: 'This token is scoped to a single workspace. Mint a PAT for the target workspace, or omit workspace_id.',
   });
+}
+
+/**
+ * Maps an MCP tool name → the MINIMUM workspace role the CALLING USER must hold
+ * to invoke it. A mutation (or a draft-only agent run) requires MEMBER; a VIEWER
+ * is refused. Read/list tools are ABSENT (viewer-level — no role gate). No MCP
+ * tool manages members, so OWNER never appears here. This is the MCP mirror of
+ * the REST `@RequireWorkspaceRole` annotations — an agent (JWT) and a human hit
+ * the same role RBAC whichever transport they use.
+ *
+ * Unlike the PAT scope map, this is NOT deny-by-default: an unmapped tool is
+ * treated as viewer-level (read). The mutation surface is closed and finite, so
+ * enumerating the writers is the safe, legible choice; a NEW mutation tool must
+ * be added here (the tests assert the roster stays in lock-step).
+ */
+export const MCP_TOOL_MIN_ROLE: Record<string, WorkspaceRole> = {
+  // Relationship + federated-action mutations.
+  transition_customer_stage: WorkspaceRole.MEMBER,
+  add_customer_note: WorkspaceRole.MEMBER,
+  create_customer_invoice: WorkspaceRole.MEMBER,
+  start_customer_campaign: WorkspaceRole.MEMBER,
+  send_customer_email: WorkspaceRole.MEMBER,
+  record_customer_engagement: WorkspaceRole.MEMBER,
+  // Draft-only relationship agent runs (spend inference + read federated PII).
+  triage_customer: WorkspaceRole.MEMBER,
+  draft_followup: WorkspaceRole.MEMBER,
+  draft_collections_nudge: WorkspaceRole.MEMBER,
+  // Lead-intake mutations.
+  ingest_lead: WorkspaceRole.MEMBER,
+  resolve_pending_leads: WorkspaceRole.MEMBER,
+  discard_lead_intake: WorkspaceRole.MEMBER,
+};
+
+/** The minimum workspace role an MCP tool requires, or null for a viewer-level read tool. */
+export function mcpToolMinRole(toolName: string): WorkspaceRole | null {
+  return MCP_TOOL_MIN_ROLE[toolName] ?? null;
+}
+
+export function roleDenial(
+  toolName: string,
+  required: WorkspaceRole,
+  actual: WorkspaceRole | null,
+): McpDenial {
+  return envelope({
+    error: 'role_denied',
+    tool: toolName,
+    required_role: String(required).toLowerCase(),
+    your_role: actual ? String(actual).toLowerCase() : null,
+    hint: 'This action requires at least the member role in this workspace; a viewer has read-only access.',
+  });
+}
+
+/**
+ * Evaluate one MCP tool call against the CALLING USER's workspace role. Returns
+ * a denial envelope for a viewer attempting a mutation/agent-run, else `null`.
+ * Pure (the caller resolves the role); the tenancy on/off gate lives in
+ * McpService, exactly as the REST guard gates on the flag before it reads a role.
+ *
+ * @param toolName  the registered tool being invoked
+ * @param role      the caller's resolved role in the target workspace (null = none)
+ */
+export function mcpRoleDenial(toolName: string, role: WorkspaceRole | null): McpDenial | null {
+  const required = mcpToolMinRole(toolName);
+  if (!required) return null; // viewer-level read tool — no role gate
+  if (!roleMeetsMinimum(role, required)) return roleDenial(toolName, required, role);
+  return null;
 }
 
 /**

@@ -21,9 +21,12 @@
 import { Controller, Get, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { Request } from 'express';
+import { WorkspaceRole } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RequireScopes } from '../auth/decorators/require-scopes.decorator';
+import { RequireWorkspaceRole } from '../auth/decorators/require-workspace-role.decorator';
 import { WorkspaceMembershipGuard } from '../common/workspace/workspace-membership.guard';
+import { WorkspaceRoleGuard } from '../common/workspace/workspace-role.guard';
 import { graphKeyFor } from './graph-key';
 import { GraphService } from './graph.service';
 import { GraphIngestService } from './graph-ingest.service';
@@ -36,7 +39,9 @@ import { GraphDataDTO, NodeDetailDTO } from './graph.types';
 
 @ApiTags('graph')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, WorkspaceMembershipGuard)
+// authn → membership authz → role RBAC. GET reads stay VIEWER-level; the
+// reindex backfill mutates the graph, so it requires MEMBER.
+@UseGuards(JwtAuthGuard, WorkspaceMembershipGuard, WorkspaceRoleGuard)
 @Controller('workspaces/:workspaceId/graph')
 export class GraphController {
   constructor(
@@ -52,6 +57,7 @@ export class GraphController {
       'the graph is dormant.',
   })
   @RequireScopes('write:customers')
+  @RequireWorkspaceRole(WorkspaceRole.MEMBER)
   async reindex(@Req() req: Request): Promise<{ nodes: number; edges: number }> {
     return this.ingest.backfillWorkspace(workspaceIdOf(req));
   }

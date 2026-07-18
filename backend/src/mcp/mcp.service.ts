@@ -9,10 +9,11 @@
  */
 
 import { Injectable, Logger } from '@nestjs/common';
-import { User, AuditAction } from '@prisma/client';
+import { User, AuditAction, WorkspaceRole } from '@prisma/client';
 import { z } from 'zod';
 import { MembershipService } from '../common/workspace/membership.service';
 import { WorkspaceContextService } from '../common/workspace/workspace-context.service';
+import { tenancyEnabled } from '../common/workspace/feature-flags';
 import { ucUidOf } from '../common/workspace/workspace.util';
 import { AuditService } from '../audit/audit.service';
 import { CustomersService } from '../customers/customers.service';
@@ -21,7 +22,7 @@ import { FollowUpDrafterAgent } from '../agents/follow-up-drafter.agent';
 import { CollectionsNudgeAgent } from '../agents/collections-nudge.agent';
 import { LeadIntakeService } from '../lead-intake/lead-intake.service';
 import { CustomerOpsTools } from './mcp.tools';
-import { mcpToolDenial } from './mcp-access';
+import { McpDenial, mcpRoleDenial, mcpToolMinRole, mcpToolDenial, roleDenial } from './mcp-access';
 
 // The funnel stages, as a zod enum for tool input validation.
 const STAGE = z.enum(['LEAD', 'PROSPECT', 'CUSTOMER']);
@@ -73,6 +74,44 @@ export class McpService {
     } catch {
       // resolveAuthorized can throw (403); never let auditing change tool behavior.
     }
+  }
+
+  /**
+   * Enforce the calling user's workspace ROLE for one MCP tool (mcp-access
+   * MCP_TOOL_MIN_ROLE). Returns a denial envelope to short-circuit a viewer's
+   * mutation/agent-run, or `null` to allow it.
+   *
+   *  - A viewer-level (read) tool has no minimum role → allowed without a lookup.
+   *  - Inert while tenancy is off: no membership rows carry a role, so we skip —
+   *    mirrors the REST WorkspaceRoleGuard + MembershipService gate (and keeps
+   *    single-tenant dogfood behavior unchanged).
+   *  - Otherwise resolve the target workspace (the arg workspace_id, else the
+   *    caller's claim/default — authorizing membership) and its role. A resolve
+   *    failure (non-member / 403) is treated as "no role" → fail-closed denial.
+   */
+  private async enforceToolRole(
+    toolName: string,
+    user: User,
+    args: unknown,
+  ): Promise<McpDenial | null> {
+    if (!mcpToolMinRole(toolName)) return null; // viewer-level read tool
+    if (!tenancyEnabled()) return null; // single-tenant: no role to enforce
+
+    const requestedWorkspaceId = (args as { workspace_id?: unknown } | null | undefined)
+      ?.workspace_id;
+    let role: WorkspaceRole | null = null;
+    try {
+      const workspaceId = await this.workspaces.resolveAuthorized(
+        user,
+        typeof requestedWorkspaceId === 'string' ? requestedWorkspaceId : null,
+      );
+      role = await this.membership.roleInWorkspace(user, workspaceId);
+    } catch {
+      // resolveAuthorized 403'd (no membership in the target workspace). Fail
+      // closed: no role → denied for any mutation tool.
+      return roleDenial(toolName, mcpToolMinRole(toolName)!, null);
+    }
+    return mcpRoleDenial(toolName, role);
   }
 
   /**
@@ -157,6 +196,15 @@ export class McpService {
         if (denial) {
           this.logger.warn(`MCP tool "${name}" denied for PAT caller (user=${user.email})`);
           return denial;
+        }
+        // Workspace ROLE RBAC — the MCP mirror of `@RequireWorkspaceRole` (this
+        // is the check a JWT session skips at the HTTP guard): a VIEWER is refused
+        // every mutation/agent-run tool. Applies to JWT AND PAT callers (a PAT is
+        // never more privileged than the user who minted it).
+        const roleDenied = await this.enforceToolRole(name, user, args);
+        if (roleDenied) {
+          this.logger.warn(`MCP tool "${name}" role-denied (user=${user.email})`);
+          return roleDenied;
         }
         return handler(args);
       };

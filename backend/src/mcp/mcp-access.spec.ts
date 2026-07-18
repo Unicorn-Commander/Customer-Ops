@@ -1,4 +1,11 @@
-import { mcpToolDenial } from './mcp-access';
+import { WorkspaceRole } from '@prisma/client';
+import {
+  MCP_TOOL_MIN_ROLE,
+  mcpRoleDenial,
+  mcpToolDenial,
+  mcpToolMinRole,
+} from './mcp-access';
+import { MCP_TOOL_SCOPE_MAP } from '../auth/pat/pat.constants';
 
 const WS = '0190a000-7e57-7000-8000-00000000c007';
 const OTHER_WS = '0190a000-7e57-7000-8000-0000000000ff';
@@ -79,5 +86,68 @@ describe('mcpToolDenial — PAT workspace fence', () => {
 
   it('ignores a blank/whitespace workspace_id arg', () => {
     expect(mcpToolDenial('list_customers', { workspace_id: '  ' }, ['read:customers'], WS)).toBeNull();
+  });
+});
+
+describe('MCP_TOOL_MIN_ROLE — the mutation roster', () => {
+  it('every write/agent tool requires at least MEMBER (a viewer cannot mutate)', () => {
+    for (const role of Object.values(MCP_TOOL_MIN_ROLE)) {
+      expect(role).toBe(WorkspaceRole.MEMBER);
+    }
+  });
+
+  it('the role-gated set is exactly the write/agent scopes — read tools stay viewer-level', () => {
+    // A tool that MUTATES (write:* / run:agents in the PAT scope map) must carry a
+    // minimum role; a read:* tool must NOT. Keeps the two maps in lock-step so a
+    // new mutation tool can't slip past the role gate.
+    for (const [tool, scope] of Object.entries(MCP_TOOL_SCOPE_MAP)) {
+      const mutates = scope.startsWith('write:') || scope === 'run:agents';
+      expect(Boolean(mcpToolMinRole(tool))).toBe(mutates);
+    }
+  });
+
+  it('an unmapped / read tool has no minimum role (null)', () => {
+    expect(mcpToolMinRole('list_customers')).toBeNull();
+    expect(mcpToolMinRole('get_customer_360')).toBeNull();
+    expect(mcpToolMinRole('health')).toBeNull();
+    expect(mcpToolMinRole('list_my_workspaces')).toBeNull();
+    expect(mcpToolMinRole('not_a_real_tool')).toBeNull();
+  });
+});
+
+describe('mcpRoleDenial — workspace role RBAC on MCP tools', () => {
+  it('403s a VIEWER on every mutation + agent-run tool', () => {
+    for (const tool of Object.keys(MCP_TOOL_MIN_ROLE)) {
+      const denial = mcpRoleDenial(tool, WorkspaceRole.VIEWER);
+      const detail = detailOf(denial);
+      expect(detail.error).toBe('role_denied');
+      expect(detail.tool).toBe(tool);
+      expect(detail.required_role).toBe('member');
+      expect(detail.your_role).toBe('viewer');
+    }
+  });
+
+  it('403s a null-role (non-member) on a mutation tool — fail closed', () => {
+    const detail = detailOf(mcpRoleDenial('transition_customer_stage', null));
+    expect(detail.error).toBe('role_denied');
+    expect(detail.your_role).toBeNull();
+  });
+
+  it('allows a MEMBER on mutation + agent-run tools', () => {
+    expect(mcpRoleDenial('transition_customer_stage', WorkspaceRole.MEMBER)).toBeNull();
+    expect(mcpRoleDenial('send_customer_email', WorkspaceRole.MEMBER)).toBeNull();
+    expect(mcpRoleDenial('triage_customer', WorkspaceRole.MEMBER)).toBeNull();
+    expect(mcpRoleDenial('ingest_lead', WorkspaceRole.MEMBER)).toBeNull();
+  });
+
+  it('allows an OWNER on mutation tools (higher role satisfies the minimum)', () => {
+    expect(mcpRoleDenial('transition_customer_stage', WorkspaceRole.OWNER)).toBeNull();
+  });
+
+  it('never gates a viewer-level read tool, regardless of role (incl. a VIEWER)', () => {
+    expect(mcpRoleDenial('list_customers', WorkspaceRole.VIEWER)).toBeNull();
+    expect(mcpRoleDenial('get_customer_360', WorkspaceRole.VIEWER)).toBeNull();
+    expect(mcpRoleDenial('health', null)).toBeNull();
+    expect(mcpRoleDenial('list_my_workspaces', WorkspaceRole.VIEWER)).toBeNull();
   });
 });

@@ -20,9 +20,11 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
-import { User } from '@prisma/client';
+import { User, WorkspaceRole } from '@prisma/client';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { RequireScopes } from '../../auth/decorators/require-scopes.decorator';
+import { RequireWorkspaceRole } from '../../auth/decorators/require-workspace-role.decorator';
+import { WorkspaceRoleGuard } from '../../common/workspace/workspace-role.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { WorkspaceContextService } from '../../common/workspace/workspace-context.service';
 import { WithWorkspaceClaim } from '../../common/workspace/workspace.util';
@@ -75,8 +77,9 @@ export class M365SyncController {
 
   /** Pull the user's contacts and funnel them through lead-intake. */
   @Post('sync')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @RequireScopes('write:leads')
+  @RequireWorkspaceRole(WorkspaceRole.MEMBER)
   @ApiOperation({ summary: 'Sync Microsoft 365 contacts into the lead pipeline' })
   @ApiResponse({ status: 200, description: 'The sync outcome (seen/ingested/failed counts)' })
   @ApiResponse({ status: 503, description: 'Microsoft 365 is not configured / not connected' })
@@ -94,8 +97,9 @@ export class M365SyncController {
 
   /** Disconnect — delete the stored credential. Idempotent. */
   @Delete('connection')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @RequireScopes('write:leads')
+  @RequireWorkspaceRole(WorkspaceRole.MEMBER)
   @ApiOperation({ summary: 'Disconnect Microsoft 365 (delete the stored credential)' })
   @ApiResponse({ status: 200, description: 'Disconnected (or already disconnected — idempotent)' })
   async disconnect(@CurrentUser() user: AuthedUser): Promise<{ disconnected: boolean }> {

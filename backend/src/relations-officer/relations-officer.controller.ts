@@ -19,10 +19,12 @@
 
 import { Body, Controller, Param, Post, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { User } from '@prisma/client';
+import { User, WorkspaceRole } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RequireScopes } from '../auth/decorators/require-scopes.decorator';
+import { RequireWorkspaceRole } from '../auth/decorators/require-workspace-role.decorator';
 import { WorkspaceMembershipGuard } from '../common/workspace/workspace-membership.guard';
+import { WorkspaceRoleGuard } from '../common/workspace/workspace-role.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { WithWorkspaceClaim } from '../common/workspace/workspace.util';
 import { RelationsOfficerService } from './relations-officer.service';
@@ -36,7 +38,9 @@ type AuthedUser = User & Partial<WithWorkspaceClaim>;
 
 @ApiTags('relations-officer')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, WorkspaceMembershipGuard)
+// authn → membership authz → role RBAC. Both routes mutate/agent-run, so each
+// requires MEMBER — a VIEWER member is 403'd before the orchestrator is reached.
+@UseGuards(JwtAuthGuard, WorkspaceMembershipGuard, WorkspaceRoleGuard)
 @Controller('workspaces/:workspaceId/relations-officer')
 export class RelationsOfficerController {
   constructor(private readonly relationsOfficer: RelationsOfficerService) {}
@@ -50,6 +54,7 @@ export class RelationsOfficerController {
       'Never executes here; degrade-clean when inference is not connected.',
   })
   @RequireScopes('run:agents')
+  @RequireWorkspaceRole(WorkspaceRole.MEMBER)
   async chat(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
@@ -70,6 +75,7 @@ export class RelationsOfficerController {
       'a customer activity); on cancel/expired/missing nothing is changed.',
   })
   @RequireScopes('write:customers')
+  @RequireWorkspaceRole(WorkspaceRole.MEMBER)
   async confirmAction(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,

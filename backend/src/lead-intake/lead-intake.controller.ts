@@ -18,10 +18,12 @@
 
 import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { User } from '@prisma/client';
+import { User, WorkspaceRole } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RequireScopes } from '../auth/decorators/require-scopes.decorator';
+import { RequireWorkspaceRole } from '../auth/decorators/require-workspace-role.decorator';
 import { WorkspaceMembershipGuard } from '../common/workspace/workspace-membership.guard';
+import { WorkspaceRoleGuard } from '../common/workspace/workspace-role.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { WithWorkspaceClaim } from '../common/workspace/workspace.util';
 import { LeadIntakeService } from './lead-intake.service';
@@ -36,7 +38,10 @@ type AuthedUser = User & Partial<WithWorkspaceClaim>;
 
 @ApiTags('leads')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, WorkspaceMembershipGuard)
+// authn → membership authz → role RBAC. The role guard reads the workspace the
+// membership guard stashes; the per-route `@RequireWorkspaceRole` sets the bar
+// (un-annotated GET reads are VIEWER-level; the POST mutations require MEMBER).
+@UseGuards(JwtAuthGuard, WorkspaceMembershipGuard, WorkspaceRoleGuard)
 @Controller('workspaces/:workspaceId/leads')
 export class LeadIntakeController {
   constructor(private readonly leads: LeadIntakeService) {}
@@ -50,6 +55,7 @@ export class LeadIntakeController {
       'cannot be resolved yet.',
   })
   @RequireScopes('write:leads')
+  @RequireWorkspaceRole(WorkspaceRole.MEMBER)
   async ingest(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
@@ -95,6 +101,7 @@ export class LeadIntakeController {
       '"wire P-00059 later" reconciler.',
   })
   @RequireScopes('write:leads')
+  @RequireWorkspaceRole(WorkspaceRole.MEMBER)
   async resolvePending(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
@@ -106,6 +113,7 @@ export class LeadIntakeController {
   @Post('intakes/:id/discard')
   @ApiOperation({ summary: 'Discard a staged intake (spam/duplicate/opt-out). Terminal.' })
   @RequireScopes('write:leads')
+  @RequireWorkspaceRole(WorkspaceRole.MEMBER)
   async discard(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,

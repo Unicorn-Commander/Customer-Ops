@@ -24,14 +24,16 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { AuditAction, User } from '@prisma/client';
+import { AuditAction, User, WorkspaceRole } from '@prisma/client';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { JwtOnly } from '../../auth/decorators/jwt-only.decorator';
 import { RequireScopes } from '../../auth/decorators/require-scopes.decorator';
+import { RequireWorkspaceRole } from '../../auth/decorators/require-workspace-role.decorator';
 import { CurrentUser } from '../decorators/current-user.decorator';
 import { AuditService } from '../../audit/audit.service';
 import { MembershipService } from './membership.service';
 import { WorkspaceMembershipGuard } from './workspace-membership.guard';
+import { WorkspaceRoleGuard } from './workspace-role.guard';
 import { ucUidOf, WithWorkspaceClaim } from './workspace.util';
 import { UpdateMemberRoleDto } from './dto/update-member-role.dto';
 
@@ -39,7 +41,7 @@ type AuthedUser = User & Partial<WithWorkspaceClaim>;
 
 @ApiTags('workspace')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, WorkspaceMembershipGuard)
+@UseGuards(JwtAuthGuard, WorkspaceMembershipGuard, WorkspaceRoleGuard)
 @Controller('workspaces/:workspaceId')
 export class WorkspaceController {
   constructor(
@@ -86,6 +88,7 @@ export class WorkspaceController {
 
   @Patch('members/:userKey')
   @JwtOnly()
+  @RequireWorkspaceRole(WorkspaceRole.OWNER)
   @ApiOperation({ summary: 'Change a member’s role (owner only; cannot demote the last owner).' })
   async setRole(
     @CurrentUser() user: AuthedUser,
@@ -108,6 +111,7 @@ export class WorkspaceController {
 
   @Delete('members/:userKey')
   @JwtOnly()
+  @RequireWorkspaceRole(WorkspaceRole.OWNER)
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'Remove a member (owner only; cannot remove the last owner).' })
   async revoke(
