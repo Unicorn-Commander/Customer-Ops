@@ -29,9 +29,10 @@
  * 500). Federation/grounding reads are best-effort — a failed customer-360 still
  * yields a usable (if thinner) reply.
  *
- * STORE NOTE (v1): the pending-action store is an in-memory Map. That is correct
- * for a single replica only; a DB-backed (or Redis) store is the hardening
- * follow-up so a pending confirm survives a restart / works across replicas.
+ * STORE NOTE: the pending-action store is the shared PendingActionStore —
+ * Redis-backed when REDIS_URL is set (a pending confirm survives a restart and
+ * works across replicas; `take` is an atomic get-and-delete so an action can
+ * never execute twice), and an in-process TTL map otherwise (single replica).
  */
 
 import { Injectable, Logger } from '@nestjs/common';
@@ -40,6 +41,7 @@ import { RelationshipStage, User } from '@prisma/client';
 import { CustomersService } from '../customers/customers.service';
 import { AgentInferencePort, InferenceContext } from '../agents/inference/agent-inference.port';
 import { WorkspaceContextService } from '../common/workspace/workspace-context.service';
+import { PendingActionStore } from '../common/security/pending-action.store';
 import {
   WithWorkspaceClaim,
   entitlementsOf,
@@ -60,6 +62,9 @@ import {
 /** Single-use pending-action TTL — 5 minutes (matches the suite Guide pattern). */
 const PENDING_TTL_MS = 5 * 60 * 1000;
 
+/** The shared-store namespace for the operator's pending confirm-gated writes. */
+const PENDING_NAMESPACE = 'relations-officer:pending';
+
 /** The 4 writes the operator may propose — the allow-list the validator gates on.
  *  NO invoice/email/send/charge kind exists here, so none can ever be proposed. */
 const ALLOWED_KINDS: ReadonlySet<RelationsOfficerActionKind> = new Set([
@@ -75,17 +80,18 @@ type AuthedUser = User & Partial<WithWorkspaceClaim>;
 export class RelationsOfficerService {
   private readonly logger = new Logger(RelationsOfficerService.name);
 
-  /**
-   * The single-use pending-action store. v1: in-memory, single-replica only.
-   * Hardening follow-up = a DB/Redis-backed store (survives restart, multi-replica).
-   * Keyed by the action's uuid; entries are consumed (deleted) on use + swept lazily.
-   */
-  private readonly pending = new Map<string, PendingAction>();
-
   constructor(
     private readonly customers: CustomersService,
     private readonly inference: AgentInferencePort,
     private readonly workspaces: WorkspaceContextService,
+    /**
+     * The single-use pending-action store. Backed by shared Redis when
+     * REDIS_URL is set (a pending confirm survives a restart + works across
+     * replicas — the propose can land on one replica and the confirm on
+     * another), and degrades to an in-process TTL map for a single replica.
+     * `take` is an atomic get-and-delete, so an action can never execute twice.
+     */
+    private readonly pendingStore: PendingActionStore,
   ) {}
 
   // ========================================================================
@@ -209,7 +215,7 @@ export class RelationsOfficerService {
       };
     }
 
-    const proposedAction = this.createPending(
+    const proposedAction = await this.createPending(
       infCtx.workspaceId,
       ucUidOf(user) || '',
       customerId,
@@ -241,8 +247,12 @@ export class RelationsOfficerService {
     const actionId = body.actionId?.trim();
     const decision = body.decision === 'confirm' ? 'confirm' : 'cancel';
 
-    this.sweepExpired();
-    const pending = actionId ? this.pending.get(actionId) : undefined;
+    // SINGLE-USE: atomically read AND remove the action (delete-on-use) so it can
+    // never run twice — even if two confirms race across replicas, exactly one
+    // `take` returns the record and the other gets null.
+    const pending = actionId
+      ? await this.pendingStore.take<PendingAction>(PENDING_NAMESPACE, actionId)
+      : null;
 
     // Missing / already-consumed / unknown id.
     if (!pending) {
@@ -253,10 +263,6 @@ export class RelationsOfficerService {
           'or expired. Ask me again and I will propose a fresh one.',
       };
     }
-
-    // SINGLE-USE: consume it immediately (delete-on-use) so it can never run twice,
-    // regardless of the decision branch below.
-    this.pending.delete(actionId);
 
     // Bind check: the confirm must come from the SAME user + workspace that proposed
     // it. (Defense-in-depth on top of the membership guard.)
@@ -517,14 +523,13 @@ export class RelationsOfficerService {
   }
 
   /** Mint + store a single-use pending action and return its safe projection. */
-  private createPending(
+  private async createPending(
     workspaceId: string,
     userKey: string,
     customerId: string,
     kind: RelationsOfficerActionKind,
     args: RelationsOfficerActionArgs,
-  ): ProposedAction {
-    this.sweepExpired();
+  ): Promise<ProposedAction> {
     const id = randomUUID();
     const pending: PendingAction = {
       id,
@@ -535,7 +540,7 @@ export class RelationsOfficerService {
       args,
       expiresAt: Date.now() + PENDING_TTL_MS,
     };
-    this.pending.set(id, pending);
+    await this.pendingStore.put(PENDING_NAMESPACE, id, pending, PENDING_TTL_MS);
     const { label, detail } = this.describe(kind, args);
     return { id, kind, label, detail, customerId };
   }
@@ -637,14 +642,6 @@ export class RelationsOfficerService {
     if (!kind) return { reply, action: null };
     const args = (a['args'] && typeof a['args'] === 'object' ? a['args'] : {}) as RelationsOfficerActionArgs;
     return { reply, action: { kind, args } };
-  }
-
-  /** Drop expired pending actions (lazy sweep on each propose/confirm). */
-  private sweepExpired(): void {
-    const now = Date.now();
-    for (const [id, p] of this.pending) {
-      if (now > p.expiresAt) this.pending.delete(id);
-    }
   }
 
   private clip(s: string, n: number): string {

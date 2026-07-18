@@ -23,8 +23,10 @@ import { RelationsOfficerController } from './relations-officer.controller';
  *     and the workspace resolver used to bind/verify a pending action's workspace.
  *   - AuthModule       — the JwtAuthGuard for the workspace-scoped routes.
  *
- * v1 note: the service's pending-action store is in-memory (single replica). A
- * DB/Redis-backed store is the hardening follow-up.
+ * The service's pending-action store is the shared PendingActionStore
+ * (SecurityStoreModule, global): Redis-backed when REDIS_URL is set (a pending
+ * confirm survives a restart + works across replicas, consumed atomically via
+ * GETDEL) and an in-process TTL map otherwise (single replica).
  */
 @Module({
   imports: [WorkspaceModule, AuthModule, CustomersModule, AgentInferenceModule],

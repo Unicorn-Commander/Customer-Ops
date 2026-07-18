@@ -69,7 +69,12 @@ services:
     build:
       context: ../backend
       dockerfile: Dockerfile
-    container_name: customer-ops-backend
+    # NO container_name: a pinned name forbids a 2nd instance (Docker requires
+    # unique container names), so `docker compose up --scale customer-ops-backend=N`
+    # would fail. Compose derives a unique per-replica name; Traefik discovers the
+    # replicas by label and load-balances them. The backend is stateless — shared
+    # state (single-use nonces / pending confirms / rate limits) lives in Redis
+    # (REDIS_URL) — so replicas are interchangeable.
     restart: unless-stopped
     env_file:
       - .env

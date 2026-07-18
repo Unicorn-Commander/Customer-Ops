@@ -13,15 +13,21 @@
  *   • SINGLE-USE — a `nonce` is recorded as consumed on first successful callback,
  *     so a replayed state (captured redirect URL) is rejected.
  *
- * The consumed-nonce set is in-process (the dogfood is single-replica). It is
- * self-pruning by TTL so it can't grow unbounded. A multi-replica deploy would
- * swap this for a shared store (Redis) — the seam is this one class.
+ * The consumed-nonce set now lives in the shared SingleUseTokenStore: with
+ * REDIS_URL set it is a cross-replica `SET NX PX` (a replayed state that lands
+ * on ANY replica is rejected); with no Redis it degrades to the prior in-process
+ * self-pruning set (single-replica). Either way the record self-expires at the
+ * state's own TTL so it can never grow unbounded.
  */
 
 import { Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { randomUUID } from 'crypto';
 import { M365Config } from '../m365.config';
+import { SingleUseTokenStore } from '../../common/security/single-use-token.store';
+
+/** The single-use-token namespace for M365 OAuth-state nonces. */
+const M365_STATE_NAMESPACE = 'm365:oauth-state';
 
 /** The claims carried in the signed state. */
 export interface M365StatePayload {
@@ -40,12 +46,10 @@ interface DecodedState extends M365StatePayload {
 
 @Injectable()
 export class M365StateService {
-  /** nonce → expiry epoch ms. Consumed nonces, pruned lazily by TTL. */
-  private readonly consumed = new Map<string, number>();
-
   constructor(
     private readonly jwt: JwtService,
     private readonly config: M365Config,
+    private readonly singleUse: SingleUseTokenStore,
   ) {}
 
   /** Sign a short-TTL state for the given user + workspace. */
@@ -62,7 +66,7 @@ export class M365StateService {
    * state is expired, or the nonce was already used (replay). On success the
    * nonce is recorded so it can never be used again.
    */
-  verifyAndConsume(state: string): M365StatePayload {
+  async verifyAndConsume(state: string): Promise<M365StatePayload> {
     let decoded: DecodedState;
     try {
       decoded = this.jwt.verify<DecodedState>(state, { secret: this.secret() });
@@ -74,12 +78,19 @@ export class M365StateService {
       throw new Error('Malformed OAuth state');
     }
 
-    this.prune();
-    if (this.consumed.has(decoded.nonce)) {
+    // SINGLE-USE (shared): record the nonce as consumed until its own expiry.
+    // `false` == already consumed on some replica → replay. TTL is the state's
+    // remaining lifetime (never negative: a min of 1s), after which a replay is
+    // impossible anyway because the signed state has itself expired.
+    const remainingSeconds = Math.max(1, decoded.exp - Math.floor(Date.now() / 1000));
+    const firstUse = await this.singleUse.consume(
+      M365_STATE_NAMESPACE,
+      decoded.nonce,
+      remainingSeconds,
+    );
+    if (!firstUse) {
       throw new Error('OAuth state already used');
     }
-    // Record as consumed until its own expiry (no need to retain past that).
-    this.consumed.set(decoded.nonce, decoded.exp * 1000);
 
     return { uid: decoded.uid, ws: decoded.ws, nonce: decoded.nonce };
   }
@@ -89,13 +100,5 @@ export class M365StateService {
     // JwtModule is configured with JWT_SECRET app-wide; if it's somehow unset the
     // sign/verify here throws, which fails the flow closed (never accepts a forgery).
     return process.env.JWT_SECRET ?? '';
-  }
-
-  /** Drop expired consumed-nonce entries so the set can't grow without bound. */
-  private prune(): void {
-    const now = Date.now();
-    for (const [nonce, exp] of this.consumed) {
-      if (exp <= now) this.consumed.delete(nonce);
-    }
   }
 }

@@ -442,6 +442,169 @@ export class LeadIntakeService extends LeadLabelResolver {
     };
   }
 
+  // ========================================================================
+  // SYSTEM RECONCILE — the same reconciler, run by the scheduler per workspace
+  // with NO request user. Identical outcome to resolvePendingForUser Pass A, but
+  // the workspace is bound EXPLICITLY (runInWorkspace pins the RLS GUC) and the
+  // acting identity is the system (ucUid=null). No membership check applies —
+  // there is no user; the workspace itself is the tenancy boundary (RLS), which
+  // is exactly what runInWorkspace enforces. Federation runs OUTSIDE every tx.
+  // ========================================================================
+
+  /**
+   * Promote PENDING intakes for ONE workspace as a system job. Mirrors
+   * resolvePendingForUser Pass A + Pass B, but bound to `workspaceId` with the
+   * system actor. Best-effort per intake — one bad intake never aborts the pass.
+   */
+  async reconcilePendingSystem(
+    workspaceId: string,
+    limit = 100,
+  ): Promise<{ scanned: number; resolved: number; stillOpen: number; provisionalUpgraded: number }> {
+    // Pass A — promote PENDING intakes, oldest-first.
+    const pending = await this.workspaces.runInWorkspace(workspaceId, null, (tx) =>
+      tx.leadIntake.findMany({
+        where: { status: LeadIntakeStatus.PENDING },
+        orderBy: { createdAt: 'asc' },
+        take: limit,
+      }),
+    );
+
+    let resolved = 0;
+    let stillOpen = 0;
+    for (const intake of pending) {
+      try {
+        if (await this.resolveOneSystem(workspaceId, intake)) resolved++;
+        else stillOpen++;
+      } catch (err) {
+        stillOpen++;
+        this.logger.warn(
+          `System reconcile: intake ${intake.id} in ${workspaceId} failed: ${(err as Error).message}`,
+        );
+      }
+    }
+
+    // Pass B — upgrade provisional ids to canonical, only when Contact-Ops is now
+    // reachable (otherwise the upsert would just re-mint the same provisional).
+    let upgraded = 0;
+    if (this.coReachable()) {
+      const provisionals = await this.workspaces.runInWorkspace(workspaceId, null, (tx) =>
+        tx.leadIntake.findMany({
+          where: { status: LeadIntakeStatus.RESOLVED, provisional: true },
+          orderBy: { resolvedAt: 'asc' },
+          take: limit,
+        }),
+      );
+      for (const intake of provisionals) {
+        try {
+          if (await this.upgradeProvisionalSystem(workspaceId, intake)) upgraded++;
+        } catch (err) {
+          this.logger.warn(
+            `System reconcile: provisional upgrade for ${intake.id} in ${workspaceId} failed: ${(err as Error).message}`,
+          );
+        }
+      }
+    }
+
+    return { scanned: pending.length, resolved, stillOpen, provisionalUpgraded: upgraded };
+  }
+
+  /** System-actor counterpart of resolveOne (no explicit contactId path). Returns
+   *  true when the intake was resolved (RESOLVED), false when it stays PENDING. */
+  private async resolveOneSystem(workspaceId: string, intake: LeadIntake): Promise<boolean> {
+    const fedCtx: FederationContext = { workspaceId, ucUid: null };
+
+    // (b) Contact-Ops upsert (degrade-clean: null when CO dormant / pre-P-00059).
+    let contactId: string | null = null;
+    let provisional = false;
+    let via: ResolveOutcome['via'] = undefined;
+    const upserted = await this.contactOps.upsertContact(fedCtx, this.toIdentity(intake));
+    if (upserted) {
+      contactId = upserted.contactId;
+      via = 'contact-ops';
+    } else if (this.provisionalEnabled) {
+      // (c) provisional fallback — deterministic from the strongest identity key.
+      contactId = this.mintProvisional(workspaceId, intake);
+      provisional = true;
+      via = 'provisional';
+    }
+
+    // Unresolved → stays PENDING; a later pass retries once CO is reachable.
+    if (!contactId) {
+      await this.workspaces.runInWorkspace(workspaceId, null, (tx) =>
+        tx.leadIntake.update({
+          where: { id: intake.id },
+          data: {
+            status: LeadIntakeStatus.PENDING,
+            statusDetail:
+              'Contact-Ops is not reachable and provisional identity is disabled — staged ' +
+              'PENDING; the scheduler will promote it once Contact-Ops is connected.',
+          },
+        }),
+      );
+      return false;
+    }
+
+    // Project the LEAD + mark the intake RESOLVED, in one RLS tx (system actor).
+    const resolvedId = contactId;
+    const isProv = provisional;
+    await this.workspaces.runInWorkspace(workspaceId, null, async (tx) => {
+      const customer = await this.upsertProjectionInTx(tx, resolvedId, intake, '', via!);
+      await tx.leadIntake.update({
+        where: { id: intake.id },
+        data: {
+          status: LeadIntakeStatus.RESOLVED,
+          resolvedContactId: resolvedId,
+          provisional: isProv,
+          customerId: customer.id,
+          resolvedAt: new Date(),
+          statusDetail: `Resolved via ${via}${isProv ? ' (provisional)' : ''} → contact ${resolvedId}`,
+        },
+      });
+    });
+    return true;
+  }
+
+  /** System-actor counterpart of upgradeProvisional. */
+  private async upgradeProvisionalSystem(workspaceId: string, intake: LeadIntake): Promise<boolean> {
+    const fedCtx: FederationContext = { workspaceId, ucUid: null };
+    const upserted = await this.contactOps.upsertContact(fedCtx, this.toIdentity(intake));
+    if (!upserted || !intake.resolvedContactId) return false;
+    const oldId = intake.resolvedContactId;
+    const newId = upserted.contactId;
+    if (newId === oldId) return false; // already canonical-shaped; nothing to swap
+
+    await this.workspaces.runInWorkspace(workspaceId, null, async (tx) => {
+      const canonical = await tx.customer.findFirst({ where: { contactId: newId } });
+      if (canonical && intake.customerId && canonical.id !== intake.customerId) {
+        await tx.customerActivity.updateMany({
+          where: { customerId: intake.customerId },
+          data: { customerId: canonical.id },
+        });
+        await tx.customer.delete({ where: { id: intake.customerId } });
+        await tx.leadIntake.update({
+          where: { id: intake.id },
+          data: {
+            resolvedContactId: newId,
+            provisional: false,
+            customerId: canonical.id,
+            statusDetail: `Provisional ${oldId} merged into canonical ${newId}`,
+          },
+        });
+      } else if (intake.customerId) {
+        await tx.customer.update({ where: { id: intake.customerId }, data: { contactId: newId } });
+        await tx.leadIntake.update({
+          where: { id: intake.id },
+          data: {
+            resolvedContactId: newId,
+            provisional: false,
+            statusDetail: `Provisional ${oldId} upgraded to canonical ${newId}`,
+          },
+        });
+      }
+    });
+    return true;
+  }
+
   /** Re-resolve a provisional intake through Contact-Ops; on success swap the
    *  provisional contactId for the canonical person_id on the intake + the
    *  Customer projection (merging into any existing canonical relationship). */

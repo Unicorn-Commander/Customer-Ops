@@ -229,6 +229,7 @@ function makeService(opts?: {
   const workspaces = {
     resolveAuthorized: jest.fn().mockResolvedValue(WS),
     runForUser: jest.fn(async (_user: User, fn: any) => fn(lastTx.current)),
+    runForUserReadOnly: jest.fn(async (_user: User, fn: any) => fn(lastTx.current)),
     runInWorkspace: jest.fn(async (_ws: string, _uc: any, fn: any) => fn(lastTx.current)),
   } as unknown as WorkspaceContextService;
 
@@ -1342,6 +1343,7 @@ describe('CustomersService — *ForUser audit side-effects (Phase 7; AuditServic
     const workspaces = {
       resolveAuthorized: jest.fn().mockResolvedValue(WS),
       runForUser: jest.fn(async (_user: User, fn: any) => fn(lastTx.current)),
+      runForUserReadOnly: jest.fn(async (_user: User, fn: any) => fn(lastTx.current)),
       runInWorkspace: jest.fn(async (_ws: string, _uc: any, fn: any) => fn(lastTx.current)),
     } as unknown as WorkspaceContextService;
 

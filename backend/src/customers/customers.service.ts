@@ -77,6 +77,7 @@ import {
 import { ProjectPanel } from '../project-ops/project-ops.types';
 import { LeadLabelResolver, isProvisionalContactId } from '../lead-intake/lead-label.port';
 import { GraphIngestService } from '../graph/graph-ingest.service';
+import { mapWithConcurrency } from '../common/concurrency';
 import { checkTransition, engagementAdvance, STAGE_ORDER } from './funnel';
 import {
   AddNoteDto,
@@ -153,6 +154,19 @@ export interface MeetingPanelView {
   meetings: FederatedMeeting[];
   summaries: FederatedMeetingSummary[];
   actionItems: FederatedActionItem[];
+}
+
+/** Default cap on the pipeline-board card count (the hottest, federation-heavy
+ *  page). Tunable via PIPELINE_MAX_CARDS. */
+const PIPELINE_MAX_CARDS_DEFAULT = 500;
+
+/** Resolve the pipeline-board cap from env, else the default (fail-safe on a
+ *  non-positive / unparseable value — never an unbounded board). */
+function pipelineMaxCards(): number {
+  const raw = process.env.PIPELINE_MAX_CARDS;
+  if (raw === undefined || raw.trim() === '') return PIPELINE_MAX_CARDS_DEFAULT;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : PIPELINE_MAX_CARDS_DEFAULT;
 }
 
 @Injectable()
@@ -466,15 +480,32 @@ export class CustomersService {
     withContacts = true,
   ) {
     const fedCtx = await this.federationContext(user, requestedWorkspaceId);
-    const rows = await this.workspaces.runForUser(
+    // BOUND the board: this is the hottest page and each card can trigger a
+    // federated contact resolve. An unbounded findMany on a large workspace would
+    // fan out one get_person per row over federation (N+1) — cap to the top
+    // `PIPELINE_MAX_CARDS` by priority so the page (and the batched resolve below)
+    // stays bounded. `+1` lets us detect + flag truncation. Read-only tx.
+    const max = pipelineMaxCards();
+    const rows = await this.workspaces.runForUserReadOnly(
       user,
       (tx) =>
         tx.customer.findMany({
           where: { isLost: false },
           orderBy: [{ priority: 'desc' }, { lastStageChangeAt: 'asc' }],
+          take: max + 1,
         }),
       requestedWorkspaceId,
     );
+    const truncated = rows.length > max;
+    if (truncated) {
+      rows.length = max;
+      this.logger.warn(
+        `Pipeline board truncated to ${max} cards (set PIPELINE_MAX_CARDS to raise the cap).`,
+      );
+    }
+    // The batched, bounded-concurrency federation resolve (getContactSummaries
+    // caps simultaneous get_person calls) turns N cards into a steady wave, not
+    // N simultaneous calls.
     const joined = await this.joinContacts(user, fedCtx, rows, withContacts, requestedWorkspaceId);
 
     const lanes = STAGE_ORDER.map((stage) => {
@@ -492,6 +523,10 @@ export class CustomersService {
       totals: {
         count: joined.length,
         expectedValue: joined.reduce((s, c) => s + Number(c.expectedValue ?? 0), 0).toFixed(2),
+        // Signals the client that the board was capped (show the top `max` by
+        // priority); the operator can raise PIPELINE_MAX_CARDS if they need more.
+        truncated,
+        max,
       },
     };
   }
@@ -784,6 +819,62 @@ export class CustomersService {
       total: invoice.total,
       balanceDue: invoice.balanceDue,
     };
+  }
+
+  // ========================================================================
+  // SYSTEM INVOICE REFRESH — the scheduler's per-workspace cache refresh. Polls
+  // every linked invoice's live AO status and refreshes the cached projection,
+  // so an operator opening a 360 sees a fresh status even when nobody triggered
+  // a poll. Reads are viewer-level on AO (no dual-SKU needed), so the system
+  // actor (ucUid=null, no entitlements) can poll. Federation runs OUTSIDE the tx;
+  // the workspace is bound explicitly via runInWorkspace (RLS GUC). Best-effort.
+  // ========================================================================
+
+  /**
+   * Refresh the cached AO status of every invoice link in ONE workspace. No-op
+   * when AO is unconfigured. Returns a small counter for the scheduler log.
+   */
+  async refreshInvoiceCachesSystem(
+    workspaceId: string,
+    limit = 500,
+  ): Promise<{ polled: number; refreshed: number }> {
+    if (!this.accountingOps.isConfigured()) return { polled: 0, refreshed: 0 };
+
+    // 1) Read the links to poll (system-actor RLS tx).
+    const links = await this.workspaces.runInWorkspace(workspaceId, null, (tx) =>
+      tx.customerInvoiceLink.findMany({ orderBy: { lastPolledAt: 'asc' }, take: limit }),
+    );
+    if (links.length === 0) return { polled: 0, refreshed: 0 };
+
+    // 2) Poll with BOUNDED concurrency — a busy workspace can hold many links, and
+    //    an unbounded Promise.all would fire them all at AO at once. Pure
+    //    federation, no DB tx held open across the network calls.
+    const fedCtx: InvoiceFederationContext = { workspaceId, ucUid: null, entitlements: [] };
+    const INVOICE_POLL_CONCURRENCY = 8;
+    const polled = await mapWithConcurrency(links, INVOICE_POLL_CONCURRENCY, async (link) => ({
+      link,
+      invoice: await this.pollInvoice(fedCtx, link as Record<string, any>),
+    }));
+
+    // 3) Persist refreshed projections in ONE workspace tx.
+    const toWrite = polled.filter((p) => p.invoice);
+    if (toWrite.length === 0) return { polled: links.length, refreshed: 0 };
+    try {
+      await this.workspaces.runInWorkspace(workspaceId, null, async (tx) => {
+        for (const { link, invoice } of toWrite) {
+          await tx.customerInvoiceLink.update({
+            where: { id: (link as Record<string, any>).id },
+            data: this.invoiceCacheUpdate(invoice!),
+          });
+        }
+      });
+    } catch (err) {
+      this.logger.warn(
+        `System invoice cache refresh write failed for ${workspaceId}: ${(err as Error).message}`,
+      );
+      return { polled: links.length, refreshed: 0 };
+    }
+    return { polled: links.length, refreshed: toWrite.length };
   }
 
   /** Map a CreateInvoiceDto + the idempotency tuple to an AO draft. */

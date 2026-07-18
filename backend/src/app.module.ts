@@ -4,6 +4,9 @@ import { ThrottlerModule } from '@nestjs/throttler';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 
 import { PrismaModule } from './prisma/prisma.module';
+import { RedisModule } from './common/redis/redis.module';
+import { RedisService } from './common/redis/redis.service';
+import { SecurityStoreModule } from './common/security/security-store.module';
 import { WorkspaceModule } from './common/workspace/workspace.module';
 import { FederationAuthModule } from './common/federation/federation-auth.module';
 import { ObservabilityModule } from './common/observability/observability.module';
@@ -12,6 +15,8 @@ import { AllExceptionsFilter } from './common/observability/all-exceptions.filte
 import { RequestLoggingInterceptor } from './common/observability/request-logging.interceptor';
 import { FriendlyThrottlerGuard } from './common/security/friendly-throttler.guard';
 import { buildThrottlers } from './common/security/throttler.config';
+import { RedisThrottlerStorage } from './common/security/redis-throttler.storage';
+import { ReconciliationSchedulerModule } from './common/scheduler/reconciliation-scheduler.module';
 import { AuthModule } from './auth/auth.module';
 import { HealthModule } from './health/health.module';
 import { McpModule } from './mcp/mcp.module';
@@ -43,12 +48,25 @@ import { M365Module } from './m365/m365.module';
     // Rate limiting — named throttlers ('short' burst + 'long' sustained),
     // env-tunable via RATE_LIMIT_* with defaults == the prior hard-coded values
     // (see common/security/throttler.config). Async so it can read ConfigService.
+    // When REDIS_URL is set the counter is SHARED across replicas (a Redis
+    // fixed-window store) instead of per-process; without it, the stock in-memory
+    // store (unchanged single-replica behavior).
     ThrottlerModule.forRootAsync({
-      inject: [ConfigService],
-      useFactory: (config: ConfigService) => buildThrottlers(config),
+      inject: [ConfigService, RedisService],
+      useFactory: (config: ConfigService, redis: RedisService) => {
+        const throttlers = buildThrottlers(config);
+        return redis.enabled
+          ? { throttlers, storage: new RedisThrottlerStorage(redis) }
+          : throttlers;
+      },
     }),
 
     // Core
+    // The shared Redis plane (global; degrade-clean without REDIS_URL). Imported
+    // before ThrottlerModule so RedisService resolves in the throttler factory.
+    RedisModule,
+    // The shared single-use / pending-action security stores (global).
+    SecurityStoreModule,
     PrismaModule,
     WorkspaceModule,
     // Cross-cutting error-tracking hook (degrade-clean; no-op without SENTRY_DSN).
@@ -101,6 +119,10 @@ import { M365Module } from './m365/m365.module';
     RelationsOfficerModule,
     // MCP last so it can consume the cockpit tools + the agents.
     McpModule,
+    // The background maintenance loop — runs lead-reconciliation / invoice-refresh
+    // / graph-repair per workspace on an interval (flag-gated OFF by default via
+    // RECONCILE_SCHEDULER_ENABLED). After the feature modules it composes.
+    ReconciliationSchedulerModule,
   ],
   providers: [
     // Rate limiting globally via the friendly guard (same limiting as the stock
