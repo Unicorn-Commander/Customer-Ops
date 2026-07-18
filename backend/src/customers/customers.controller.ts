@@ -17,10 +17,12 @@
 
 import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { User } from '@prisma/client';
+import { User, WorkspaceRole } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RequireScopes } from '../auth/decorators/require-scopes.decorator';
+import { RequireWorkspaceRole } from '../auth/decorators/require-workspace-role.decorator';
 import { WorkspaceMembershipGuard } from '../common/workspace/workspace-membership.guard';
+import { WorkspaceRoleGuard } from '../common/workspace/workspace-role.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { WithWorkspaceClaim } from '../common/workspace/workspace.util';
 import { CustomersService } from './customers.service';
@@ -42,7 +44,10 @@ type AuthedUser = User & Partial<WithWorkspaceClaim>;
 
 @ApiTags('customers')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, WorkspaceMembershipGuard)
+// authn → membership authz → role RBAC. The role guard reads the workspace the
+// membership guard stashes and enforces the per-route `@RequireWorkspaceRole`
+// minimum (GET reads are un-annotated = VIEWER-level; mutations require MEMBER).
+@UseGuards(JwtAuthGuard, WorkspaceMembershipGuard, WorkspaceRoleGuard)
 @Controller('workspaces/:workspaceId/customers')
 export class CustomersController {
   constructor(private readonly customers: CustomersService) {}
@@ -72,6 +77,7 @@ export class CustomersController {
   @Post()
   @ApiOperation({ summary: 'Create a relationship keyed on a federated contactId.' })
   @RequireScopes('write:customers')
+  @RequireWorkspaceRole(WorkspaceRole.MEMBER)
   async create(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
@@ -109,6 +115,7 @@ export class CustomersController {
   @Patch(':id')
   @ApiOperation({ summary: 'Patch relationship fields (priority/owner/value/notes/next-action).' })
   @RequireScopes('write:customers')
+  @RequireWorkspaceRole(WorkspaceRole.MEMBER)
   async update(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
@@ -121,6 +128,7 @@ export class CustomersController {
   @Post(':id/transition')
   @ApiOperation({ summary: 'Move the relationship to a new funnel stage (funnel rules enforced).' })
   @RequireScopes('write:customers')
+  @RequireWorkspaceRole(WorkspaceRole.MEMBER)
   async transition(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
@@ -133,6 +141,7 @@ export class CustomersController {
   @Post(':id/lost')
   @ApiOperation({ summary: 'Mark the relationship closed-lost (orthogonal to stage).' })
   @RequireScopes('write:customers')
+  @RequireWorkspaceRole(WorkspaceRole.MEMBER)
   async markLost(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
@@ -145,6 +154,7 @@ export class CustomersController {
   @Post(':id/reopen')
   @ApiOperation({ summary: 'Re-open a closed-lost relationship.' })
   @RequireScopes('write:customers')
+  @RequireWorkspaceRole(WorkspaceRole.MEMBER)
   async reopen(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
@@ -156,6 +166,7 @@ export class CustomersController {
   @Post(':id/notes')
   @ApiOperation({ summary: 'Append a freeform note to the relationship timeline.' })
   @RequireScopes('write:activity')
+  @RequireWorkspaceRole(WorkspaceRole.MEMBER)
   async addNote(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
@@ -193,6 +204,7 @@ export class CustomersController {
       'accounting-ops entitlements).',
   })
   @RequireScopes('write:customers')
+  @RequireWorkspaceRole(WorkspaceRole.MEMBER)
   async createInvoice(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
@@ -229,6 +241,7 @@ export class CustomersController {
       'requires customer-ops + outreach entitlements). Federates to the Outreach app.',
   })
   @RequireScopes('write:customers')
+  @RequireWorkspaceRole(WorkspaceRole.MEMBER)
   async startCampaign(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
@@ -245,6 +258,7 @@ export class CustomersController {
       'customer-ops + outreach). Federates to the Outreach app.',
   })
   @RequireScopes('write:customers')
+  @RequireWorkspaceRole(WorkspaceRole.MEMBER)
   async scheduleSocialTouch(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
@@ -282,6 +296,7 @@ export class CustomersController {
       'stages the agent-inbox approval surface.',
   })
   @RequireScopes('write:customers')
+  @RequireWorkspaceRole(WorkspaceRole.MEMBER)
   async sendEmail(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
@@ -345,6 +360,7 @@ export class CustomersController {
       'change + the engagement provenance in one transaction.',
   })
   @RequireScopes('write:activity')
+  @RequireWorkspaceRole(WorkspaceRole.MEMBER)
   async recordEngagement(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,

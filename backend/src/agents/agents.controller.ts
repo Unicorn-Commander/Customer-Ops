@@ -26,10 +26,12 @@
 import { Body, Controller, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
-import { AuditAction, User } from '@prisma/client';
+import { AuditAction, User, WorkspaceRole } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RequireScopes } from '../auth/decorators/require-scopes.decorator';
+import { RequireWorkspaceRole } from '../auth/decorators/require-workspace-role.decorator';
 import { WorkspaceMembershipGuard } from '../common/workspace/workspace-membership.guard';
+import { WorkspaceRoleGuard } from '../common/workspace/workspace-role.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { WithWorkspaceClaim, ucUidOf } from '../common/workspace/workspace.util';
 import { AuditService } from '../audit/audit.service';
@@ -57,7 +59,10 @@ const TIER_QUERY = {
 @ApiTags('agents')
 @ApiBearerAuth()
 @RequireScopes('run:agents')
-@UseGuards(JwtAuthGuard, WorkspaceMembershipGuard)
+// Every agent run is a mutation-class action (it spends inference + reads
+// federated PII), so a VIEWER is refused: the whole controller requires MEMBER.
+@RequireWorkspaceRole(WorkspaceRole.MEMBER)
+@UseGuards(JwtAuthGuard, WorkspaceMembershipGuard, WorkspaceRoleGuard)
 @Controller('workspaces/:workspaceId/customers/:id/agents')
 export class AgentsController {
   constructor(
