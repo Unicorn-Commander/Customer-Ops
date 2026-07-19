@@ -54,6 +54,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { BrigadeTokenSource } from '../common/federation/brigade-token-source';
+import { FederationWorkspaceMapService } from '../common/federation/federation-workspace-map.service';
 import { EmailOpsPort, FederationContext } from './email-ops.port';
 import {
   EmailComposeRequest,
@@ -109,6 +110,7 @@ export class EmailOpsClient extends EmailOpsPort {
   constructor(
     private readonly config: ConfigService,
     private readonly brigade: BrigadeTokenSource,
+    private readonly federationMap: FederationWorkspaceMapService,
   ) {
     super();
     if (!this.baseUrl) {
@@ -198,7 +200,7 @@ export class EmailOpsClient extends EmailOpsPort {
    *  AND the JSON-RPC body `workspace_id`, so the auth tenant and the addressed
    *  tenant never disagree (a divergence mis-tenants sends + splits idempotency). */
   private effectiveWorkspaceId(ctx: FederationContext): string {
-    return this.workspaceOverride ?? ctx.workspaceId;
+    return this.federationMap.resolveSync(ctx.workspaceId, 'email-ops') ?? ctx.workspaceId;
   }
 
   /** The auth mode: `static` forwards EMAIL_OPS_SERVICE_TOKEN (legacy / dev);
@@ -381,7 +383,7 @@ export class EmailOpsClient extends EmailOpsPort {
       return { seam, configured: false, ok: false, status: null, detail: 'not-configured', latencyMs: null };
     }
     const base = this.baseUrl as string;
-    const ws = this.workspaceOverride ?? this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ?? '';
+    const ws = this.federationMap.resolveSync(this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ?? '', 'email-ops') ?? this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ?? '';
     const ctx: FederationContext = { workspaceId: ws, ucUid: null, entitlements: [] };
     const body = { jsonrpc: '2.0', id: ++this.rpcId, method: 'tools/list', params: {} };
 

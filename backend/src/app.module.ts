@@ -38,6 +38,7 @@ import { GraphModule } from './graph/graph.module';
 import { GdprModule } from './gdpr/gdpr.module';
 import { M365Module } from './m365/m365.module';
 import { EntitlementsModule } from './entitlements/entitlements.module';
+import { FederationWorkspaceMapModule } from './common/federation/federation-workspace-map.module';
 import { EntitlementsInterceptor } from './entitlements/entitlements.interceptor';
 
 @Module({
@@ -80,6 +81,9 @@ import { EntitlementsInterceptor } from './entitlements/entitlements.interceptor
     // Entitlements source: the EntitlementsInterceptor stamps endpoint-sourced
     // SKUs onto the request after auth (dormant until ENTITLEMENTS_ENDPOINT_URL).
     EntitlementsModule,
+    // Per-workspace federation target map (multi-tenant-safe; replaces the
+    // global *_WORKSPACE_OVERRIDE envs). @Global so every *-ops client injects it.
+    FederationWorkspaceMapModule,
     HealthModule,
     // Phase 2 — the relationship cockpit + the Contact-Ops federation seam.
     ContactOpsModule,

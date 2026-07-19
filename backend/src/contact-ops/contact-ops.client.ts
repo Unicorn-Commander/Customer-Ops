@@ -36,6 +36,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { BrigadeTokenSource } from '../common/federation/brigade-token-source';
+import { FederationWorkspaceMapService } from '../common/federation/federation-workspace-map.service';
 import { ContactOpsPort, FederationContext } from './contact-ops.port';
 import {
   ContactIdentityInput,
@@ -78,6 +79,7 @@ export class ContactOpsClient extends ContactOpsPort {
   constructor(
     private readonly config: ConfigService,
     private readonly brigade: BrigadeTokenSource,
+    private readonly federationMap: FederationWorkspaceMapService,
   ) {
     super();
     if (!this.baseUrl) {
@@ -121,7 +123,7 @@ export class ContactOpsClient extends ContactOpsPort {
     // Workspace addressing. CONTACT_OPS_WORKSPACE_OVERRIDE maps this app's local
     // workspace onto Contact-Ops' uc-registry tenant id for the single-workspace
     // dogfood (until the suite shares one uc-registry id — SUITE-IDENTITY §0.1).
-    const ws = this.workspaceOverride ?? ctx.workspaceId;
+    const ws = this.federationMap.resolveSync(ctx.workspaceId, 'contact-ops') ?? ctx.workspaceId;
     const bearer = await this.bearerFor(ws);
     if (bearer) headers['Authorization'] = `Bearer ${bearer}`;
     headers['X-Workspace-Id'] = ws;
@@ -139,7 +141,7 @@ export class ContactOpsClient extends ContactOpsPort {
    *  AND the workspace-projection URL path, so the token tenant and the addressed
    *  tenant never disagree. */
   private effectiveWorkspaceId(ctx: FederationContext): string {
-    return this.workspaceOverride ?? ctx.workspaceId;
+    return this.federationMap.resolveSync(ctx.workspaceId, 'contact-ops') ?? ctx.workspaceId;
   }
 
   /** The auth mode: `static` forwards CONTACT_OPS_SERVICE_TOKEN (legacy / dev);
@@ -261,7 +263,7 @@ export class ContactOpsClient extends ContactOpsPort {
       return { seam, configured: false, ok: false, status: null, detail: 'not-configured', latencyMs: null };
     }
     const base = this.baseUrl;
-    const ws = this.workspaceOverride ?? this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ?? '';
+    const ws = this.federationMap.resolveSync(this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ?? '', 'contact-ops') ?? this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ?? '';
     // Contact-Ops' FederationContext is the read-only (no-entitlements) shape.
     const ctx: FederationContext = { workspaceId: ws, ucUid: null };
     const body = { jsonrpc: '2.0', id: ++this.rpcId, method: 'tools/list', params: {} };

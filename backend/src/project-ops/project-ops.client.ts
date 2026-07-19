@@ -30,6 +30,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { BrigadeTokenSource } from '../common/federation/brigade-token-source';
+import { FederationWorkspaceMapService } from '../common/federation/federation-workspace-map.service';
 import { FederationContext, ProjectLookup, ProjectOpsPort } from './project-ops.port';
 import { FederatedProject } from './project-ops.types';
 import { SeamHealth } from '../health/seam-health';
@@ -56,6 +57,7 @@ export class ProjectOpsClient extends ProjectOpsPort {
   constructor(
     private readonly config: ConfigService,
     private readonly brigade: BrigadeTokenSource,
+    private readonly federationMap: FederationWorkspaceMapService,
   ) {
     super();
     if (!this.baseUrl) {
@@ -116,7 +118,7 @@ export class ProjectOpsClient extends ProjectOpsPort {
     // workspace id to the shared canonical id Project-Ops recognizes (the same
     // pattern as Contact-Ops / Meeting-Ops). Both the brigade exchange claim and
     // the X-Workspace-Id hint use it; Project-Ops re-gates membership server-side.
-    const ws = this.workspaceOverride ?? ctx.workspaceId;
+    const ws = this.federationMap.resolveSync(ctx.workspaceId, 'project-ops') ?? ctx.workspaceId;
     const bearer = await this.bearerFor(ws);
     if (bearer) headers['Authorization'] = `Bearer ${bearer}`;
     headers['X-Workspace-Id'] = ws;
@@ -264,7 +266,7 @@ export class ProjectOpsClient extends ProjectOpsPort {
       return { seam, configured: false, ok: false, status: null, detail: 'not-configured', latencyMs: null };
     }
     const base = this.baseUrl;
-    const ws = this.workspaceOverride ?? this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ?? '';
+    const ws = this.federationMap.resolveSync(this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ?? '', 'project-ops') ?? this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ?? '';
     const ctx: FederationContext = { workspaceId: ws, ucUid: null, entitlements: [] };
     const body = { jsonrpc: '2.0', id: ++this.rpcId, method: 'tools/list', params: {} };
 

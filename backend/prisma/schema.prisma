@@ -847,3 +847,15 @@ model M365Connection {
   @@index([workspaceId])
   @@map("m365_connections")
 }
+
+model FederationWorkspaceMap {
+  id                String   @id @default(uuid())
+  localWorkspaceId  String   @map("local_workspace_id")
+  targetApp         String   @map("target_app")
+  targetWorkspaceId String   @map("target_workspace_id")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  @@unique([localWorkspaceId, targetApp])
+  @@map("federation_workspace_map")
+}
