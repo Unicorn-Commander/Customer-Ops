@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
+import { Injectable, OnModuleInit, OnModuleDestroy, Logger, Optional } from '@nestjs/common';
 import { Prisma, PrismaClient } from '@prisma/client';
 
 /**
@@ -26,7 +26,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
    *   is built from env: the datasource url is augmented with the pool-sizing
    *   query params (DB_POOL_SIZE / DB_POOL_TIMEOUT_SECONDS) when set.
    */
-  constructor(options?: Prisma.PrismaClientOptions) {
+  constructor(@Optional() options?: Prisma.PrismaClientOptions) {
     super(options ?? PrismaService.clientOptions());
     this.statementTimeoutMs = PrismaService.resolveStatementTimeoutMs();
   }
