@@ -388,14 +388,14 @@ export function KnowledgeGraph3D({
           nodeRelSize={4}
           nodeResolution={18}
           nodeThreeObjectExtend={true}
-          nodeThreeObject={(n: any) => {
+          nodeThreeObject={(n: GraphNode) => {
             if (n.type !== 'hub' && n.type !== 'org') return undefined;
             const s = new SpriteText(n.label);
             s.color = '#eef1f8';
             s.textHeight = n.type === 'hub' ? 7.5 : 5;
             s.fontWeight = '600';
             s.position.set(0, n.type === 'hub' ? 17 : 11, 0);
-            (s.material as any).depthWrite = false;
+            (s.material as { depthWrite: boolean }).depthWrite = false;
             return s;
           }}
           linkColor={linkColor}
