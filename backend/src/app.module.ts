@@ -37,6 +37,8 @@ import { LeadIntakeModule } from './lead-intake/lead-intake.module';
 import { GraphModule } from './graph/graph.module';
 import { GdprModule } from './gdpr/gdpr.module';
 import { M365Module } from './m365/m365.module';
+import { EntitlementsModule } from './entitlements/entitlements.module';
+import { EntitlementsInterceptor } from './entitlements/entitlements.interceptor';
 
 @Module({
   imports: [
@@ -75,6 +77,9 @@ import { M365Module } from './m365/m365.module';
     // Shared app-to-app federation credential (Brigade RFC-8693 token source).
     FederationAuthModule,
     AuthModule,
+    // Entitlements source: the EntitlementsInterceptor stamps endpoint-sourced
+    // SKUs onto the request after auth (dormant until ENTITLEMENTS_ENDPOINT_URL).
+    EntitlementsModule,
     HealthModule,
     // Phase 2 — the relationship cockpit + the Contact-Ops federation seam.
     ContactOpsModule,
@@ -146,6 +151,13 @@ import { M365Module } from './m365/m365.module';
     {
       provide: APP_INTERCEPTOR,
       useClass: RequestLoggingInterceptor,
+    },
+    // After auth, re-source req.user.__entitlements from the Ops-Center
+    // entitlements endpoint (feeds the dual-SKU federation gates). No-op when
+    // ENTITLEMENTS_ENDPOINT_URL is unset — the token claim stays the source.
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: EntitlementsInterceptor,
     },
   ],
 })
