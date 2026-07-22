@@ -212,6 +212,64 @@ export interface EmailPanel {
   sent: EmailLink[];
 }
 
+/** A federated device conversation (iMessage/SMS) with a contact handle. */
+export interface ConversationThread {
+  id: string;
+  handle: string;
+  channel: string; // 'iMessage' | 'SMS'
+  displayName: string | null;
+  lastMessageAt: string | null;
+  lastSnippet: string | null;
+  lastFromMe: boolean;
+}
+
+/** A single message preview inside a device conversation (device is SoR). */
+export interface ConversationMessage {
+  id: string;
+  at: string | null;
+  fromMe: boolean;
+  sender: string;
+  text: string;
+  channel: string;
+  hasAttachments: boolean;
+}
+
+/**
+ * The customer-360 conversations panel: the federated device messaging threads
+ * (iMessage + SMS, via the UUDC bridge) + the degrade-clean / entitlement /
+ * channel-flag affordances.
+ *   - `configured` false → bridge not connected or workspace not allowlisted.
+ *   - `entitled` false    → caller lacks customer-ops; reads only.
+ *   - `canSend`           → configured && entitled && channels enabled (may dry-run).
+ *   - `dryRunDefault`     → LIVE_SEND not enabled; compose rehearses only.
+ */
+export interface ConversationsPanel {
+  federated: boolean;
+  source: string; // 'conversations-ops'
+  configured: boolean;
+  entitled: boolean;
+  canSend: boolean;
+  liveSendEnabled?: boolean;
+  dryRunDefault?: boolean;
+  enabledChannels?: string[];
+  threads: ConversationThread[];
+}
+
+export interface SendMessageInput {
+  to?: string;
+  body: string;
+  channel?: 'iMessage' | 'SMS' | 'imessage' | 'sms';
+  idempotencyKey?: string;
+}
+
+export interface SendMessageResult {
+  applied: boolean;
+  channel: string;
+  dryRun: boolean;
+  externalRef: string;
+  to: string;
+}
+
 /** A federated Meeting-Ops meeting (header only; no transcript). */
 export interface MeetingItem {
   id: string;
@@ -316,6 +374,7 @@ export interface Customer360 {
   invoices: InvoicePanel;
   outreach: OutreachPanel;
   email: EmailPanel;
+  conversations: ConversationsPanel;
   meetings: MeetingPanel;
   projects: ProjectPanel;
 }
@@ -564,6 +623,31 @@ export async function sendEmail(
     `${base(ws)}/${encodeURIComponent(id)}/email`,
     body,
   );
+}
+
+// ── Omni-channel device messaging (iMessage + SMS via UUDC) ──
+
+/** This customer's device conversations panel. */
+export async function listConversations(ws: string, id: string): Promise<ConversationsPanel> {
+  return apiGet<ConversationsPanel>(`${base(ws)}/${encodeURIComponent(id)}/conversations`);
+}
+
+/** Expand one device conversation (message previews). */
+export async function listConversationMessages(
+  ws: string,
+  id: string,
+  chatId: string,
+): Promise<{ chatId: string; messages: ConversationMessage[]; configured: boolean }> {
+  return apiGet(`${base(ws)}/${encodeURIComponent(id)}/conversations/${encodeURIComponent(chatId)}/messages`);
+}
+
+/** Send (or dry-run) an iMessage/SMS via the device bridge. */
+export async function sendMessage(
+  ws: string,
+  id: string,
+  body: SendMessageInput,
+): Promise<SendMessageResult> {
+  return apiPost<SendMessageResult>(`${base(ws)}/${encodeURIComponent(id)}/messages`, body);
 }
 
 // ── Phase 5: the Meeting-Ops signal surface (conversation intelligence) ──

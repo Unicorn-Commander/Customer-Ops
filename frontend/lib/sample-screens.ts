@@ -655,6 +655,38 @@ export const SAMPLE_360: Customer360 = {
     ],
   },
 
+  // ── Messages (device · iMessage/SMS via UUDC) — alive ──
+  conversations: {
+    federated: true,
+    source: 'conversations-ops',
+    configured: true,
+    entitled: true,
+    canSend: true,
+    liveSendEnabled: false,
+    dryRunDefault: true,
+    enabledChannels: ['iMessage', 'SMS'],
+    threads: [
+      {
+        id: '+18435550148',
+        handle: '+18435550148',
+        channel: 'iMessage',
+        displayName: 'Jules Whitman',
+        lastMessageAt: hours(-2),
+        lastSnippet: 'Perfect — see you Monday! 🎉',
+        lastFromMe: false,
+      },
+      {
+        id: '+18435550199',
+        handle: '+18435550199',
+        channel: 'SMS',
+        displayName: 'Northwind (office)',
+        lastMessageAt: days(-1),
+        lastSnippet: 'On my way to the site now, will text photos.',
+        lastFromMe: true,
+      },
+    ],
+  },
+
   // ── Meetings (Meeting-Ops) — alive ──
   meetings: {
     federated: true,

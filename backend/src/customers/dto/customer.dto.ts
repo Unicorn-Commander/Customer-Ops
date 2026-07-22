@@ -430,6 +430,43 @@ export class SendEmailDto {
 }
 
 // ============================================================
+// Omni-channel device messaging (iMessage + SMS via UUDC)
+// ============================================================
+//
+// Send a message through the worker's device bridge. Defaults to dry-run unless
+// CONVERSATIONS_OPS_LIVE_SEND_ENABLED=true (Aaron-attended checkpoint). Customer-
+// Ops never stores the body; the device is the SoR.
+
+/** Compose an outbound device message (iMessage or SMS) to this customer's contact. */
+export class SendMessageDto {
+  /** Recipient handle (phone e164 or Apple ID email). Else the contact's primary phone. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(320)
+  to?: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(4000)
+  body!: string;
+
+  /** 'iMessage' | 'SMS' | omit for auto (device picks). */
+  @IsOptional()
+  @IsEnum(['iMessage', 'SMS', 'imessage', 'sms'] as const, {
+    message: "channel must be 'iMessage' or 'SMS'",
+  })
+  channel?: 'iMessage' | 'SMS' | 'imessage' | 'sms';
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  @Matches(/^[A-Za-z0-9._:-]+$/, {
+    message: 'idempotencyKey may contain only letters, digits, and . _ : -',
+  })
+  idempotencyKey?: string;
+}
+
+// ============================================================
 // PHASE 4 — the engagement → funnel-stage hook
 // ============================================================
 //

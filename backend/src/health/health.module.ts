@@ -6,13 +6,14 @@ import { ContactOpsModule } from '../contact-ops/contact-ops.module';
 import { AccountingOpsModule } from '../accounting-ops/accounting-ops.module';
 import { OutreachOpsModule } from '../outreach-ops/outreach-ops.module';
 import { EmailOpsModule } from '../email-ops/email-ops.module';
+import { ConversationsOpsModule } from '../conversations-ops/conversations-ops.module';
 import { MeetingOpsModule } from '../meeting-ops/meeting-ops.module';
 import { ProjectOpsModule } from '../project-ops/project-ops.module';
 import { M365Module } from '../m365/m365.module';
 
 @Module({
   // Each ops module EXPORTS its federation port; importing them lets the
-  // HealthController inject the 6 ports for the `/health/integrations` probe.
+  // HealthController inject the 7 ports for the `/health/integrations` probe.
   // M365Module exports its health indicator for the `m365` connector seam.
   imports: [
     TerminusModule,
@@ -20,6 +21,7 @@ import { M365Module } from '../m365/m365.module';
     AccountingOpsModule,
     OutreachOpsModule,
     EmailOpsModule,
+    ConversationsOpsModule,
     MeetingOpsModule,
     ProjectOpsModule,
     M365Module,

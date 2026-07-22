@@ -35,6 +35,7 @@ import {
   RecordEngagementDto,
   ScheduleSocialTouchDto,
   SendEmailDto,
+  SendMessageDto,
   StartCampaignDto,
   TransitionStageDto,
   UpdateCustomerDto,
@@ -304,6 +305,58 @@ export class CustomersController {
     @Body() dto: SendEmailDto,
   ) {
     return this.customers.sendEmailForUser(user, id, dto, workspaceId);
+  }
+
+  // ── Omni-channel device messaging (iMessage + SMS via UUDC) ──
+  // Customer-Ops FEDERATES the worker's device Messages app. Reads are
+  // viewer-level; sends require customer-ops and honor channel/workspace flags.
+  // Default outbound is dry-run until CONVERSATIONS_OPS_LIVE_SEND_ENABLED=true
+  // (Aaron-attended checkpoint — never enable customer-visible sends silently).
+
+  @Get(':id/conversations')
+  @ApiOperation({
+    summary:
+      "This customer's device conversations (iMessage + SMS) federated from the UUDC " +
+      'bridge. Reports connect/entitlement/channel-flag affordances; degrade-clean when dormant.',
+  })
+  @RequireScopes('read:customers')
+  async listConversations(
+    @CurrentUser() user: AuthedUser,
+    @Param('workspaceId') workspaceId: string,
+    @Param('id') id: string,
+  ) {
+    return this.customers.conversationsForUser(user, id, workspaceId);
+  }
+
+  @Get(':id/conversations/:chatId/messages')
+  @ApiOperation({
+    summary:
+      'Messages in one device conversation (previews only; device is SoR). Viewer-level read.',
+  })
+  @RequireScopes('read:customers')
+  async listConversationMessages(
+    @CurrentUser() user: AuthedUser,
+    @Param('workspaceId') workspaceId: string,
+    @Param('id') id: string,
+    @Param('chatId') chatId: string,
+  ) {
+    return this.customers.conversationMessagesForUser(user, id, chatId, workspaceId);
+  }
+
+  @Post(':id/messages')
+  @ApiOperation({
+    summary:
+      "Send an iMessage/SMS to this customer's contact via the device bridge (idempotent; " +
+      'requires customer-ops). Defaults to dry-run unless LIVE_SEND_ENABLED is set for the channel.',
+  })
+  @RequireScopes('write:customers')
+  async sendMessage(
+    @CurrentUser() user: AuthedUser,
+    @Param('workspaceId') workspaceId: string,
+    @Param('id') id: string,
+    @Body() dto: SendMessageDto,
+  ) {
+    return this.customers.sendMessageForUser(user, id, dto, workspaceId);
   }
 
   // ── Phase 5: the Meeting-Ops signal surface (conversation intelligence) ──
