@@ -767,10 +767,37 @@ export class ConversationsOpsClient extends ConversationsOpsPort {
     // messaging. Operators opt in per-channel after proving a dogfood target.
     // Aaron-attended checkpoint before LIVE_SEND_ENABLED=true on any real path.
     const dryRun = !this.isLiveSendEnabledFor(requestedChannel || 'iMessage');
+
+    // LIVE sends pin `service` to the canonical channel spelling. A blank
+    // service means device auto-fallback (iMessage → SMS): when LIVE_SEND is
+    // authorized for only a strict subset of the device channels, auto could
+    // deliver LIVE on a channel that never left dry-run (e.g.
+    // LIVE_SEND_CHANNELS=imessage + channel omitted ⇒ live SMS via fallback).
+    // Refuse blank service in that posture instead of letting the device decide.
+    let service = requestedChannel;
+    if (!dryRun) {
+      const canon = this.canonChannel(requestedChannel);
+      if (canon) {
+        service = canon;
+      } else {
+        const live = this.liveSendChannels();
+        const strictSubset = DEFAULT_CHANNELS.some((c) => !live.includes(c));
+        if (strictSubset) {
+          this.logger.warn(
+            `Conversations sendMessage DENIED for workspace=${ctx.workspaceId}: blank/auto ` +
+              `service on a LIVE send while only [${live.join(', ')}] may leave dry-run — ` +
+              `device auto-fallback could deliver on an unauthorized channel. ` +
+              `Pass an explicit channel.`,
+          );
+          return null;
+        }
+      }
+    }
+
     const raw = await this.callTool(ctx, 'messages.send', {
       to: request.to,
       body: request.body,
-      service: requestedChannel,
+      service,
       dry_run: dryRun,
       // Idempotency key travels as external_ref for bridge-side dedupe if supported.
       external_ref: request.externalRef,

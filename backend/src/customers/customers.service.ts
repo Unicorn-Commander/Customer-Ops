@@ -1756,7 +1756,13 @@ export class CustomersService {
     requestedWorkspaceId?: string | null,
   ): Promise<ConversationsFederationContext> {
     const workspaceId = await this.workspaces.resolveAuthorized(user, requestedWorkspaceId);
-    return { workspaceId, ucUid: ucUidOf(user) || null, entitlements: entitlementsOf(user) };
+    return {
+      workspaceId,
+      ucUid: ucUidOf(user) || null,
+      // Workspace-effective SKUs (token ∩ workspace), NEVER raw token claims —
+      // token-claim entitlements would leak a SKU across workspaces (918c01a).
+      entitlements: await this.workspaces.effectiveEntitlements(user, workspaceId),
+    };
   }
 
   /**
@@ -1791,11 +1797,7 @@ export class CustomersService {
     const liveSendEnabled = activation?.liveSendEnabled ?? false;
 
     // The contact's handles (phone e164 + email) — what device conversations key on.
-    const handles = contact
-      ? [...contact.phones.map((p) => p.e164), ...contact.emails.map((e) => e.address)].filter(
-          (h): h is string => typeof h === 'string' && h.length > 0,
-        )
-      : [];
+    const handles = this.contactDeviceHandles(contact);
 
     let threads: ConversationThread[] = [];
     if (configured && fedCtx && this.conversationsOps && handles.length > 0) {
@@ -1839,8 +1841,30 @@ export class CustomersService {
     return this.buildConversationsPanel(user, contact, requestedWorkspaceId);
   }
 
+  /** The federated contact's device handles (phone e164 + email) — what device
+   *  conversations key on. */
+  private contactDeviceHandles(contact: FederatedContact | null): string[] {
+    return contact
+      ? [...contact.phones.map((p) => p.e164), ...contact.emails.map((e) => e.address)].filter(
+          (h): h is string => typeof h === 'string' && h.length > 0,
+        )
+      : [];
+  }
+
+  /** Normalize a device handle for ownership matching: emails lowercased, phones
+   *  digits-only. MUST mirror ConversationsOpsClient.normHandle so this authz
+   *  gate and the client's thread matching agree on handle identity. */
+  private normalizeDeviceHandle(handle: string): string {
+    const s = (handle || '').trim().toLowerCase();
+    if (s.includes('@')) return s;
+    return s.replace(/[^0-9]/g, '');
+  }
+
   /**
-   * Expand one device conversation (message previews). Viewer-level; degrade-clean.
+   * Expand one device conversation (message previews). Viewer-level; degrade-clean
+   * when the seam is dormant — but 404 when the requested chat does not belong to
+   * THIS customer's contact (the device is the worker's personal Messages app;
+   * an arbitrary chatId must never expand someone else's thread).
    */
   async conversationMessagesForUser(
     user: User & Partial<WithWorkspaceClaim>,
@@ -1848,12 +1872,11 @@ export class CustomersService {
     chatId: string,
     requestedWorkspaceId?: string | null,
   ): Promise<{ chatId: string; messages: ConversationMessage[]; configured: boolean }> {
-    // Authorize: customer must exist in the caller's workspace (RLS).
-    await this.workspaces.runForUser(
+    // Authorize: customer must exist in the caller's workspace (RLS) — and
+    // capture its contactId for the thread-ownership gate below.
+    const contactId = await this.workspaces.runForUser(
       user,
-      async (tx) => {
-        await this.getInTx(tx, customerId);
-      },
+      async (tx) => (await this.getInTx(tx, customerId)).contactId,
       requestedWorkspaceId,
     );
 
@@ -1864,6 +1887,36 @@ export class CustomersService {
     if (!this.conversationsOps.isWorkspaceAllowed(fedCtx.workspaceId)) {
       return { chatId, messages: [], configured: false };
     }
+
+    // AUTHZ: the requested chat must belong to THIS customer's contact. Without
+    // this gate any workspace viewer could read ANY thread on the worker's
+    // personal device by passing an arbitrary phone number as chatId. Accept a
+    // direct handle match (normalized), or membership in the contact's federated
+    // thread list (covers group-chat ids like `chat123…` that are not a bare
+    // handle). 404 otherwise — fail-closed, without confirming whether such a
+    // thread exists on-device.
+    const contactCtx = await this.federationContext(user, requestedWorkspaceId);
+    const contact = await this.contactOps.getContact(contactCtx, contactId);
+    const handles = this.contactDeviceHandles(contact);
+    const wanted = new Set(
+      handles.map((h) => this.normalizeDeviceHandle(h)).filter((h) => h.length > 0),
+    );
+    const normChatId = this.normalizeDeviceHandle(chatId);
+    let chatAuthorized = normChatId.length > 0 && wanted.has(normChatId);
+    if (!chatAuthorized && handles.length > 0) {
+      try {
+        const threads = await this.conversationsOps.listConversationsForContact(fedCtx, handles);
+        chatAuthorized = threads.some(
+          (t) => t.id === chatId || this.normalizeDeviceHandle(t.handle) === normChatId,
+        );
+      } catch (err) {
+        this.logger.warn(`Conversation ownership check failed: ${(err as Error).message}`);
+      }
+    }
+    if (!chatAuthorized) {
+      throw new NotFoundException('No such conversation for this customer.');
+    }
+
     let messages: ConversationMessage[] = [];
     try {
       messages = await this.conversationsOps.listMessagesInConversation(fedCtx, chatId);
@@ -1907,6 +1960,13 @@ export class CustomersService {
       );
       throw new ForbiddenException(gate.reason);
     }
+
+    // Runtime kill switch (workspace-scoped): halt outbound device dispatch when
+    // this workspace is paused — every outbound dispatch gates on the workspace
+    // kill switch (same doctrine as sendEmailForUser). Device sends have no
+    // draft/approval mode, so the gate is unconditional (even a dry-run reaches
+    // the device bridge).
+    await this.workspaces.assertAgentsNotPaused(fedCtx.workspaceId);
 
     // Resolve recipient: explicit to, else federated contact's primary phone, else first email.
     let to = dto.to?.trim() || null;

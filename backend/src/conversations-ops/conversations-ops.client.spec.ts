@@ -238,6 +238,89 @@ describe('ConversationsOpsClient', () => {
       ).resolves.toBeNull();
       expect(call).not.toHaveBeenCalled();
     });
+
+    it('REFUSES a LIVE blank/auto service when LIVE_SEND_CHANNELS is a strict subset (auto-fallback could deliver live on an unauthorized channel)', async () => {
+      const c = client({
+        CONVERSATIONS_OPS_BASE_URL: 'https://gw.example/mcp',
+        UC_ENTITLEMENT_MODE: 'open',
+        CONVERSATIONS_OPS_LIVE_SEND_ENABLED: 'true',
+        CONVERSATIONS_OPS_LIVE_SEND_CHANNELS: 'imessage',
+      });
+      const call = jest.spyOn(c as any, 'callTool');
+
+      // channel omitted ⇒ `service: ''` ⇒ device auto-fallback (iMessage → SMS).
+      // SMS never left dry-run here, so the send must be refused rather than
+      // risk a LIVE SMS delivered by fallback.
+      await expect(
+        c.sendMessage(ctx(), { to: '+15551234567', body: 'auto', externalRef: 'r5' }),
+      ).resolves.toBeNull();
+      expect(call).not.toHaveBeenCalled();
+    });
+
+    it('CHANNELS=imessage alone (LIVE_SEND_CHANNELS inherited) also refuses blank/auto live sends — the device could still fall back to SMS', async () => {
+      const c = client({
+        CONVERSATIONS_OPS_BASE_URL: 'https://gw.example/mcp',
+        UC_ENTITLEMENT_MODE: 'open',
+        CONVERSATIONS_OPS_CHANNELS: 'imessage',
+        CONVERSATIONS_OPS_LIVE_SEND_ENABLED: 'true',
+      });
+      const call = jest.spyOn(c as any, 'callTool');
+      await expect(
+        c.sendMessage(ctx(), { to: '+15551234567', body: 'auto', externalRef: 'r6' }),
+      ).resolves.toBeNull();
+      expect(call).not.toHaveBeenCalled();
+    });
+
+    it('pins a LIVE send to the canonical service spelling (never lets the device re-interpret a loose channel name)', async () => {
+      const c = client({
+        CONVERSATIONS_OPS_BASE_URL: 'https://gw.example/mcp',
+        UC_ENTITLEMENT_MODE: 'open',
+        CONVERSATIONS_OPS_LIVE_SEND_ENABLED: 'true',
+        CONVERSATIONS_OPS_LIVE_SEND_CHANNELS: 'imessage',
+      });
+      const call = jest
+        .spyOn(c as any, 'callTool')
+        .mockResolvedValue({ changeSet: { applied: true }, serviceUsed: 'iMessage' });
+
+      const result = await c.sendMessage(ctx(), {
+        to: '+15551234567',
+        body: 'live pinned',
+        channel: 'imessage', // loose spelling in — canonical 'iMessage' on the wire
+        externalRef: 'r7',
+      });
+
+      expect(call).toHaveBeenCalledWith(
+        expect.anything(),
+        'messages.send',
+        expect.objectContaining({ dry_run: false, service: 'iMessage' }),
+      );
+      expect(result).toMatchObject({ dryRun: false, applied: true });
+    });
+
+    it('still allows a LIVE blank/auto service when EVERY device channel may leave dry-run (fallback cannot escape authorization)', async () => {
+      const c = client({
+        CONVERSATIONS_OPS_BASE_URL: 'https://gw.example/mcp',
+        UC_ENTITLEMENT_MODE: 'open',
+        CONVERSATIONS_OPS_LIVE_SEND_ENABLED: 'true',
+        CONVERSATIONS_OPS_LIVE_SEND_CHANNELS: 'imessage,sms',
+      });
+      const call = jest
+        .spyOn(c as any, 'callTool')
+        .mockResolvedValue({ changeSet: { applied: true }, serviceUsed: 'SMS' });
+
+      const result = await c.sendMessage(ctx(), {
+        to: '+15551234567',
+        body: 'auto ok',
+        externalRef: 'r8',
+      });
+
+      expect(call).toHaveBeenCalledWith(
+        expect.anything(),
+        'messages.send',
+        expect.objectContaining({ dry_run: false, service: '' }),
+      );
+      expect(result).toMatchObject({ dryRun: false, channel: 'SMS' });
+    });
   });
 
   describe('mtls transport (direct-to-device) — degrade-clean without material', () => {

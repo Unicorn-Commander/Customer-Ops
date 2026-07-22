@@ -350,6 +350,7 @@ export class CustomersController {
       'requires customer-ops). Defaults to dry-run unless LIVE_SEND_ENABLED is set for the channel.',
   })
   @RequireScopes('write:customers')
+  @RequireWorkspaceRole(WorkspaceRole.MEMBER)
   async sendMessage(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,

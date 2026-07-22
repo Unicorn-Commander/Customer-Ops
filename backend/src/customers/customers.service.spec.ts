@@ -9,6 +9,7 @@ import { OutreachPort } from '../outreach-ops/outreach-ops.port';
 import { EmailOpsPort } from '../email-ops/email-ops.port';
 import { MeetingOpsPort } from '../meeting-ops/meeting-ops.port';
 import { ProjectOpsPort } from '../project-ops/project-ops.port';
+import { ConversationsOpsPort } from '../conversations-ops/conversations-ops.port';
 import { AuditService } from '../audit/audit.service';
 
 /**
@@ -150,6 +151,7 @@ function makeService(opts?: {
   email?: Partial<EmailOpsPort>;
   meeting?: Partial<MeetingOpsPort>;
   project?: Partial<ProjectOpsPort>;
+  conversations?: Partial<ConversationsOpsPort>;
 }) {
   const contact: ContactOpsPort = {
     getContact: jest.fn().mockResolvedValue(null),
@@ -223,6 +225,35 @@ function makeService(opts?: {
     ...(opts?.project ?? {}),
   } as any;
 
+  // The device-conversations port (@Optional in the service): ABSENT unless a
+  // test passes one — mirroring deployments without CONVERSATIONS_OPS_BASE_URL.
+  // When provided, defaults are configured + allowed + entitled so a test only
+  // overrides what it exercises.
+  const conversations: ConversationsOpsPort | undefined = opts?.conversations
+    ? ({
+        isConfigured: jest.fn().mockReturnValue(true),
+        isWorkspaceAllowed: jest.fn().mockReturnValue(true),
+        isChannelEnabled: jest.fn().mockReturnValue(true),
+        isLiveSendEnabledFor: jest.fn().mockReturnValue(false),
+        enabledChannels: jest.fn().mockReturnValue(['iMessage', 'SMS']),
+        activation: jest.fn().mockReturnValue({
+          bridgeConfigured: true,
+          liveSendEnabled: false,
+          enabledChannels: ['iMessage', 'SMS'],
+          liveSendChannels: ['iMessage', 'SMS'],
+          workspaceAllowlist: [],
+          blockers: [],
+        }),
+        checkEntitlement: jest.fn().mockReturnValue({ allowed: true, mode: 'enforce', reason: '' }),
+        listConversationsForContact: jest.fn().mockResolvedValue([]),
+        listMessagesInConversation: jest.fn().mockResolvedValue([]),
+        sendMessage: jest
+          .fn()
+          .mockResolvedValue({ applied: true, channel: 'iMessage', dryRun: true }),
+        ...(opts.conversations ?? {}),
+      } as any)
+    : undefined;
+
   // WorkspaceContextService faked: runForUser invokes fn(tx) directly (the real
   // GUC/RLS is proven in the SQL acceptance, not re-mocked here); resolveAuthorized
   // returns the bootstrap workspace.
@@ -244,8 +275,20 @@ function makeService(opts?: {
     email,
     meeting,
     project,
+    conversations,
   );
-  return { svc, contact, accounting, outreach, email, meeting, project, workspaces, lastTx };
+  return {
+    svc,
+    contact,
+    accounting,
+    outreach,
+    email,
+    meeting,
+    project,
+    conversations,
+    workspaces,
+    lastTx,
+  };
 }
 
 describe('CustomersService — relationship logic', () => {
@@ -1264,6 +1307,158 @@ describe('CustomersService — Meeting-Ops federation (Phase 5; Meeting-Ops app 
     const result = await svc.customer360ForUser(aaron, 'cust-1', WS);
     expect(result.meetings).toMatchObject({ federated: true, configured: true });
     expect(result.meetings.meetings[0]).toMatchObject({ id: 'mtg-1' });
+  });
+});
+
+describe('CustomersService — device conversations (omni-channel; Conversations-Ops mocked)', () => {
+  // The federated contact whose handles gate what device threads this customer
+  // may expand: one phone + one email.
+  const federatedContact = {
+    contactId: 'contact-42',
+    displayName: 'Jane Lead',
+    primaryEmail: 'jane@example.com',
+    currentOrgId: null,
+    currentOrgName: null,
+    lastInteractionAt: null,
+    communicationStrength: 0.5,
+    tags: [],
+    etag: 'W/"1"',
+    vcardUid: 'vc-1',
+    kind: 'individual',
+    status: 'active',
+    emails: [{ address: 'jane@example.com', is_primary: true }],
+    phones: [{ e164: '+15551234567', is_primary: true }],
+    recentEvents: [],
+  };
+
+  describe('conversationMessagesForUser — thread-ownership AUTHZ', () => {
+    it("REFUSES (404) a chatId that is neither a contact handle nor one of the contact's threads — and never expands it", async () => {
+      const listMessagesInConversation = jest.fn().mockResolvedValue([
+        { id: 'm-secret', at: null, fromMe: false, sender: 'x', text: 'private', channel: 'iMessage', hasAttachments: false },
+      ]);
+      const listConversationsForContact = jest.fn().mockResolvedValue([
+        { id: '+15551234567', handle: '+15551234567', channel: 'iMessage', displayName: null, lastMessageAt: null, lastSnippet: null, lastFromMe: false },
+      ]);
+      const { svc, lastTx } = makeService({
+        contact: { getContact: jest.fn().mockResolvedValue(federatedContact) },
+        conversations: { listMessagesInConversation, listConversationsForContact },
+      });
+      const { tx } = makeTx(makeRow({ id: 'cust-1', contactId: 'contact-42' }));
+      lastTx.current = tx;
+
+      // An arbitrary phone number = some OTHER thread on the worker's PERSONAL
+      // device. A workspace viewer must never be able to read it through this
+      // customer's endpoint.
+      await expect(
+        svc.conversationMessagesForUser(aaron, 'cust-1', '+19998887777', WS),
+      ).rejects.toThrow(NotFoundException);
+      expect(listMessagesInConversation).not.toHaveBeenCalled();
+    });
+
+    it("EXPANDS a chatId matching a contact handle — normalized ('+1 (555) 123-4567' ≡ '+15551234567')", async () => {
+      const messages = [
+        { id: 'm1', at: '2026-07-21T00:00:00Z', fromMe: false, sender: '+15551234567', text: 'hi', channel: 'iMessage', hasAttachments: false },
+      ];
+      const listMessagesInConversation = jest.fn().mockResolvedValue(messages);
+      const listConversationsForContact = jest.fn().mockResolvedValue([]);
+      const { svc, lastTx } = makeService({
+        contact: { getContact: jest.fn().mockResolvedValue(federatedContact) },
+        conversations: { listMessagesInConversation, listConversationsForContact },
+      });
+      const { tx } = makeTx(makeRow({ id: 'cust-1', contactId: 'contact-42' }));
+      lastTx.current = tx;
+
+      const res = await svc.conversationMessagesForUser(aaron, 'cust-1', '+1 (555) 123-4567', WS);
+      expect(res).toMatchObject({ configured: true, messages });
+      // Direct handle match — no thread-list round-trip needed for authz.
+      expect(listConversationsForContact).not.toHaveBeenCalled();
+    });
+
+    it("EXPANDS a group-chat id ('chat…') that appears in the contact's federated thread list", async () => {
+      const listMessagesInConversation = jest.fn().mockResolvedValue([]);
+      const listConversationsForContact = jest.fn().mockResolvedValue([
+        { id: 'chat424242', handle: 'chat424242', channel: 'iMessage', displayName: 'Group', lastMessageAt: null, lastSnippet: null, lastFromMe: false },
+      ]);
+      const { svc, lastTx } = makeService({
+        contact: { getContact: jest.fn().mockResolvedValue(federatedContact) },
+        conversations: { listMessagesInConversation, listConversationsForContact },
+      });
+      const { tx } = makeTx(makeRow({ id: 'cust-1', contactId: 'contact-42' }));
+      lastTx.current = tx;
+
+      const res = await svc.conversationMessagesForUser(aaron, 'cust-1', 'chat424242', WS);
+      expect(res.configured).toBe(true);
+      expect(listMessagesInConversation).toHaveBeenCalledWith(expect.anything(), 'chat424242');
+    });
+
+    it('FAIL-CLOSED: contact federation dormant (no handles) → 404, never expands', async () => {
+      const listMessagesInConversation = jest.fn();
+      const { svc, lastTx } = makeService({
+        // Contact-Ops returns nothing → no handles to authorize against.
+        contact: { getContact: jest.fn().mockResolvedValue(null) },
+        conversations: { listMessagesInConversation },
+      });
+      const { tx } = makeTx(makeRow({ id: 'cust-1', contactId: 'contact-42' }));
+      lastTx.current = tx;
+
+      await expect(
+        svc.conversationMessagesForUser(aaron, 'cust-1', '+15551234567', WS),
+      ).rejects.toThrow(NotFoundException);
+      expect(listMessagesInConversation).not.toHaveBeenCalled();
+    });
+
+    it('stays degrade-clean when the seam is dormant (configured:false, no 404)', async () => {
+      const { svc, lastTx } = makeService(); // no conversations port bound at all
+      const { tx } = makeTx(makeRow({ id: 'cust-1', contactId: 'contact-42' }));
+      lastTx.current = tx;
+
+      const res = await svc.conversationMessagesForUser(aaron, 'cust-1', '+19998887777', WS);
+      expect(res).toMatchObject({ chatId: '+19998887777', messages: [], configured: false });
+    });
+  });
+
+  describe('sendMessageForUser — the workspace kill switch', () => {
+    it('KILL SWITCH: workspace paused → device send is HALTED (403), bridge never called', async () => {
+      const sendMessage = jest.fn();
+      const { svc, conversations, workspaces, lastTx } = makeService({
+        conversations: { sendMessage },
+      });
+      const { tx } = makeTx(makeRow({ id: 'cust-1', contactId: 'contact-42' }));
+      lastTx.current = tx;
+      // Runtime, workspace-scoped kill switch engaged for this workspace.
+      (workspaces.assertAgentsNotPaused as jest.Mock).mockRejectedValue(
+        new ForbiddenException('Agent and outbound activity is paused for this workspace.'),
+      );
+
+      await expect(
+        svc.sendMessageForUser(aaron, 'cust-1', { to: '+15551234567', body: 'hello' }, WS),
+      ).rejects.toThrow(/paused/i);
+
+      expect(workspaces.assertAgentsNotPaused).toHaveBeenCalledWith(WS);
+      expect(sendMessage).not.toHaveBeenCalled();
+      // The gate sits AFTER the entitlement check (deny reasons stay precise)…
+      expect((conversations as any).checkEntitlement).toHaveBeenCalled();
+    });
+
+    it('KILL SWITCH: workspace NOT paused → the send proceeds to the bridge', async () => {
+      const sendMessage = jest
+        .fn()
+        .mockResolvedValue({ applied: true, channel: 'iMessage', dryRun: true });
+      const { svc, workspaces, lastTx } = makeService({ conversations: { sendMessage } });
+      const { tx } = makeTx(makeRow({ id: 'cust-1', contactId: 'contact-42' }));
+      lastTx.current = tx;
+
+      const res = await svc.sendMessageForUser(
+        aaron,
+        'cust-1',
+        { to: '+15551234567', body: 'hello' },
+        WS,
+      );
+
+      expect(workspaces.assertAgentsNotPaused).toHaveBeenCalledWith(WS);
+      expect(sendMessage).toHaveBeenCalledTimes(1);
+      expect(res).toMatchObject({ dryRun: true, channel: 'iMessage', to: '+15551234567' });
+    });
   });
 });
 
