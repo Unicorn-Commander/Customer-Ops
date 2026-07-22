@@ -16,7 +16,18 @@
  * The transport is swappable (direct mTLS to the device today; a control-plane
  * MCP gateway later) without touching relationship logic — exactly like the
  * Email-Ops seam.
+ *
+ * ACTIVATION FLAGS (dogfood → prod; see docs/CHANNEL-STATUS.md):
+ *   - CONVERSATIONS_OPS_BASE_URL (+ mTLS material when TRANSPORT=mtls) → bridge up
+ *   - CONVERSATIONS_OPS_CHANNELS=imessage,sms → which device channels are enabled
+ *   - CONVERSATIONS_OPS_WORKSPACE_ALLOWLIST=uuid,uuid → dogfood per-workspace gate
+ *     (empty = all workspaces once bridge is configured)
+ *   - CONVERSATIONS_OPS_LIVE_SEND_ENABLED=true → allow real outbound (default dry-run)
+ *   - CONVERSATIONS_OPS_LIVE_SEND_CHANNELS=imessage,sms → optional per-channel live-send
  */
+
+/** Canonical device channel names as UUDC / Messages.app report them. */
+export type DeviceChannel = 'iMessage' | 'SMS';
 
 /** A single message within a device conversation (a projection of the UUDC
  *  `ChatMessage`). Bodies are surfaced as previews; the device owns the store. */
@@ -80,6 +91,8 @@ export interface ConversationSendResult {
   applied: boolean;
   /** The channel the device used ('iMessage' | 'SMS'). */
   channel: string;
+  /** True when the seam forced dry_run (live send not enabled for this channel). */
+  dryRun: boolean;
 }
 
 /**
@@ -91,4 +104,51 @@ export interface EntitlementDecision {
   allowed: boolean;
   mode: 'enforce' | 'open';
   reason: string;
+}
+
+/**
+ * Pure activation snapshot for the device messaging seam (SMS + iMessage).
+ * Consumed by the customer-360 panel, `/health/channels`, and docs/CHANNEL-STATUS.md
+ * consumers. Never includes secrets — only posture.
+ */
+export interface DeviceMessagingActivation {
+  /** Transport + credentials present (BASE_URL; mTLS material when required). */
+  bridgeConfigured: boolean;
+  /** CONVERSATIONS_OPS_LIVE_SEND_ENABLED=true (global live-send master). */
+  liveSendEnabled: boolean;
+  /** Channels enabled by CONVERSATIONS_OPS_CHANNELS (default both). */
+  enabledChannels: DeviceChannel[];
+  /** Channels that may leave dry-run when liveSendEnabled (default = enabledChannels). */
+  liveSendChannels: DeviceChannel[];
+  /** Workspace allowlist from CONVERSATIONS_OPS_WORKSPACE_ALLOWLIST (empty = all). */
+  workspaceAllowlist: string[];
+  /** Human blockers preventing dogfood/prod activation (empty when fully ready). */
+  blockers: string[];
+}
+
+/**
+ * Marketing / ops channel matrix row (email + SMS + iMessage). Matches
+ * docs/CHANNEL-STATUS.md so landing pages can key "live vs coming" labels.
+ */
+export interface ChannelStatusRow {
+  /** Stable id: email | sms | imessage | enterprise-sms */
+  id: string;
+  /** Human label. */
+  label: string;
+  /** Code + schema exist for this channel. */
+  built: boolean;
+  /** Readable (and dry-run sendable) when dogfood flags + credentials are set. */
+  enabledDogfood: boolean;
+  /** Live production sends allowed for real customers. */
+  enabledProd: boolean;
+  /** When true, outbound is dry-run only (no customer-visible send). */
+  dryRunDefault: boolean;
+  /** Marketing label: live | dogfood | coming */
+  marketingLabel: 'live' | 'dogfood' | 'coming';
+  /** System of record / provider. */
+  provider: string;
+  /** Activation blockers (credentials, hardware, flags). */
+  blockers: string[];
+  /** Rollout notes for ops. */
+  notes: string;
 }

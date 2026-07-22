@@ -47,12 +47,18 @@ import { ConfigService } from '@nestjs/config';
 import { BrigadeTokenSource } from '../common/federation/brigade-token-source';
 import { ConversationsOpsPort, FederationContext } from './conversations-ops.port';
 import {
+  ConversationMessage,
   ConversationSendRequest,
   ConversationSendResult,
   ConversationThread,
+  DeviceChannel,
+  DeviceMessagingActivation,
   EntitlementDecision,
 } from './conversations-ops.types';
 import { SeamHealth } from '../health/seam-health';
+
+/** Default channels when CONVERSATIONS_OPS_CHANNELS is unset. */
+const DEFAULT_CHANNELS: DeviceChannel[] = ['iMessage', 'SMS'];
 
 interface JsonRpcResult {
   structuredContent?: Record<string, unknown>;
@@ -164,6 +170,137 @@ export class ConversationsOpsClient extends ConversationsOpsPort {
     // mtls direct-to-device is only usable with client material in hand.
     if (this.transport === 'mtls') return this.mtlsMaterial() !== null;
     return true;
+  }
+
+  /**
+   * Parse a comma/space-separated channel list into canonical DeviceChannel[].
+   * Accepts imessage/iMessage/sms/SMS. Unknown tokens are dropped.
+   */
+  private parseChannels(raw: string | undefined | null, fallback: DeviceChannel[]): DeviceChannel[] {
+    if (!raw || !raw.trim()) return [...fallback];
+    const out: DeviceChannel[] = [];
+    for (const token of raw.split(/[,\s]+/)) {
+      const t = token.trim().toLowerCase();
+      if (!t) continue;
+      if (t === 'imessage' || t === 'i-message' || t === 'imsg') {
+        if (!out.includes('iMessage')) out.push('iMessage');
+      } else if (t === 'sms' || t === 'text' || t === 'rcs') {
+        if (!out.includes('SMS')) out.push('SMS');
+      }
+    }
+    return out.length > 0 ? out : [...fallback];
+  }
+
+  /** Channels allowed to surface on the cockpit (reads + dry-run compose). */
+  enabledChannels(): DeviceChannel[] {
+    return this.parseChannels(this.config.get<string>('CONVERSATIONS_OPS_CHANNELS'), DEFAULT_CHANNELS);
+  }
+
+  /** Channels allowed to leave dry-run when LIVE_SEND_ENABLED=true. */
+  private liveSendChannels(): DeviceChannel[] {
+    const enabled = this.enabledChannels();
+    const raw = this.config.get<string>('CONVERSATIONS_OPS_LIVE_SEND_CHANNELS');
+    // Unset ⇒ inherit enabled channels (so flipping LIVE_SEND_ENABLED alone works).
+    if (!raw || !raw.trim()) return enabled;
+    return this.parseChannels(raw, enabled).filter((c) => enabled.includes(c));
+  }
+
+  /** Workspace allowlist (empty = all workspaces once the bridge is configured). */
+  private workspaceAllowlist(): string[] {
+    const raw = this.config.get<string>('CONVERSATIONS_OPS_WORKSPACE_ALLOWLIST');
+    if (!raw || !raw.trim()) return [];
+    return raw
+      .split(/[,\s]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+
+  isWorkspaceAllowed(workspaceId: string): boolean {
+    const list = this.workspaceAllowlist();
+    if (list.length === 0) return true;
+    return list.includes(workspaceId);
+  }
+
+  /** Normalize channel name for comparisons. */
+  private canonChannel(channel: string | undefined | null): DeviceChannel | null {
+    if (!channel) return null;
+    const t = channel.trim().toLowerCase();
+    if (t === 'imessage' || t === 'i-message' || t === 'imsg') return 'iMessage';
+    if (t === 'sms' || t === 'text' || t === 'rcs') return 'SMS';
+    // UUDC sometimes reports "iMessage" / "SMS" already — pass through.
+    if (channel === 'iMessage' || channel === 'SMS') return channel;
+    return null;
+  }
+
+  isChannelEnabled(channel: string): boolean {
+    const c = this.canonChannel(channel);
+    if (!c) {
+      // Empty/auto channel: allowed if ANY device channel is enabled.
+      if (!channel || !channel.trim()) return this.enabledChannels().length > 0;
+      return false;
+    }
+    return this.enabledChannels().includes(c);
+  }
+
+  isLiveSendEnabledFor(channel: string): boolean {
+    const master =
+      this.config.get<string>('CONVERSATIONS_OPS_LIVE_SEND_ENABLED')?.trim().toLowerCase() ===
+      'true';
+    if (!master) return false;
+    const c = this.canonChannel(channel) ?? 'iMessage'; // auto defaults to iMessage lane
+    return this.liveSendChannels().includes(c);
+  }
+
+  activation(): DeviceMessagingActivation {
+    const bridgeConfigured = this.isConfigured();
+    const enabledChannels = this.enabledChannels();
+    const liveSendEnabled =
+      this.config.get<string>('CONVERSATIONS_OPS_LIVE_SEND_ENABLED')?.trim().toLowerCase() ===
+      'true';
+    const liveSendChannels = this.liveSendChannels();
+    const workspaceAllowlist = this.workspaceAllowlist();
+    const blockers: string[] = [];
+
+    if (!this.baseUrl) {
+      blockers.push('CONVERSATIONS_OPS_BASE_URL unset (device bridge dormant)');
+    } else if (this.transport === 'mtls' && this.mtlsMaterial() === null) {
+      blockers.push(
+        'CONVERSATIONS_OPS_TRANSPORT=mtls requires CONVERSATIONS_OPS_CLIENT_CERT + _CLIENT_KEY (or paths)',
+      );
+    }
+    if (enabledChannels.length === 0) {
+      blockers.push('CONVERSATIONS_OPS_CHANNELS empty/unknown — no device channel enabled');
+    }
+    if (!liveSendEnabled) {
+      blockers.push(
+        'CONVERSATIONS_OPS_LIVE_SEND_ENABLED≠true — outbound is dry-run only (Aaron checkpoint required before live dogfood sends)',
+      );
+    }
+    if (workspaceAllowlist.length > 0) {
+      blockers.push(
+        `CONVERSATIONS_OPS_WORKSPACE_ALLOWLIST restricts to ${workspaceAllowlist.length} workspace(s) (dogfood gate)`,
+      );
+    }
+    // iMessage reliability posture always documented as a soft blocker until proven.
+    if (enabledChannels.includes('iMessage') && bridgeConfigured) {
+      blockers.push(
+        'iMessage depends on a signed-in Apple ID + continuous UUDC device/relay availability (hardware/relay reliability)',
+      );
+    }
+    if (enabledChannels.includes('SMS') && bridgeConfigured && !liveSendEnabled) {
+      blockers.push(
+        'Device SMS uses Continuity/iPhone Personal Hotspot path via UUDC; enterprise shared-line SMS is Email-Ops/Twilio (separate lane)',
+      );
+    }
+
+    return {
+      bridgeConfigured,
+      liveSendEnabled,
+      enabledChannels,
+      liveSendChannels,
+      workspaceAllowlist,
+      blockers,
+    };
   }
 
   /** Transport selector. `mtls` = connect directly to a device's :47000 (the agent
@@ -512,11 +649,36 @@ export class ConversationsOpsClient extends ConversationsOpsPort {
 
   // --- ConversationsOpsPort implementation -------------------------------
 
+  private toMessage(raw: Record<string, unknown>): ConversationMessage | null {
+    const id = this.str(raw, 'id', 'rowid', 'guid') ?? null;
+    if (!id) return null;
+    const channel =
+      this.str(raw, 'service', 'channel') ?? 'iMessage';
+    return {
+      id,
+      at: this.str(raw, 'at', 'date', 'sentAt', 'sent_at'),
+      fromMe: raw['fromMe'] === true || raw['from_me'] === true,
+      sender: this.str(raw, 'sender', 'handle') ?? '',
+      text: this.str(raw, 'text', 'body', 'preview') ?? '',
+      channel,
+      hasAttachments:
+        raw['hasAttachments'] === true ||
+        raw['has_attachments'] === true ||
+        (Array.isArray(raw['attachments']) && (raw['attachments'] as unknown[]).length > 0),
+    };
+  }
+
   async listConversationsForContact(
     ctx: FederationContext,
     handles: string[],
   ): Promise<ConversationThread[]> {
-    if (!this.baseUrl || handles.length === 0) return [];
+    if (!this.isConfigured() || handles.length === 0) return [];
+    if (!this.isWorkspaceAllowed(ctx.workspaceId)) {
+      this.logger.debug(
+        `listConversationsForContact: workspace ${ctx.workspaceId} not in CONVERSATIONS_OPS_WORKSPACE_ALLOWLIST`,
+      );
+      return [];
+    }
     const wanted = new Set(handles.map((h) => this.normHandle(h)).filter((h) => h.length > 0));
     if (wanted.size === 0) return [];
 
@@ -531,6 +693,8 @@ export class ConversationsOpsClient extends ConversationsOpsPort {
       const t = this.toThread(it);
       if (!t) continue;
       if (!wanted.has(this.normHandle(t.handle))) continue;
+      // Filter to channels enabled for this deployment.
+      if (!this.isChannelEnabled(t.channel)) continue;
       out.push(t);
     }
     // newest first (ISO-8601 sorts lexically)
@@ -538,11 +702,50 @@ export class ConversationsOpsClient extends ConversationsOpsPort {
     return out;
   }
 
+  async listMessagesInConversation(
+    ctx: FederationContext,
+    chatIdentifier: string,
+  ): Promise<ConversationMessage[]> {
+    if (!this.isConfigured()) return [];
+    if (!this.isWorkspaceAllowed(ctx.workspaceId)) return [];
+    const id = (chatIdentifier || '').trim();
+    if (!id) return [];
+
+    const raw = await this.callTool(ctx, 'messages.thread', {
+      chat_identifier: id,
+      chatIdentifier: id,
+      limit: 200,
+    });
+    if (!raw) return [];
+    const items = Array.isArray(raw['messages'])
+      ? (raw['messages'] as Record<string, unknown>[])
+      : Array.isArray(raw['items'])
+        ? (raw['items'] as Record<string, unknown>[])
+        : [];
+
+    const out: ConversationMessage[] = [];
+    for (const it of items) {
+      const m = this.toMessage(it);
+      if (!m) continue;
+      if (!this.isChannelEnabled(m.channel)) continue;
+      out.push(m);
+    }
+    // chronological (oldest first) for a conversation pane
+    out.sort((a, b) => (a.at ?? '').localeCompare(b.at ?? ''));
+    return out;
+  }
+
   async sendMessage(
     ctx: FederationContext,
     request: ConversationSendRequest,
   ): Promise<ConversationSendResult | null> {
-    if (!this.baseUrl) return null;
+    if (!this.isConfigured()) return null;
+    if (!this.isWorkspaceAllowed(ctx.workspaceId)) {
+      this.logger.warn(
+        `Conversations sendMessage DENIED for workspace=${ctx.workspaceId}: not in CONVERSATIONS_OPS_WORKSPACE_ALLOWLIST`,
+      );
+      return null;
+    }
     // Defense-in-depth: the service pre-checks, but never send without the gate.
     const gate = this.checkEntitlement(ctx);
     if (!gate.allowed) {
@@ -551,20 +754,31 @@ export class ConversationsOpsClient extends ConversationsOpsPort {
       );
       return null;
     }
+    const requestedChannel = request.channel ?? '';
+    if (!this.isChannelEnabled(requestedChannel || 'iMessage')) {
+      this.logger.warn(
+        `Conversations sendMessage DENIED for workspace=${ctx.workspaceId}: channel ` +
+          `'${requestedChannel || '(auto)'}' not in CONVERSATIONS_OPS_CHANNELS`,
+      );
+      return null;
+    }
+
+    // Activating the read-side bridge must never implicitly activate outbound
+    // messaging. Operators opt in per-channel after proving a dogfood target.
+    // Aaron-attended checkpoint before LIVE_SEND_ENABLED=true on any real path.
+    const dryRun = !this.isLiveSendEnabledFor(requestedChannel || 'iMessage');
     const raw = await this.callTool(ctx, 'messages.send', {
       to: request.to,
       body: request.body,
-      service: request.channel ?? '',
-      // Activating the read-side bridge must never implicitly activate outbound
-      // messaging.  Operators have to opt in separately after proving a target.
-      dry_run:
-        this.config.get<string>('CONVERSATIONS_OPS_LIVE_SEND_ENABLED')?.trim().toLowerCase() !==
-        'true',
+      service: requestedChannel,
+      dry_run: dryRun,
+      // Idempotency key travels as external_ref for bridge-side dedupe if supported.
+      external_ref: request.externalRef,
     });
     if (!raw) return null;
     const cs = (raw['changeSet'] ?? raw['change_set']) as Record<string, unknown> | undefined;
     const applied = cs ? cs['applied'] === true : false;
-    const channel = this.str(raw, 'serviceUsed', 'service_used') ?? (request.channel || 'iMessage');
-    return { applied, channel };
+    const channel = this.str(raw, 'serviceUsed', 'service_used') ?? (requestedChannel || 'iMessage');
+    return { applied, channel, dryRun };
   }
 }

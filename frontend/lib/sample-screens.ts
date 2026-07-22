@@ -662,6 +662,9 @@ export const SAMPLE_360: Customer360 = {
     configured: true,
     entitled: true,
     canSend: true,
+    liveSendEnabled: false,
+    dryRunDefault: true,
+    enabledChannels: ['iMessage', 'SMS'],
     threads: [
       {
         id: '+18435550148',

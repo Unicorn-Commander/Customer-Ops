@@ -46,7 +46,10 @@ import {
   ConversationsOpsPort,
   FederationContext as ConversationsFederationContext,
 } from '../conversations-ops/conversations-ops.port';
-import { ConversationThread } from '../conversations-ops/conversations-ops.types';
+import {
+  ConversationMessage,
+  ConversationThread,
+} from '../conversations-ops/conversations-ops.types';
 import {
   AccountingOpsPort,
   FederationContext as InvoiceFederationContext,
@@ -92,6 +95,7 @@ import {
   RecordEngagementDto,
   ScheduleSocialTouchDto,
   SendEmailDto,
+  SendMessageDto,
   StartCampaignDto,
   TransitionStageDto,
   UpdateCustomerDto,
@@ -1648,24 +1652,33 @@ export class CustomersService {
   /**
    * Assemble the customer-360 conversations panel: the worker's device messaging
    * threads (iMessage + SMS) with the contact's handles, federated from the UUDC
-   * device bridge. Never throws (best-effort); degrade-clean + entitlement
-   * affordances mirror the email panel. Reads are viewer-level; only sending is
-   * gated. Customer-Ops stores no message — the device is the conversation SoR.
+   * device bridge. Never throws (best-effort); degrade-clean + entitlement +
+   * per-workspace / per-channel flag affordances. Reads are viewer-level; only
+   * sending is SKU-gated. Customer-Ops stores no message — the device is SoR.
    */
   private async buildConversationsPanel(
     user: User & Partial<WithWorkspaceClaim>,
     contact: FederatedContact | null,
     requestedWorkspaceId?: string | null,
   ) {
-    const configured = this.conversationsOps?.isConfigured() ?? false;
+    const bridgeConfigured = this.conversationsOps?.isConfigured() ?? false;
     const fedCtx =
-      configured && this.conversationsOps
+      bridgeConfigured && this.conversationsOps
         ? await this.conversationsFederationContext(user, requestedWorkspaceId)
         : null;
+    const workspaceAllowed =
+      !!fedCtx && (this.conversationsOps?.isWorkspaceAllowed(fedCtx.workspaceId) ?? false);
+    // Surface as "configured" only when the bridge is up AND this workspace is
+    // allowed (dogfood allowlist). Outside the allowlist the panel shows connect
+    // rather than an empty thread list from a bridge the workspace cannot use.
+    const configured = bridgeConfigured && workspaceAllowed;
     const entitled =
       fedCtx && this.conversationsOps
         ? this.conversationsOps.checkEntitlement(fedCtx).allowed
         : false;
+    const activation = this.conversationsOps?.activation() ?? null;
+    const enabledChannels = this.conversationsOps?.enabledChannels() ?? [];
+    const liveSendEnabled = activation?.liveSendEnabled ?? false;
 
     // The contact's handles (phone e164 + email) — what device conversations key on.
     const handles = contact
@@ -1688,10 +1701,198 @@ export class CustomersService {
       source: 'conversations-ops',
       configured,
       entitled,
-      // Sending a message requires customer-ops; reading conversations does not.
-      canSend: configured && entitled,
+      // Compose UI when entitled + channel flags allow; may still dry-run.
+      canSend: configured && entitled && enabledChannels.length > 0,
+      liveSendEnabled,
+      dryRunDefault: !liveSendEnabled,
+      enabledChannels,
       // The live device conversations with the contact (federated; never stored).
       threads,
+    };
+  }
+
+  /**
+   * Standalone conversations panel endpoint (same payload as customer-360 slot).
+   */
+  async conversationsForUser(
+    user: User & Partial<WithWorkspaceClaim>,
+    customerId: string,
+    requestedWorkspaceId?: string | null,
+  ) {
+    const contactId = await this.workspaces.runForUser(
+      user,
+      async (tx) => (await this.getInTx(tx, customerId)).contactId,
+      requestedWorkspaceId,
+    );
+    const contactCtx = await this.federationContext(user, requestedWorkspaceId);
+    const contact = await this.contactOps.getContact(contactCtx, contactId);
+    return this.buildConversationsPanel(user, contact, requestedWorkspaceId);
+  }
+
+  /**
+   * Expand one device conversation (message previews). Viewer-level; degrade-clean.
+   */
+  async conversationMessagesForUser(
+    user: User & Partial<WithWorkspaceClaim>,
+    customerId: string,
+    chatId: string,
+    requestedWorkspaceId?: string | null,
+  ): Promise<{ chatId: string; messages: ConversationMessage[]; configured: boolean }> {
+    // Authorize: customer must exist in the caller's workspace (RLS).
+    await this.workspaces.runForUser(
+      user,
+      async (tx) => {
+        await this.getInTx(tx, customerId);
+      },
+      requestedWorkspaceId,
+    );
+
+    if (!this.conversationsOps?.isConfigured()) {
+      return { chatId, messages: [], configured: false };
+    }
+    const fedCtx = await this.conversationsFederationContext(user, requestedWorkspaceId);
+    if (!this.conversationsOps.isWorkspaceAllowed(fedCtx.workspaceId)) {
+      return { chatId, messages: [], configured: false };
+    }
+    let messages: ConversationMessage[] = [];
+    try {
+      messages = await this.conversationsOps.listMessagesInConversation(fedCtx, chatId);
+    } catch (err) {
+      this.logger.warn(`Conversation thread federation failed: ${(err as Error).message}`);
+    }
+    return { chatId, messages, configured: true };
+  }
+
+  /**
+   * Send an iMessage/SMS via the device bridge. Defaults to dry-run unless
+   * CONVERSATIONS_OPS_LIVE_SEND_ENABLED=true for the channel. Never stores body.
+   * Aaron-attended checkpoint required before live dogfood/prod sends.
+   */
+  async sendMessageForUser(
+    user: User & Partial<WithWorkspaceClaim>,
+    customerId: string,
+    dto: SendMessageDto,
+    requestedWorkspaceId?: string | null,
+  ) {
+    const ucUid = ucUidOf(user);
+    if (!this.conversationsOps?.isConfigured()) {
+      throw new BadRequestException(
+        'Device messaging is not connected for this deployment. Set CONVERSATIONS_OPS_BASE_URL ' +
+          '(and mTLS material when TRANSPORT=mtls) to enable iMessage/SMS. ' +
+          'Customer-Ops federates the worker device via UUDC; it is not a message store.',
+      );
+    }
+    const fedCtx = await this.conversationsFederationContext(user, requestedWorkspaceId);
+    if (!this.conversationsOps.isWorkspaceAllowed(fedCtx.workspaceId)) {
+      throw new ForbiddenException(
+        'Device messaging is not enabled for this workspace. ' +
+          'Add the workspace to CONVERSATIONS_OPS_WORKSPACE_ALLOWLIST for dogfood, ' +
+          'or clear the allowlist once the channel is generally available.',
+      );
+    }
+    const gate = this.conversationsOps.checkEntitlement(fedCtx);
+    if (!gate.allowed) {
+      this.logger.warn(
+        `Device message send denied for ${ucUid} (ws=${fedCtx.workspaceId}): ${gate.reason}`,
+      );
+      throw new ForbiddenException(gate.reason);
+    }
+
+    // Resolve recipient: explicit to, else federated contact's primary phone, else first email.
+    let to = dto.to?.trim() || null;
+    if (!to) {
+      const contactId = await this.workspaces.runForUser(
+        user,
+        async (tx) => (await this.getInTx(tx, customerId)).contactId,
+        requestedWorkspaceId,
+      );
+      const contactCtx = await this.federationContext(user, requestedWorkspaceId);
+      const contact = await this.contactOps.getContact(contactCtx, contactId);
+      to = contact?.phones?.[0]?.e164 ?? contact?.emails?.[0]?.address ?? null;
+    }
+    if (!to) {
+      throw new BadRequestException(
+        'No recipient handle: pass to, or ensure the federated contact has a phone/email. ' +
+          'Customer-Ops does not store the handle.',
+      );
+    }
+
+    // Normalize channel spelling to canonical DeviceChannel when provided.
+    const channelRaw = dto.channel?.trim() || '';
+    const channel =
+      channelRaw.toLowerCase() === 'sms'
+        ? 'SMS'
+        : channelRaw.toLowerCase() === 'imessage'
+          ? 'iMessage'
+          : channelRaw;
+
+    if (channel && !this.conversationsOps.isChannelEnabled(channel)) {
+      throw new BadRequestException(
+        `Channel '${channel}' is not enabled (CONVERSATIONS_OPS_CHANNELS). ` +
+          `Enabled: ${this.conversationsOps.enabledChannels().join(', ') || '(none)'}.`,
+      );
+    }
+
+    // Authorize customer exists in workspace (no local message row — device is SoR).
+    await this.workspaces.runForUser(
+      user,
+      async (tx) => {
+        await this.getInTx(tx, customerId);
+      },
+      requestedWorkspaceId,
+    );
+
+    const idemKey = dto.idempotencyKey?.trim() || randomUUID();
+    const externalRef = `cust:${customerId}:msg:${idemKey}`;
+
+    const result = await this.conversationsOps.sendMessage(fedCtx, {
+      to,
+      body: dto.body,
+      channel: channel || undefined,
+      externalRef,
+    });
+    if (!result) {
+      throw new ServiceUnavailableException(
+        'Device messaging bridge did not accept the message. Retry is safe (idempotent on externalRef).',
+      );
+    }
+
+    // Timeline breadcrumb only — never the body. Marks dry-run honestly so ops
+    // can tell a real send from a dogfood rehearsal.
+    try {
+      await this.workspaces.runForUser(
+        user,
+        async (tx) => {
+          await this.getInTx(tx, customerId);
+          const workspaceId = await this.boundWorkspaceId(tx);
+          await tx.customerActivity.create({
+            data: {
+              workspaceId,
+              customerId,
+              kind: CustomerActivityKind.NOTE,
+              // Timeline breadcrumb only — never the message body. dryRun is
+              // called out so ops can distinguish a dogfood rehearsal from a live send.
+              body: result.dryRun
+                ? `Dry-run ${result.channel} → ${to} (not delivered; LIVE_SEND not enabled) [${externalRef}]`
+                : `Sent ${result.channel} → ${to} [${externalRef}]`,
+              actorUcUid: ucUid || null,
+            },
+          });
+        },
+        requestedWorkspaceId,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Device message activity note failed (send still returned): ${(err as Error).message}`,
+      );
+    }
+
+    return {
+      applied: result.applied,
+      channel: result.channel,
+      dryRun: result.dryRun,
+      externalRef,
+      to,
     };
   }
 
