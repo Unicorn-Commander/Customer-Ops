@@ -4,6 +4,7 @@ import {
   RequestWithId,
   REQUEST_ID_HEADER,
 } from './request-context.middleware';
+import { entitlementRequestScope } from '../workspace/entitlement-request-scope';
 
 /**
  * Pins request-id correlation.
@@ -68,5 +69,48 @@ describe('RequestContextMiddleware', () => {
     const req = makeReq({ [REQUEST_ID_HEADER]: ['first-id', 'second-id'] });
     mw.use(req, makeRes().res, jest.fn());
     expect(req.id).toBe('first-id');
+  });
+
+  /**
+   * This middleware is ALSO where the per-request entitlement memo scope is
+   * opened — chosen because it already runs before guards/interceptors on every
+   * route, so the PAT auth chokepoint and every `effectiveEntitlements` call site
+   * land inside one scope. Without it the resolver's memo never engages and one
+   * inbound request fans out into a dozen outbound entitlement fetches. Pinned
+   * here so deleting the wiring cannot pass silently.
+   */
+  describe('opens the per-request entitlement memo scope', () => {
+    it('the downstream handler runs INSIDE a scope', () => {
+      let seen: unknown;
+      mw.use(makeReq(), makeRes().res, () => {
+        seen = entitlementRequestScope();
+      });
+      expect(seen).toBeInstanceOf(Map);
+    });
+
+    it('each request gets its OWN scope (no cross-request carry-over)', () => {
+      const scopes: unknown[] = [];
+      mw.use(makeReq(), makeRes().res, () => scopes.push(entitlementRequestScope()));
+      mw.use(makeReq(), makeRes().res, () => scopes.push(entitlementRequestScope()));
+      expect(scopes[0]).not.toBe(scopes[1]);
+    });
+
+    it('outside the middleware there is no scope at all', () => {
+      expect(entitlementRequestScope()).toBeUndefined();
+    });
+
+    it('the scope survives an async continuation of the handler', async () => {
+      let seen: unknown;
+      await new Promise<void>((done) => {
+        mw.use(makeReq(), makeRes().res, () => {
+          void (async () => {
+            await Promise.resolve();
+            seen = entitlementRequestScope();
+            done();
+          })();
+        });
+      });
+      expect(seen).toBeInstanceOf(Map);
+    });
   });
 });
