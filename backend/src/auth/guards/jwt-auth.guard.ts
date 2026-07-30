@@ -93,33 +93,46 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
       if (!resolved) throw new UnauthorizedException('Invalid token');
 
       const patWorkspaceId = resolved.workspaceId;
-      if (patWorkspaceId) {
-        const requested = explicitRequestedWorkspaceId(request);
-        if (requested && requested !== patWorkspaceId) {
-          this.logger.warn(
-            `403 PAT workspace scope: token bound to ${patWorkspaceId} but request addressed ${requested} (user=${resolved.user.email})`,
-          );
-          throw new ForbiddenException('This token is not scoped to the requested workspace.');
-        }
-        // A PAT carries no JWT claim of its own — make its bound workspace the
-        // request's effective claim so the GUC chokepoint + membership guard
-        // resolve to it.
-        (resolved.user as any).__workspaceClaim = patWorkspaceId;
-        (request as any).workspaceId = patWorkspaceId;
+      // An UNBOUND PAT is rejected outright, not merely un-fenced. This used to
+      // be `if (patWorkspaceId) { …fence… }`, so a row with a NULL workspaceId
+      // (nullable column; unreachable via PatService.create, reachable via a
+      // hand-inserted/restored row) SKIPPED the fence entirely and could address
+      // any workspace. PatService.findByPlaintext already refuses such a row;
+      // this keeps the structural guarantee at the guard too — there is no
+      // longer any path through this branch that leaves the token unfenced.
+      if (!patWorkspaceId) {
+        this.logger.error(
+          `401 PAT with no bound workspace (user=${resolved.user.email}) — refusing an unfenced token.`,
+        );
+        throw new UnauthorizedException('Invalid token');
       }
+      const requested = explicitRequestedWorkspaceId(request);
+      if (requested && requested !== patWorkspaceId) {
+        this.logger.warn(
+          `403 PAT workspace scope: token bound to ${patWorkspaceId} but request addressed ${requested} (user=${resolved.user.email})`,
+        );
+        throw new ForbiddenException('This token is not scoped to the requested workspace.');
+      }
+      // A PAT carries no JWT claim of its own — make its bound workspace the
+      // request's effective claim so the GUC chokepoint + membership guard
+      // resolve to it.
+      (resolved.user as any).__workspaceClaim = patWorkspaceId;
+      (request as any).workspaceId = patWorkspaceId;
 
       (resolved.user as any).__ucUid = resolved.user.keycloakId ?? resolved.user.id;
       // A PAT carries no token of its own, so it has NO live `entitlements`
       // claim — leaving `__entitlements` unset makes `entitlementsOf(user)`
       // return [] and every gated federation/inference action 403 under
       // UC_ENTITLEMENT_MODE=enforce, even for a paying customer (the money bug).
-      // Stamp the SKUs snapshotted onto the token at mint time (the minting
-      // session user's verified entitlements) so the gates see the paying user's
-      // SKUs. The (user, workspace) binding still holds: each gate INTERSECTS
-      // this claim with the acting workspace's server-side entitlements via
-      // WorkspaceContextService.effectiveEntitlements — a snapshot from another
-      // org grants nothing in a workspace whose cache lacks the SKU.
-      (resolved.user as any).__entitlements = resolved.token.entitlements ?? [];
+      //
+      // Stamp the set PatService RESOLVED for this request — the mint-time
+      // snapshot INTERSECTED with the token's bound workspace's current
+      // server-side entitlements (WorkspaceEntitlementsResolver, bounded cache).
+      // Deliberately NOT `resolved.token.entitlements`: that frozen column can
+      // never lose a revoked SKU, so reading it here would reintroduce an
+      // unbounded under-enforcement window. `resolved.entitlements` is
+      // fail-closed (`[]`) on any resolve error.
+      (resolved.user as any).__entitlements = resolved.entitlements ?? [];
       (request as any).user = resolved.user;
       (request as any).pat = resolved.token;
 

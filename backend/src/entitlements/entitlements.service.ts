@@ -39,6 +39,31 @@ export interface EntitlementsResult {
   featureKeys: string[];
 }
 
+/**
+ * The result of the SERVER-SIDE, per-workspace lookup — a THREE-state answer,
+ * deliberately not `EntitlementsResult | null`.
+ *
+ * WHY THREE STATES (this is the fail-open this type exists to prevent): a bare
+ * `null` conflated "no source is configured here" with "a source IS configured
+ * but it just 401'd / 500'd / timed out". The caller
+ * (WorkspaceEntitlementsResolver) turns the first into "trust the caller's
+ * claim" — so collapsing the second into it meant a configured-but-unavailable
+ * entitlements endpoint silently degraded to FULL TRUST. That is a widening on
+ * failure, i.e. exactly the posture the rest of this lane claims never to take.
+ *
+ *   - `unconfigured`  no URL and/or no service credential ⇒ this repo has no
+ *                     server-side opinion. Legitimate passthrough.
+ *   - `ok`            a 200. Authoritative.
+ *   - `unavailable`   a source IS configured but could not answer (non-2xx,
+ *                     network error, timeout, unparseable body). INDETERMINATE ⇒
+ *                     the caller must NOT widen: deny, or narrow to a persisted
+ *                     answer that carries its own expiry.
+ */
+export type WorkspaceEntitlementsLookup =
+  | { status: 'unconfigured' }
+  | { status: 'ok'; data: EntitlementsResult }
+  | { status: 'unavailable'; reason: string };
+
 interface CacheEntry {
   at: number;
   data: EntitlementsResult;
@@ -66,26 +91,61 @@ export class EntitlementsService {
   // upgrade-within-60s AND fail-soft survives a token rotation.
   private readonly fresh = new Map<string, CacheEntry>();
   private readonly lastGood = new Map<string, EntitlementsResult>();
+  /**
+   * Service credential for the SERVER-SIDE, per-workspace lookup used by lanes
+   * that have no forwardable user JWT (the `co_pat_` lane). Unset => that lookup
+   * is dormant and `lookupWorkspace` returns `{ status: 'unconfigured' }` (see
+   * the loud boot WARNING below — endpoint-without-credential enforces nothing).
+   * Never logged.
+   */
+  private readonly serviceToken: string;
 
   constructor(config: ConfigService) {
     this.endpoint = (config.get<string>('ENTITLEMENTS_ENDPOINT_URL') || '')
       .trim()
       .replace(/\/$/, '');
+    this.serviceToken = (config.get<string>('ENTITLEMENTS_SERVICE_TOKEN') || '').trim();
     this.ttlMs = this.int(config.get<string>('ENTITLEMENTS_CACHE_TTL_MS'), 60_000);
     this.timeoutMs = this.int(config.get<string>('ENTITLEMENTS_TIMEOUT_MS'), 5_000);
-    if (this.endpoint) {
+    // BOOT LOG — state plainly, in one place, whether each lane is actually
+    // live. The previous log printed "Entitlements source: <url>" the moment a
+    // URL was set, which read as "fully configured" even when the per-workspace
+    // (PAT / server-side) lane was inert for want of a service credential.
+    if (!this.endpoint) {
       this.logger.log(
-        `Entitlements source: ${this.endpoint} (cache ${this.ttlMs}ms, timeout ${this.timeoutMs}ms)`,
+        'Entitlements endpoint NOT configured (ENTITLEMENTS_ENDPOINT_URL unset) — ' +
+          'user lane: token-claim source; server-side per-workspace lane: INERT ' +
+          '(no server-side entitlement enforcement).',
+      );
+    } else if (!this.serviceToken) {
+      // Loud, because this configuration looks configured and enforces nothing.
+      this.logger.warn(
+        `ENTITLEMENTS_ENDPOINT_URL is set (${this.endpoint}) but ENTITLEMENTS_SERVICE_TOKEN is NOT — ` +
+          'the SERVER-SIDE per-workspace entitlement lookup is DISABLED. The user (JWT) lane will use ' +
+          'the endpoint, but the PAT / workspace lane has NO server-side source and therefore enforces ' +
+          'NOTHING: every PAT keeps its mint-time snapshot indefinitely. Set ENTITLEMENTS_SERVICE_TOKEN ' +
+          '(or pin Workspace.entitlementCache) to make workspace entitlement enforcement live.',
       );
     } else {
       this.logger.log(
-        'Entitlements endpoint not configured (ENTITLEMENTS_ENDPOINT_URL unset) — using the token-claim source',
+        `Entitlements source: ${this.endpoint} (cache ${this.ttlMs}ms, timeout ${this.timeoutMs}ms) — ` +
+          'user lane LIVE; server-side per-workspace lane LIVE (service credential present).',
       );
     }
   }
 
   isConfigured(): boolean {
     return this.endpoint.length > 0;
+  }
+
+  /**
+   * True only when the SERVER-SIDE per-workspace lookup can actually run — it
+   * needs BOTH the endpoint URL and the service credential. `isConfigured()`
+   * (URL only) is NOT a proxy for this; conflating them is the footgun the boot
+   * log above warns about.
+   */
+  isWorkspaceLookupConfigured(): boolean {
+    return this.endpoint.length > 0 && this.serviceToken.length > 0;
   }
 
   /**
@@ -162,6 +222,91 @@ export class EntitlementsService {
     this.put(this.fresh, key, { at: now, data });
     this.put(this.lastGood, key, data);
     return data;
+  }
+
+  /**
+   * SERVER-SIDE, per-WORKSPACE resolve — for lanes with no forwardable user JWT.
+   *
+   * A `co_pat_` bearer is not a JWT, so {@link resolve} rejects it (`isRs256`
+   * false) and the PAT lane had no live entitlement source at all. This variant
+   * asks the endpoint "what does WORKSPACE w hold" using a configured service
+   * credential instead of the caller's token.
+   *
+   * DORMANT unless BOTH `ENTITLEMENTS_ENDPOINT_URL` and `ENTITLEMENTS_SERVICE_TOKEN`
+   * are set — returns `{ status: 'unconfigured' }`, and the caller falls back to
+   * the persisted mirror / the PAT snapshot. Deliberately does NOT use the
+   * per-user `fresh`/`lastGood` caches (different key space, and the caller —
+   * WorkspaceEntitlementsResolver — owns the TTL and the durable mirror).
+   *
+   * FAIL POSTURE — the whole reason this returns a three-state
+   * {@link WorkspaceEntitlementsLookup} and not `EntitlementsResult | null`: any
+   * non-2xx (INCLUDING 401/403/404), network error, timeout or unparseable body
+   * is `{ status: 'unavailable' }` — INDETERMINATE, never "no source". The caller
+   * must fail closed on that; only `unconfigured` may pass through to the claim.
+   * There is NO last-good fail-soft here: the durable `workspace_entitlements`
+   * mirror is the caller's last-good, and it carries an explicit `expiresAt` so a
+   * grant cannot outlive its window.
+   */
+  async lookupWorkspace(workspaceId: string): Promise<WorkspaceEntitlementsLookup> {
+    if (!this.endpoint || !this.serviceToken) return { status: 'unconfigured' };
+    // An empty workspace id is a caller bug, not an endpoint outage — but it is
+    // still not an answer, so it must not read as "no source".
+    if (!workspaceId) return { status: 'unavailable', reason: 'empty workspace id' };
+
+    const url = `${this.endpoint}?workspace_id=${encodeURIComponent(workspaceId)}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${this.serviceToken}`,
+          Accept: 'application/json',
+        },
+        signal: controller.signal,
+      });
+    } catch (err) {
+      const reason = (err as Error)?.name ?? 'error';
+      this.logger.warn(
+        `workspace entitlements fetch failed for ${workspaceId} (${reason}) -> INDETERMINATE (fail closed)`,
+      );
+      return { status: 'unavailable', reason };
+    } finally {
+      clearTimeout(timer);
+    }
+
+    // NOTE 401/403 land here too. On the USER lane a 401/403 means "this caller's
+    // token can't be checked" and falling back to the claim is right. On the
+    // SERVICE lane it means OUR credential is wrong/expired — a configuration
+    // fault on an endpoint we were told to trust. Trusting the caller's claim
+    // because our own credential broke is precisely the fail-open.
+    if (!res.ok) {
+      this.logger.warn(
+        `workspace entitlements endpoint ${res.status} for ${workspaceId} -> INDETERMINATE (fail closed)`,
+      );
+      return { status: 'unavailable', reason: `http ${res.status}` };
+    }
+
+    let body: any;
+    try {
+      body = await res.json();
+    } catch {
+      this.logger.warn(
+        `workspace entitlements body unparseable for ${workspaceId} -> INDETERMINATE (fail closed)`,
+      );
+      return { status: 'unavailable', reason: 'unparseable body' };
+    }
+    return {
+      status: 'ok',
+      data: {
+        orgId: typeof body?.org_id === 'string' ? body.org_id : null,
+        tier: typeof body?.tier === 'string' ? body.tier : null,
+        featureKeys: Array.isArray(body?.entitlements)
+          ? body.entitlements.filter((k: unknown): k is string => typeof k === 'string')
+          : [],
+      },
+    };
   }
 
   /**

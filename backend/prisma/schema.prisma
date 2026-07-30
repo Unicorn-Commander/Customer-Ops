@@ -241,6 +241,48 @@ model Workspace {
   @@map("workspaces")
 }
 
+/// SERVER-SIDE, per-workspace entitlement mirror — the source that WOULD make the
+/// (user|token, workspace) entitlement bind actually ENFORCE, and give a PAT
+/// (which has no live token claim of its own) a revocable entitlement set.
+///
+/// ⚠️ NO PRODUCER EXISTS. Nothing in this repo writes this table except the
+/// resolver's refresh-after-a-200, and that endpoint lookup is dormant on every
+/// shipping node (needs ENTITLEMENTS_ENDPOINT_URL *and* ENTITLEMENTS_SERVICE_TOKEN).
+/// With zero rows, precedence falls to step 5 below and the bind is a no-op —
+/// unchanged from before. Groundwork; see TODO(29817abc) and
+/// docs/runbooks/entitlement-enforce.md §1f.
+///
+/// Precedence when resolving a workspace's server-side SKUs
+/// (WorkspaceEntitlementsResolver):
+///   1. `Workspace.entitlementCache`  — the OPERATOR pin (offline/dedicated).
+///   2. the entitlements endpoint     — refreshed into this table, TTL-bounded.
+///   3. this table (unexpired row)    — survives restarts / endpoint blips.
+///   4. this table (EXPIRED row)      — a source exists but is unreachable =>
+///                                      indeterminate => FAIL CLOSED (empty).
+///  4b. endpoint CONFIGURED but it could not answer (non-2xx incl. 401/403/404,
+///      network error, timeout, bad body) AND no row here => indeterminate =>
+///      FAIL CLOSED (empty). Deliberately NOT step 5: a failure must never read
+///      as "no source", which downstream means "trust the claim".
+///   5. no row at all AND the endpoint is UNCONFIGURED — "no server-side source"
+///      => trust the claim / PAT snapshot (today's default; see the warning above).
+///
+/// `skus = []` on an unexpired row is a real, authoritative state ("entitled to
+/// nothing"), NOT the same as having no row. That distinction is load-bearing —
+/// see parseWorkspaceEntitlements / intersectEntitlements in workspace.util.ts.
+model WorkspaceEntitlement {
+  workspaceId String    @id // == uc-registry workspace_id; deliberately NO FK (see migration header)
+  skus        String[]  @default([])
+  source      String    @default("endpoint") // 'endpoint' | 'operator' | 'manual'
+  refreshedAt DateTime  @default(now())
+  /// null = never expires (an operator-pinned row). Past => stale => fail closed.
+  expiresAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([expiresAt])
+  @@map("workspace_entitlements")
+}
+
 model Membership {
   userKey     String // == User.keycloakId == uchub sub
   workspaceId String
@@ -774,10 +816,23 @@ model PersonalAccessToken {
   tokenHash   String    @unique
   scopes      String[]
   // SKUs snapshotted at mint from the minting session user's verified
-  // entitlements. A PAT has no live token claim, so the auth chokepoint stamps
-  // these onto request.user.__entitlements; the entitlement gates then intersect
-  // them with the acting workspace's server-side entitlements. See
-  // jwt-auth.guard.ts + WorkspaceContextService.effectiveEntitlements.
+  // entitlements, INTERSECTED with `workspaceId`'s server-side entitlements — so
+  // the snapshot never carries a SKU only another workspace bought.
+  //
+  // NEVER written as an empty "fail-closed" set on a resolver failure: the mint
+  // returns 503 instead. Because lookup only ever re-INTERSECTS this column and
+  // never re-widens it, a `[]` persisted during a blip would be a permanently
+  // dead credential handed out with a 201. See PatService.serverSideSkus.
+  //
+  // This is a FLOOR, not the authority. A PAT has no live token claim, so
+  // PatService.findByPlaintext re-intersects this column with the bound
+  // workspace's CURRENT server-side set (WorkspaceEntitlementsResolver, bounded
+  // cache) on every request, and the auth chokepoint stamps THAT onto
+  // request.user.__entitlements. Reading this column directly at auth time would
+  // reintroduce an unbounded under-enforcement window (a revoked SKU would live
+  // until the PAT was revoked/expired). See jwt-auth.guard.ts,
+  // WorkspaceContextService.effectiveEntitlements, and
+  // docs/runbooks/entitlement-enforce.md §1f.
   entitlements String[]  @default([])
   lastUsedAt  DateTime?
   expiresAt   DateTime? // null = no expiry

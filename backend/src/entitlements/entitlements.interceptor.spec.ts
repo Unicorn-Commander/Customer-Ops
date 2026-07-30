@@ -95,4 +95,71 @@ describe('EntitlementsInterceptor', () => {
     const req = { user: { __entitlements: ['claim-sku'] }, headers: { authorization: 'Bearer abc' } };
     await expect(interceptor.intercept(ctxWith(req), NEXT)).resolves.toBeDefined();
   });
+
+  // --- the PAT lane (previously ZERO coverage here) --------------------------
+
+  describe('the co_pat_ lane is short-circuited DELIBERATELY, not by accident', () => {
+    it('never forwards a co_pat_ bearer to the user-scoped endpoint', async () => {
+      const resolve = jest.fn();
+      const interceptor = new EntitlementsInterceptor(fakeSvc(resolve), cfg({ ENTITLEMENTS_ENDPOINT_URL: 'x' }));
+      const req = {
+        user: { __entitlements: ['customer-ops'] },
+        pat: { id: 'pat-1', workspaceId: 'ws-a' },
+        headers: { authorization: 'Bearer co_pat_deadbeef' },
+      };
+      await interceptor.intercept(ctxWith(req), NEXT);
+      // A PAT is not a JWT; asking the user-scoped endpoint with it is meaningless
+      // (it would 401 / bail on isRs256). It must not even be attempted.
+      expect(resolve).not.toHaveBeenCalled();
+    });
+
+    it('leaves the guard-stamped, WORKSPACE-BOUND set intact (does not overwrite it)', async () => {
+      // Simulate an endpoint that WOULD answer with a wider, user-scoped set. If
+      // the interceptor applied it to a PAT, it would discard the (token,
+      // workspace) bind that JwtAuthGuard/PatService just computed.
+      const resolve = jest
+        .fn()
+        .mockResolvedValue({ orgId: 'o', tier: 'managed', featureKeys: ['customer_ops_access'] });
+      const interceptor = new EntitlementsInterceptor(fakeSvc(resolve), cfg({ ENTITLEMENTS_ENDPOINT_URL: 'x' }));
+      const req = {
+        // the workspace-bound answer: this PAT's workspace holds nothing
+        user: { __entitlements: [] as string[] },
+        pat: { id: 'pat-1', workspaceId: 'ws-b' },
+        headers: { authorization: 'Bearer co_pat_deadbeef' },
+      };
+      await interceptor.intercept(ctxWith(req), NEXT);
+      expect(req.user.__entitlements).toEqual([]); // NOT widened to customer-ops
+      expect(resolve).not.toHaveBeenCalled();
+    });
+
+    it('the launch gate cannot 403 a PAT (its authority is the workspace resolver)', async () => {
+      const resolve = jest
+        .fn()
+        .mockResolvedValue({ orgId: 'o', tier: 'free', featureKeys: [] });
+      const interceptor = new EntitlementsInterceptor(
+        fakeSvc(resolve),
+        cfg({ ENTITLEMENTS_ENDPOINT_URL: 'x', ENTITLEMENTS_LAUNCH_GATE: 'enforce' }),
+      );
+      const req = {
+        user: { __entitlements: ['customer-ops'] },
+        pat: { id: 'pat-1', workspaceId: 'ws-a' },
+        headers: { authorization: 'Bearer co_pat_deadbeef' },
+      };
+      // Documented decision: the per-USER launch gate does not run on a lane
+      // whose entitlements are resolved per-WORKSPACE. Gated actions on this lane
+      // are still denied by the SKU gates when the workspace lacks the SKU.
+      await expect(interceptor.intercept(ctxWith(req), NEXT)).resolves.toBeDefined();
+    });
+
+    it('a JWT request (no req.pat) is unaffected — regression', async () => {
+      const resolve = jest
+        .fn()
+        .mockResolvedValue({ orgId: 'o', tier: 'managed', featureKeys: ['customer_ops_access'] });
+      const interceptor = new EntitlementsInterceptor(fakeSvc(resolve), cfg({ ENTITLEMENTS_ENDPOINT_URL: 'x' }));
+      const req = { user: { __entitlements: ['claim-sku'] }, headers: { authorization: 'Bearer abc' } };
+      await interceptor.intercept(ctxWith(req), NEXT);
+      expect(resolve).toHaveBeenCalledWith('abc', undefined);
+      expect(req.user.__entitlements).toContain('customer-ops');
+    });
+  });
 });

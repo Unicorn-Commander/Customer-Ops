@@ -10,7 +10,7 @@ import { Membership, MembershipStatus, User, WorkspaceRole } from '@prisma/clien
 import { PrismaService } from '../../prisma/prisma.service';
 import { resolveUserAccess } from '../../auth/access-list';
 import { tenancyEnabled } from './feature-flags';
-import { DEFAULT_WORKSPACE_FALLBACK } from './workspace.util';
+import { defaultWorkspaceId } from './workspace.util';
 
 /**
  * Workspace membership resolution + gating (SUITE-IDENTITY §3, §D5).
@@ -39,9 +39,21 @@ export class MembershipService {
     return tenancyEnabled((k) => this.config.get<string>(k));
   }
 
-  /** The single bootstrap/dogfood workspace id seeded by the RLS migration. */
+  /**
+   * The single bootstrap/dogfood workspace id seeded by the RLS migration.
+   *
+   * A BLANK `DEFAULT_WORKSPACE_ID` IS TREATED AS ABSENT. ConfigService's default
+   * argument only applies to `undefined`, so `DEFAULT_WORKSPACE_ID=` (explicitly
+   * empty, which is easy to produce in a compose file or a templated env) used to
+   * make this getter return `''` — and that `''` flowed straight through
+   * `resolveAndAuthorize` into `PatService.create`, which persisted a PAT row
+   * with `workspaceId: ''`. Such a token is UNBINDABLE: the auth chokepoint's
+   * sentinel refuses it on every request, so a token that minted with a 201 is
+   * dead on arrival and cannot be fixed by re-minting. Normalise here, at the
+   * write side, rather than letting an empty string become a persisted binding.
+   */
   get bootstrapWorkspaceId(): string {
-    return this.config.get<string>('DEFAULT_WORKSPACE_ID', DEFAULT_WORKSPACE_FALLBACK);
+    return defaultWorkspaceId((k) => this.config.get<string>(k));
   }
 
   /**
