@@ -64,6 +64,22 @@ export class EntitlementsInterceptor implements NestInterceptor {
     const user = req?.user as WithWorkspaceClaim | undefined;
     if (!user) return next.handle(); // unauthenticated route — nothing to source
 
+    // ---- THE PAT LANE IS SOURCED ELSEWHERE (explicit, not accidental) -------
+    // A `co_pat_…` bearer is NOT a JWT. Forwarding it here would make
+    // EntitlementsService.resolve() bail on `isRs256` and return null, so this
+    // interceptor used to no-op on the PAT lane BY ACCIDENT — which read as "the
+    // endpoint is authoritative everywhere" while the PAT lane silently used a
+    // frozen mint snapshot forever.
+    //
+    // The PAT lane's authority is now JwtAuthGuard + PatService, which resolve
+    // the token's BOUND WORKSPACE server-side (WorkspaceEntitlementsResolver:
+    // operator pin -> endpoint via a service credential -> durable mirror, with a
+    // bounded cache) and intersect it with the snapshot. Overwriting
+    // `__entitlements` here from a *user*-scoped endpoint answer would discard
+    // that workspace bind, so we short-circuit deliberately.
+    if (req?.pat) return next.handle();
+    // ------------------------------------------------------------------------
+
     const rawToken = this.bearer(req);
     const orgId = this.workspaceIsOrg ? resolveWorkspaceId(user, defaultWorkspaceId()) : undefined;
 

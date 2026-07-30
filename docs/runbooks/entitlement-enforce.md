@@ -136,11 +136,12 @@ How a PAT gets its SKUs now:
 - `JwtAuthGuard` stamps that snapshot onto `request.user.__entitlements` when it
   resolves a `co_pat_` bearer, so the SAME `entitlementsOf(user)` reader feeds the
   gates for a PAT exactly as for a JWT.
-- **Snapshot staleness**: like a PAT's scopes, its entitlements are frozen at
-  mint. A downgrade after mint is caught by (a) the workspace-cache intersection
-  (§1e) on any node that keeps `entitlementCache` current, and (b) PAT expiry /
-  revoke. A pre-fix PAT (no snapshot, empty column) resolves to `[]` and stays
-  **denied** under enforce until re-minted — secure-by-default, never over-grants.
+- **Snapshot staleness**: the snapshot column itself is frozen at mint, but it is
+  no longer what the guard stamps. `PatService.findByPlaintext` re-intersects it
+  with the bound workspace's **current** server-side entitlements on every request
+  — see **§1f** for the precedence table and the exact revocation window. A
+  pre-fix PAT (no snapshot, empty column) resolves to `[]` and stays **denied**
+  under enforce until re-minted — secure-by-default, never over-grants.
 
 ### 1e. Binding entitlements to the acting (user, workspace)
 
@@ -199,6 +200,186 @@ agents, the relations-officer) consumes it in place of the bare
 > unverified form. Offline/dedicated nodes (populated `entitlementCache`) already
 > enforce and are unaffected. Tracked as the `TODO(29817abc)` in
 > `intersectEntitlements` (`backend/src/common/workspace/workspace.util.ts`).
+>
+> **UPDATE — option (2) now has a landing strip in-repo. THE GAP IS NOT CLOSED.**
+> `workspace_entitlements` (see §1f) is the server-side, per-workspace mirror, and
+> the consumer that reads it is wired and tested. **Nothing writes it**, and
+> nothing writes `Workspace.entitlementCache` either, so on every shipping node
+> the intersection still takes its "trust the claim" branch and this limit stands
+> exactly as described above. The missing piece is the *producer*, which is a
+> product decision outside this codebase — see the box at the top of §1f.
+
+### 1f. The PAT lane's server-side entitlement source + the REVOCATION WINDOW
+
+> ## ⚠️ READ THIS FIRST: THIS SECTION DESCRIBES GROUNDWORK, NOT ENFORCEMENT
+>
+> **On every deployable configuration of this repo today, nothing described below
+> enforces anything.** That is not a caveat, it is the headline.
+>
+> `WorkspaceEntitlementsResolver` is the CONSUMER half of a server-side
+> entitlement bind. The PRODUCER half does not exist:
+>
+> * **Nothing in this repo ever writes `Workspace.entitlementCache`.** It is
+>   read-only here — an operator sets it by hand on an offline/dedicated node.
+>   On shared SaaS it is documented as always NULL.
+> * **Nothing in this repo ever writes `workspace_entitlements`.** The resolver
+>   only refreshes that table from a 200 off the entitlements endpoint — and that
+>   endpoint lookup is dormant unless BOTH `ENTITLEMENTS_ENDPOINT_URL` and
+>   `ENTITLEMENTS_SERVICE_TOKEN` are set, which they are not on any node today.
+>   There is no backfill job, no sync worker, no admin write path.
+>
+> So the resolver answers `{ skus: null, source: 'none' }` for every workspace,
+> `intersectEntitlements` takes its "trust the claim" branch, and the PAT lane
+> behaves exactly as it did before this work. **The revocation window on a
+> shipping node is still "until the PAT is revoked or expires."**
+>
+> ### What is actually delivered here
+>
+> 1. The consumer path, wired end to end and tested, so that the day a producer
+>    exists the bind enforces with no further code change.
+> 2. A **fail-CLOSED** posture at every indeterminate point, so that turning a
+>    producer on cannot fail open (see the precedence table, and especially
+>    `source-unavailable`).
+> 3. A mint that **refuses** rather than persisting a dead credential.
+> 4. Honest boot logging about which lanes are live.
+>
+> ### The decision that is still owed (outside this codebase) — `TODO(29817abc)`
+>
+> Pick ONE and build it; until then this is inert:
+>
+> * **(a) uc-entitlements client.** Stand up / point at a service that answers
+>   "what does workspace W hold", give Customer-Ops a service credential
+>   (`ENTITLEMENTS_SERVICE_TOKEN`), and the resolver populates
+>   `workspace_entitlements` itself on first use. Cost: a new service dependency
+>   on the request path, plus credential rotation.
+> * **(b) per-workspace Keycloak claim.** Have Keycloak emit an `entitlements`
+>   claim already scoped to the token's `workspace_id`, making the token itself
+>   the per-(user, workspace) authority. Cost: a Keycloak mapper change; also
+>   fixes the JWT lane's cross-org limit in §1e, but does **nothing** for the PAT
+>   lane, which has no token — a PAT would still need (a) or an operator pin.
+>
+> Do not let anyone read the rest of this section as "entitlements are enforced
+> per workspace." They are not, yet.
+
+A `co_pat_` bearer is **not a JWT**, so there is no token to forward to the suite
+entitlements endpoint on the caller's behalf (`EntitlementsService.resolve()`
+bails on `isRs256`). That means the mint-time snapshot is the **only** source on
+the PAT lane, and it is authoritative *forever*: a SKU revoked at the authority
+stays usable until the PAT itself is revoked or expired. **That is still true on
+a shipping node** — see the box above.
+
+The lane is now WIRED to resolve the PAT's **bound workspace** server-side on
+every request and intersect it with the snapshot, so that once a source exists
+the snapshot becomes a **floor that can only narrow**:
+
+```
+ PatService.findByPlaintext(co_pat_…)
+   effective = PAT.entitlements (mint snapshot, already workspace-scoped)
+                 ∩  WorkspaceEntitlementsResolver.skusFor(PAT.workspaceId)
+   ↓
+ JwtAuthGuard stamps `effective` (NOT the frozen column) onto __entitlements
+```
+
+**`WorkspaceEntitlementsResolver` precedence** (`backend/src/common/workspace/workspace-entitlements.resolver.ts`):
+
+| # | source | result | meaning |
+|---|---|---|---|
+| 1 | `Workspace.entitlementCache` non-null | authoritative | the OPERATOR pin (offline/dedicated). Never clobbered by the resolver. |
+| 2 | entitlements endpoint 200 | authoritative + refreshes the mirror | needs `ENTITLEMENTS_ENDPOINT_URL` **and** `ENTITLEMENTS_SERVICE_TOKEN` |
+| 3 | `workspace_entitlements` row, unexpired | authoritative | survives restarts / endpoint blips |
+| 4 | `workspace_entitlements` row, **past `expiresAt`** | **`[]` — FAIL CLOSED** | a source exists but is unreachable ⇒ indeterminate ⇒ deny, never a stale grant |
+| 4b | endpoint **configured but unavailable** (non-2xx incl. 401/403/404, network error, timeout, unparseable body) **and no mirror row** | **`[]` — FAIL CLOSED** (`source-unavailable`) | a source exists, we just cannot read it ⇒ indeterminate ⇒ deny |
+| 5 | no row, no pin, endpoint **unconfigured** | `null` — "no server-side source" | the claim / PAT snapshot stands (**this is the row every shipping node lands on**) |
+| — | any DB / parse error | **`[]` — FAIL CLOSED** | deny; never widen on failure |
+
+> **Row 4b is the one that used to be missing**, and its absence was a fail-OPEN.
+> `EntitlementsService` collapsed "unconfigured" and "configured but 500/401/
+> timeout" into the same `null`, so a broken endpoint fell through to row 5 —
+> which means TRUST THE CLAIM. A one-second blip, or an expired service
+> credential, silently disabled the entire bind. `lookupWorkspace` now returns a
+> three-state `unconfigured | ok | unavailable` and only `unconfigured` may reach
+> row 5. An unexpired mirror row still wins over `unavailable` (rows 3/4), because
+> a persisted answer carries its own `expiresAt` and therefore cannot become an
+> unbounded grant.
+
+#### THE REVOCATION WINDOW (state this when anyone asks)
+
+- **A server-side source is configured** (operator pin, endpoint, or a populated
+  `workspace_entitlements` row): a revoked SKU stops working within
+  **`WORKSPACE_ENTITLEMENTS_TTL_MS` — default 60 seconds** — of the authority
+  reflecting the change. That is the resolver's in-process cache TTL *and* the
+  `expiresAt` it stamps on the mirror row, so the two do not compound.
+- **A source is configured but unreachable**: the lane **denies immediately** —
+  either the mirror row is past `expiresAt` (row 4) or there is no mirror at all
+  (row 4b). Under-enforcement is never traded for availability here, and a
+  failure is never allowed to read as "no source".
+- **NO server-side source is configured** (the shipping shared-SaaS default —
+  no `entitlementCache`, no endpoint credential, no mirror row): the mint-time
+  snapshot remains the only source and revocation is bounded **only by PAT
+  revoke/expiry**. ⚠️ This is unchanged from before and is *not* something this
+  repo can fix alone — populate `workspace_entitlements` (or `entitlementCache`)
+  to get the 60 s window.
+
+`invalidate(workspaceId)` on the resolver drops the cache for an immediate
+refresh after an operator writes the pin by hand.
+
+#### The mint snapshot is now workspace-scoped — and a mint FAILS LOUDLY
+
+`PatService.create()` snapshots `sessionClaim ∩ serverSide(workspaceId)` instead
+of the raw session claim. The session claim is the user's **union across every
+org they belong to**; snapshotting it raw let a PAT bound to workspace B carry a
+SKU only workspace A bought. Pure narrowing — a mint can never grant more than
+before.
+
+**If the resolver cannot give a current answer at mint time, the mint returns
+`503` and no token is created.** It does *not* snapshot a fail-closed `[]`.
+
+Why this is different from the auth path, where `[]` is exactly right: the mint
+writes a COLUMN, and `findByPlaintext` only ever re-INTERSECTS that column — it
+never re-widens it. An `[]` persisted because the source blipped for one second
+is therefore a **permanently dead credential**: it holds no SKUs, it can never
+regain any once the source recovers, and the user was handed a `201 Created` with
+a plaintext token and no hint that anything was wrong. They find out as a 403 at
+some unrelated later moment. A deny at auth time is recoverable; a deny baked
+into a credential is not.
+
+Operator note: if PAT mints start returning `503 …entitlement source is
+unavailable…`, the entitlements source is down or the service credential is
+wrong. Existing PATs keep working (subject to the fail-closed intersection);
+only issuance is blocked.
+
+#### The entitlements interceptor deliberately skips the PAT lane
+
+`EntitlementsInterceptor` used to no-op on a `co_pat_` request **by accident**
+(the bearer failed `isRs256`). It now short-circuits **explicitly** on `req.pat`,
+because overwriting `__entitlements` from a *user*-scoped endpoint answer would
+discard the (token, workspace) bind the guard just computed. Consequence, stated
+plainly: `ENTITLEMENTS_LAUNCH_GATE=enforce` **does not 403 a PAT** — that lane is
+gated per-workspace by the SKU gates instead. Covered by
+`entitlements.interceptor.spec.ts`.
+
+#### New knobs (no deployed default changed)
+
+| var | default | effect |
+|---|---|---|
+| `WORKSPACE_ENTITLEMENTS_TTL_MS` | `60000` (falls back to `ENTITLEMENTS_CACHE_TTL_MS`) | the revocation window above, for the **PAT** lane |
+| `WORKSPACE_ENTITLEMENTS_JWT_TTL_MS` | `0` — **no cache** | max staleness the **JWT/session** lane accepts. `0` reproduces the pre-resolver behaviour exactly: `Workspace.entitlementCache` is re-read every request, so an operator pin edit lands on the very next call. Raise it only if you have configured a network entitlements source and want to cut its request volume — you are buying that many ms of under-enforcement. |
+| `ENTITLEMENTS_SERVICE_TOKEN` | unset ⇒ the per-workspace endpoint lookup is **dormant** | service credential for `GET {ENTITLEMENTS_ENDPOINT_URL}?workspace_id=…`. ⚠️ Setting `ENTITLEMENTS_ENDPOINT_URL` **without** this yields zero server-side enforcement; the service now logs a loud `WARN` at boot when it sees that combination, and the boot log states plainly whether each lane is LIVE or INERT. |
+
+`UC_ENTITLEMENT_MODE` is **untouched** — same variable, same reducer, same
+default (`enforce` for anything that is not literally `open`).
+
+#### Sentinel: `personal_access_tokens.workspaceId` is nullable
+
+Every PAT fence used to be written `if (workspaceId) { …check… }` — at the auth
+guard, in the MCP `workspace_id` arg check, and in the entitlement bind. A NULL
+therefore did not *fail* those checks, it **skipped** them, producing a token that
+could address any workspace and that carried its snapshot unbound.
+`PatService.create` has never been able to produce such a row, but a hand-inserted
+row, a restored backup, or a future migration could. All three sites now treat
+"no bound workspace" as a **deny**, and `findByPlaintext` refuses the row outright
+(generic 401). Each site is pinned by its own test, driven directly — not merely
+shadowed by the layer in front of it.
 
 ---
 

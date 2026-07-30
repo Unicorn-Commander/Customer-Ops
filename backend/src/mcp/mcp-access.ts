@@ -147,12 +147,23 @@ export function mcpToolDenial(
   if (!grantedScopes) return null;
 
   // 1. Workspace fence — the arg workspace_id must not escape the PAT's binding.
-  if (boundWorkspaceId) {
-    const wsArg = (args as { workspace_id?: unknown } | null | undefined)?.workspace_id;
-    const requested = typeof wsArg === 'string' ? wsArg.trim() : '';
-    if (requested && requested !== boundWorkspaceId) {
-      return workspaceDenial(toolName, boundWorkspaceId, requested);
-    }
+  //
+  //    A PAT caller with NO bound workspace is denied outright rather than
+  //    waved through. `personal_access_tokens.workspaceId` is nullable, and the
+  //    fence used to be written `if (boundWorkspaceId) { … }` — so a NULL did
+  //    not fail the check, it SKIPPED it, and an unbound PAT could name any
+  //    workspace_id it wanted. PatService.findByPlaintext + JwtAuthGuard now
+  //    both refuse such a token, so this is unreachable in the running app; it
+  //    stays because this is a PURE policy function that other callers (tests,
+  //    future transports) can invoke with whatever they hold, and "unbound" must
+  //    mean deny at every one of the three fence sites, not at two of them.
+  const wsArg = (args as { workspace_id?: unknown } | null | undefined)?.workspace_id;
+  const requested = typeof wsArg === 'string' ? wsArg.trim() : '';
+  if (!boundWorkspaceId) {
+    return workspaceDenial(toolName, '(none — token has no bound workspace)', requested || '(none)');
+  }
+  if (requested && requested !== boundWorkspaceId) {
+    return workspaceDenial(toolName, boundWorkspaceId, requested);
   }
 
   // 2. Scope gate — health/whoami are exempt; everything else must be mapped

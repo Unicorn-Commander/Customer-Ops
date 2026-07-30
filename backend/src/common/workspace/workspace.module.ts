@@ -4,7 +4,9 @@ import { WorkspaceContextService } from './workspace-context.service';
 import { WorkspaceMembershipGuard } from './workspace-membership.guard';
 import { WorkspaceRoleGuard } from './workspace-role.guard';
 import { WorkspaceProvisioningService } from './workspace-provisioning.service';
+import { WorkspaceEntitlementsResolver } from './workspace-entitlements.resolver';
 import { UcRegistryModule } from '../uc-registry/uc-registry.module';
+import { EntitlementsModule } from '../../entitlements/entitlements.module';
 
 /**
  * The tenancy seam (SUITE-IDENTITY §3/§5/§6). Bundles the membership gate, the
@@ -15,9 +17,10 @@ import { UcRegistryModule } from '../uc-registry/uc-registry.module';
  * uc-registry mint seam.
  */
 @Module({
-  imports: [UcRegistryModule],
+  imports: [UcRegistryModule, EntitlementsModule],
   providers: [
     MembershipService,
+    WorkspaceEntitlementsResolver,
     WorkspaceContextService,
     WorkspaceMembershipGuard,
     WorkspaceRoleGuard,
@@ -25,6 +28,7 @@ import { UcRegistryModule } from '../uc-registry/uc-registry.module';
   ],
   exports: [
     MembershipService,
+    WorkspaceEntitlementsResolver,
     WorkspaceContextService,
     WorkspaceMembershipGuard,
     WorkspaceRoleGuard,

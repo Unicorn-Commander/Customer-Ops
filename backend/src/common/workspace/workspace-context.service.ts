@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { User } from '@prisma/client';
 import { PrismaService, WorkspaceTxClient } from '../../prisma/prisma.service';
@@ -12,6 +12,7 @@ import {
   ucUidOf,
   WithWorkspaceClaim,
 } from './workspace.util';
+import { WorkspaceEntitlementsResolver } from './workspace-entitlements.resolver';
 
 /**
  * Injectable wrapper around the workspace resolution seam, for services and
@@ -30,7 +31,43 @@ export class WorkspaceContextService {
     private readonly config: ConfigService,
     private readonly prisma: PrismaService,
     private readonly membership: MembershipService,
+    /**
+     * The server-side, per-workspace entitlement resolver (operator pin ->
+     * endpoint -> durable mirror, with a bounded cache). @Optional so unit tests
+     * that only need the workspace/GUC seam can construct this service with the
+     * original three deps; when absent we fall back to the pre-resolver
+     * behaviour (read `Workspace.entitlementCache` directly).
+     *
+     * With the resolver PRESENT this lane is not literally the same code as
+     * before — it gains the endpoint/mirror layers. What it does keep is the
+     * property that mattered: NO added staleness. `workspaceEntitlements` passes
+     * `maxAgeMs: 0`, so the operator pin is re-read per request exactly as it was.
+     * On a node with no server-side source the resolver answers `null` and the
+     * observable behaviour is identical.
+     */
+    @Optional()
+    private readonly entitlementsResolver?: WorkspaceEntitlementsResolver,
   ) {}
+
+  /**
+   * Max staleness this (JWT/session) lane accepts from the resolver's in-process
+   * cache. DEFAULT 0 = none.
+   *
+   * WHY 0: before the resolver existed, `workspaceEntitlements` read
+   * `Workspace.entitlementCache` straight from Postgres on EVERY request, so an
+   * operator editing the pin saw it take effect on the next call. Routing this
+   * lane through the resolver's 60s cache would have opened a 60-second
+   * under-enforcement window on a lane that previously had none — a silent
+   * regression dressed up as a refactor. Default 0 keeps the old behaviour
+   * exactly; an operator who later configures a network entitlements source and
+   * wants to cut its request volume can set
+   * `WORKSPACE_ENTITLEMENTS_JWT_TTL_MS` explicitly and accept the window.
+   */
+  private get jwtLaneMaxAgeMs(): number {
+    const raw = (this.config.get<string>('WORKSPACE_ENTITLEMENTS_JWT_TTL_MS') ?? '').trim();
+    const n = Number.parseInt(raw, 10);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }
 
   get defaultWorkspaceId(): string {
     return this.config.get<string>('DEFAULT_WORKSPACE_ID', DEFAULT_WORKSPACE_FALLBACK);
@@ -66,14 +103,29 @@ export class WorkspaceContextService {
   }
 
   /**
-   * The acting workspace's server-side entitlement SKUs, read from the
-   * Workspace.entitlementCache mirror — or `null` when the workspace has no
-   * server-side source (cache column null, or no local mirror row, e.g. the
-   * flag-off default-workspace path). `null` means "trust the token claim"; a
-   * present (possibly empty) cache is authoritative. Workspace is a control
+   * The acting workspace's server-side entitlement SKUs — or `null` when the
+   * workspace has NO server-side source at all (no operator pin, no mirror row).
+   * `null` means "trust the token claim"; a present (possibly empty) answer is
+   * authoritative and the intersector denies everything outside it.
+   *
+   * Delegates to WorkspaceEntitlementsResolver, which layers:
+   *   Workspace.entitlementCache (operator pin) -> entitlements endpoint ->
+   *   the durable `workspace_entitlements` mirror -> null.
+   * An EXPIRED mirror row is indeterminate and resolves to `[]` (fail closed).
+   *
+   * Without the resolver injected (unit tests) this falls back to the original
+   * behaviour: read `Workspace.entitlementCache` directly. Workspace is a control
    * table (not RLS-fenced), so this reads the plain client — no GUC needed.
+   *
+   * FRESHNESS: this lane passes `maxAgeMs: 0` by default, so the resolver's
+   * in-process cache is NOT served here and an operator pin edit takes effect on
+   * the very next request — same as before the resolver existed. See
+   * {@link jwtLaneMaxAgeMs}.
    */
   async workspaceEntitlements(workspaceId: string): Promise<string[] | null> {
+    if (this.entitlementsResolver) {
+      return this.entitlementsResolver.skusFor(workspaceId, { maxAgeMs: this.jwtLaneMaxAgeMs });
+    }
     const ws = await this.prisma.workspace.findUnique({
       where: { id: workspaceId },
       select: { entitlementCache: true },

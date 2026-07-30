@@ -98,6 +98,105 @@ describe('EntitlementsService', () => {
     expect((await s.resolve(RS))?.tier).toBe('managed');
   });
 
+  /**
+   * lookupWorkspace — the SERVER-SIDE, per-workspace lane (the one the `co_pat_`
+   * lane depends on). It returns a THREE-state result rather than
+   * `EntitlementsResult | null` for one reason: its caller
+   * (WorkspaceEntitlementsResolver) treats "no source" as TRUST THE CALLER'S
+   * CLAIM. Collapsing "configured but broken" into that value is a silent
+   * fail-OPEN — a 500, an expired service credential, or a timeout would widen
+   * every caller back to full trust. Every non-200 below must therefore be
+   * `unavailable`, never `unconfigured`.
+   */
+  describe('lookupWorkspace — the server-side per-workspace lane', () => {
+    const WS = '0190a000-7e57-7000-8000-0000000000a1';
+    const CRED = 'not-a-real-service-credential';
+
+    function wsSvc(extra: Record<string, string> = {}) {
+      return svc({ ENTITLEMENTS_ENDPOINT_URL: URL, ENTITLEMENTS_SERVICE_TOKEN: CRED, ...extra });
+    }
+
+    it('is UNCONFIGURED (no round-trip) when the URL is unset', async () => {
+      const s = svc({ ENTITLEMENTS_SERVICE_TOKEN: CRED });
+      expect(await s.lookupWorkspace(WS)).toEqual({ status: 'unconfigured' });
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('is UNCONFIGURED (no round-trip) when the SERVICE TOKEN is unset — URL alone enforces nothing', async () => {
+      const s = svc({ ENTITLEMENTS_ENDPOINT_URL: URL });
+      expect(s.isConfigured()).toBe(true); // the user lane IS configured…
+      expect(s.isWorkspaceLookupConfigured()).toBe(false); // …this one is not.
+      expect(await s.lookupWorkspace(WS)).toEqual({ status: 'unconfigured' });
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('a 200 is OK, sends the SERVICE credential (not a user token) and scopes by workspace_id', async () => {
+      fetchMock.mockResolvedValue(ok(GRANTS));
+      const got = await wsSvc().lookupWorkspace(WS);
+      expect(got).toMatchObject({
+        status: 'ok',
+        data: { featureKeys: ['customer_ops_access', 'email_ops_access'] },
+      });
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(url).toBe(`${URL}?workspace_id=${encodeURIComponent(WS)}`);
+      expect((init.headers as any).Authorization).toBe(`Bearer ${CRED}`);
+    });
+
+    // THE FAIL-OPEN, at the HTTP boundary. Each of these once produced the same
+    // `null` as "unconfigured", which the resolver reads as "trust the claim".
+    it.each([401, 403, 404, 429, 500, 502, 503])(
+      'HTTP %i is UNAVAILABLE (indeterminate), NEVER unconfigured',
+      async (code) => {
+        fetchMock.mockResolvedValue(status(code));
+        const got = await wsSvc().lookupWorkspace(WS);
+        expect(got.status).toBe('unavailable');
+        expect(got.status).not.toBe('unconfigured');
+      },
+    );
+
+    it('a network error is UNAVAILABLE, not unconfigured', async () => {
+      fetchMock.mockRejectedValue(Object.assign(new Error('econnrefused'), { name: 'FetchError' }));
+      expect(await wsSvc().lookupWorkspace(WS)).toEqual({
+        status: 'unavailable',
+        reason: 'FetchError',
+      });
+    });
+
+    it('a timeout/abort is UNAVAILABLE, not unconfigured', async () => {
+      fetchMock.mockRejectedValue(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+      expect(await wsSvc().lookupWorkspace(WS)).toEqual({
+        status: 'unavailable',
+        reason: 'AbortError',
+      });
+    });
+
+    it('an unparseable body is UNAVAILABLE, not unconfigured', async () => {
+      fetchMock.mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw new Error('not json');
+        },
+      } as unknown as Response);
+      expect(await wsSvc().lookupWorkspace(WS)).toMatchObject({ status: 'unavailable' });
+    });
+
+    it('an empty workspace id is UNAVAILABLE, not unconfigured (a caller bug is still not an answer)', async () => {
+      expect(await wsSvc().lookupWorkspace('')).toMatchObject({ status: 'unavailable' });
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('does NOT serve a last-good on failure — the durable mirror owns that, with an expiry', async () => {
+      const s = wsSvc();
+      fetchMock.mockResolvedValueOnce(ok(GRANTS));
+      expect((await s.lookupWorkspace(WS)).status).toBe('ok');
+      fetchMock.mockResolvedValueOnce(status(500));
+      // A fail-soft last-good here would be an unbounded grant: this lane has no
+      // expiry of its own.
+      expect((await s.lookupWorkspace(WS)).status).toBe('unavailable');
+    });
+  });
+
   describe('toSkuList — maps *_access keys onto the suite SKU vocabulary', () => {
     const s = svc();
     it('keeps the raw key AND adds the hyphenated suite SKU', () => {

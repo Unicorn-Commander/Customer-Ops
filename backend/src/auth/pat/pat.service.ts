@@ -1,8 +1,20 @@
-import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  Optional,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { PersonalAccessToken, User } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { MembershipService } from '../../common/workspace/membership.service';
-import { entitlementsOf, WithWorkspaceClaim } from '../../common/workspace/workspace.util';
+import { WorkspaceEntitlementsResolver } from '../../common/workspace/workspace-entitlements.resolver';
+import {
+  entitlementsOf,
+  intersectEntitlements,
+  WithWorkspaceClaim,
+} from '../../common/workspace/workspace.util';
 import { PAT_AVAILABLE_SCOPES, PAT_PREFIX, PatScope } from './pat.constants';
 import { generatePat, isPatToken, verifyPat } from './pat.util';
 
@@ -24,7 +36,7 @@ export interface CreatePatResult {
   prefix: string;
   name: string;
   scopes: string[];
-  /** SKUs snapshotted from the minting session user at create time. */
+  /** SKUs snapshotted at create time: the session claim ∩ the workspace's set. */
   entitlements: string[];
   workspaceId: string | null;
   expiresAt: Date | null;
@@ -49,7 +61,11 @@ export interface PatResolution {
   token: PersonalAccessToken;
   /** The workspace this PAT is bound to; the auth chokepoint fences on it. */
   workspaceId: string | null;
-  /** SKUs snapshotted at mint; the chokepoint stamps them as __entitlements. */
+  /**
+   * The SKUs this PAT carries RIGHT NOW — the mint snapshot re-intersected with
+   * the bound workspace's current server-side set. This, NOT `token.entitlements`,
+   * is what the auth chokepoint stamps as `__entitlements`. `[]` on any error.
+   */
   entitlements: string[];
 }
 
@@ -68,6 +84,14 @@ export class PatService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly membership: MembershipService,
+    /**
+     * Server-side, per-workspace entitlement source. @Optional so the PAT store
+     * can still be unit-constructed with just (prisma, membership); when it is
+     * absent the mint snapshot is the only source (the pre-fix behaviour) — the
+     * DI container always provides it in the running app.
+     */
+    @Optional()
+    private readonly workspaceEntitlements?: WorkspaceEntitlementsResolver,
   ) {}
 
   /**
@@ -88,13 +112,21 @@ export class PatService {
     const scopes = this.normalizeScopes(input.scopes);
     const expiresAt = this.normalizeExpiry(input.expiresAt);
     const workspaceId = await this.membership.resolveAndAuthorize(user, input.workspaceId ?? null);
-    // Snapshot the minting session user's verified entitlement SKUs. A PAT has
-    // no live token claim, so this frozen snapshot (bound to the token's
-    // workspace) is what the auth chokepoint later stamps as __entitlements — the
-    // gates then intersect it with the acting workspace's server-side
-    // entitlements, so the snapshot never over-grants. The mint route is
-    // JWT-only, so `user.__entitlements` here is the session token's live claim.
-    const entitlements = entitlementsOf(user);
+    // Snapshot the minting session user's verified entitlement SKUs, SCOPED TO
+    // THE TOKEN'S WORKSPACE. The mint route is JWT-only, so `user.__entitlements`
+    // here is the session token's live claim — but that claim is the user's
+    // union across every org they belong to, so snapshotting it raw would let a
+    // PAT bound to workspace B carry a SKU only workspace A bought. Intersect it
+    // with `workspaceId`'s server-side entitlements first (null source ⇒ the
+    // claim unchanged, today's shared-SaaS default). The snapshot is a FLOOR, not
+    // the authority: `findByPlaintext` re-intersects it with the workspace's
+    // CURRENT server-side set on every request so revocation still lands.
+    //
+    // A resolver that cannot answer FAILS THE MINT (503) — see serverSideSkus.
+    const entitlements = intersectEntitlements(
+      entitlementsOf(user),
+      await this.serverSideSkus(workspaceId),
+    );
 
     const { plaintext, hash: hashPromise } = generatePat();
     const tokenHash = await hashPromise;
@@ -160,15 +192,146 @@ export class PatService {
 
       const { user, ...bare } = token;
       const bareToken = bare as PersonalAccessToken;
+
+      // SENTINEL — an UNFENCED token is not a token.
+      //
+      // `personal_access_tokens.workspaceId` is NULLABLE (it has been since the
+      // table was created). Every code path that fences a PAT is written as
+      // `if (workspaceId) { …fence… }`: the guard's explicit-workspace check
+      // (jwt-auth.guard.ts), the MCP `workspace_id` arg check (mcp-access.ts),
+      // and the entitlement bind below. A NULL therefore does not fail those
+      // checks — it SKIPS them, yielding a PAT that can address any workspace it
+      // likes. `create()` has never produced one (MembershipService.resolveAndAuthorize
+      // always returns a string), so this is unreachable from the app; it is
+      // reachable from a hand-inserted row, a restored backup, or a future
+      // migration that widens the column's use. Refuse it here, at the one
+      // chokepoint every PAT request passes through, rather than trusting three
+      // separate `if`s to stay correct forever.
+      //
+      // Returns null => the caller emits the same generic 401 as any other bad
+      // token. Fail closed: an unbindable credential denies, it does not roam.
+      if (!bareToken.workspaceId || !bareToken.workspaceId.trim()) {
+        this.logger.error(
+          `PAT ${bareToken.id} REJECTED: no bound workspace (workspaceId is null/blank). ` +
+            `A PAT with no workspace binding would skip every workspace fence. ` +
+            `This row cannot have been created by PatService.create — revoke it and re-mint.`,
+        );
+        return null;
+      }
+
       return {
         user,
         token: bareToken,
         workspaceId: bareToken.workspaceId,
-        entitlements: bareToken.entitlements ?? [],
+        entitlements: await this.effectiveEntitlementsFor(bareToken),
       };
     }
 
     return null;
+  }
+
+  /**
+   * The entitlement SKUs a PAT actually carries THIS request — the live,
+   * workspace-scoped answer the auth chokepoint stamps onto `__entitlements`.
+   *
+   * A PAT has no forwardable user JWT, so there is nothing to hand the suite
+   * entitlements endpoint on the caller's behalf. Instead we resolve the token's
+   * BOUND WORKSPACE server-side (WorkspaceEntitlementsResolver: operator pin ->
+   * endpoint via a service credential -> durable mirror, bounded cache) and
+   * INTERSECT it with the mint-time snapshot:
+   *
+   *   * server-side answer present -> snapshot ∩ workspace. Can only NARROW, so a
+   *     SKU revoked at the authority stops working within the resolver's TTL
+   *     (default 60s) and a snapshot can never grant a SKU the workspace lacks.
+   *   * server-side answer null (NO source configured — today's shared-SaaS
+   *     default) -> the snapshot, unchanged. This is the documented fallback; the
+   *     revocation window on that configuration is bounded only by PAT
+   *     revoke/expiry. See docs/runbooks/entitlement-enforce.md §1f.
+   *   * a token bound to NO workspace -> `[]` (deny). There is nothing to bind
+   *     to, so the claim is unbindable — see the sentinel in findByPlaintext,
+   *     which already refuses such a row; this is the second line of that fence.
+   *   * ANY error -> `[]`, i.e. FAIL CLOSED. Under UC_ENTITLEMENT_MODE=enforce an
+   *     indeterminate entitlement set is a deny; we never fall back to a wider
+   *     set on failure. (Returning [] rather than throwing keeps auth itself
+   *     working — the request is still authenticated, it just holds no SKUs.)
+   */
+  private async effectiveEntitlementsFor(token: PersonalAccessToken): Promise<string[]> {
+    const snapshot = token.entitlements ?? [];
+    // No resolver injected at all (a unit-constructed PatService) => the mint
+    // snapshot is the only source, the documented pre-resolver behaviour.
+    if (!this.workspaceEntitlements) return snapshot;
+    // Bound to no workspace => unbindable => deny. NOT the snapshot.
+    if (!token.workspaceId || !token.workspaceId.trim()) {
+      this.logger.error(
+        `PAT ${token.id}: no bound workspace — entitlements are unbindable, denying (no SKUs).`,
+      );
+      return [];
+    }
+    try {
+      const server = await this.workspaceEntitlements.skusFor(token.workspaceId);
+      if (server === null) return snapshot; // no server-side source -> snapshot
+      return intersectEntitlements(snapshot, server);
+    } catch (err) {
+      this.logger.error(
+        `PAT ${token.id}: workspace entitlement resolve failed (${(err as Error)?.message ?? 'error'}) — failing closed (no entitlements)`,
+      );
+      return [];
+    }
+  }
+
+  /**
+   * A workspace's server-side SKUs at MINT time, or null when there is no
+   * server-side source.
+   *
+   * FAILS THE MINT (503) rather than snapshotting a fail-closed `[]`.
+   *
+   * WHY — a mint is not a request, it is a WRITE that outlives the failure. The
+   * snapshot column is only ever re-INTERSECTED at auth time (never re-widened),
+   * so persisting `[]` because the resolver blipped for one second produces a
+   * PERMANENTLY DEAD credential: it holds no SKUs, it can never regain any once
+   * the source recovers, and the user was handed a `201 Created` with a
+   * plaintext token and no indication anything went wrong. They discover it as a
+   * 403 at some later, unrelated moment.
+   *
+   * An indeterminate answer (`stale`, or the resolver's own fail-closed 'error')
+   * is treated the same as a thrown error: refuse to mint, say so, let the caller
+   * retry. Fail-closed at auth time is a deny you can recover from; fail-closed at
+   * mint time is a deny you cannot.
+   */
+  private async serverSideSkus(workspaceId: string | null): Promise<string[] | null> {
+    if (!this.workspaceEntitlements || !workspaceId) return null;
+
+    let resolution;
+    try {
+      resolution = await this.workspaceEntitlements.resolve(workspaceId);
+    } catch (err) {
+      this.logger.error(
+        `PAT mint REFUSED: workspace ${workspaceId} entitlement resolve threw ` +
+          `(${(err as Error)?.message ?? 'error'}). Refusing to persist an empty, ` +
+          `permanently-dead entitlement snapshot.`,
+      );
+      throw new ServiceUnavailableException(
+        'Cannot issue a token right now: the workspace entitlement source is unavailable. ' +
+          'Please retry.',
+      );
+    }
+
+    if (resolution.stale) {
+      // A source EXISTS but could not give a current answer (expired mirror,
+      // configured-but-unavailable endpoint, DB error). Same reasoning: do not
+      // bake that moment into a credential.
+      this.logger.error(
+        `PAT mint REFUSED: workspace ${workspaceId} entitlements are INDETERMINATE ` +
+          `(source=${resolution.source}). Refusing to persist an empty, permanently-dead ` +
+          `entitlement snapshot.`,
+      );
+      throw new ServiceUnavailableException(
+        'Cannot issue a token right now: the workspace entitlement source is unavailable. ' +
+          'Please retry.',
+      );
+    }
+
+    return resolution.skus;
   }
 
   /** List the user's PATs (metadata only). Newest first; includes revoked. */
