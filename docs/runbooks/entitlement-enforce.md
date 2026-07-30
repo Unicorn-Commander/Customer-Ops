@@ -323,6 +323,64 @@ the snapshot becomes a **floor that can only narrow**:
 `invalidate(workspaceId)` on the resolver drops the cache for an immediate
 refresh after an operator writes the pin by hand.
 
+#### ⚠️ THE OUTAGE POSTURE — read this BEFORE you set `ENTITLEMENTS_ENDPOINT_URL`
+
+The bullet above ("a source is configured but unreachable ⇒ deny immediately") is
+correct fail-closed enforcement **and** a large availability change, and it only
+starts biting the day someone wires the endpoint. Stated without euphemism:
+
+> With `ENTITLEMENTS_ENDPOINT_URL` + `ENTITLEMENTS_SERVICE_TOKEN` set, an endpoint
+> outage that outlasts the mirror's `expiresAt` **denies every user in every
+> workspace on every gate**. A paying JWT user who held `customer-ops` resolves to
+> `[]`, not to their claim.
+
+That is the default, deliberately — an entitlement source you cannot reach is an
+answer you do not have, and an unknown answer is a deny. But it is now a *named*
+decision you can operate, not an emergent property:
+
+| var | default | effect |
+|---|---|---|
+| `WORKSPACE_ENTITLEMENTS_OUTAGE_POSTURE` | `deny` | **`deny`** (default, fail-closed): indeterminate ⇒ `skus: []` ⇒ gates deny. **`trust-claim`** (opt-in, **fail-OPEN**): indeterminate ⇒ `skus: null` ⇒ the caller's token claim / PAT snapshot is honoured, i.e. the pre-server-side-lane behaviour. Choose `trust-claim` only if you would rather serve an unenforced request than a 403 during an upstream outage — a broken service credential then silently restores full trust. An unrecognised value falls back to `deny`. |
+| `WORKSPACE_ENTITLEMENTS_FAILURE_TTL_MS` | `1000` | how long an **indeterminate** answer is cached. Kept separate from the 60 s success TTL on purpose: caching a failure at the success TTL turned a 1-second endpoint blip into a 60-second denial that outlived the recovery. `0` = never serve a failed answer from cache (every request retries; each retry costs an `ENTITLEMENTS_TIMEOUT_MS` wait during a hard outage). |
+
+`trust-claim` governs **request-time gating only**. PAT *minting* still refuses
+(`503`) on an indeterminate answer under either posture — see the mint section
+below; never bake an outage into a credential.
+
+**Diagnosing an outage in seconds, not hours.** The resolver logs the moment it
+starts serving degraded answers, and again when it stops:
+
+```bash
+docker logs customer-ops-backend 2>&1 | grep ENTITLEMENTS-SOURCE-DEGRADED
+docker logs customer-ops-backend 2>&1 | grep ENTITLEMENTS-SOURCE-RECOVERED
+```
+
+The `DEGRADED` line is `ERROR` level and carries `source=`, `posture=`,
+`endpointConfigured=`, `workspaceLookupConfigured=` and `degradedForMs=`. It is
+emitted on the transition and re-emitted at most once a minute while degraded, so
+it is loud without drowning the log. If you see a wave of 403s, grep that marker
+first — it distinguishes "the entitlement source is down" from "this org really
+lacks the SKU".
+
+#### Request volume: ONE resolve per workspace per REQUEST
+
+`WORKSPACE_ENTITLEMENTS_JWT_TTL_MS` defaults to `0` (no cache) so an operator pin
+edit lands on the very next request. On its own that multiplied badly:
+`WorkspaceContextService.effectiveEntitlements` has ~12 production call sites
+(`customers.service` ×5, the five relationship agents, the relations officer, the
+PAT chokepoint), so one inbound API request became a dozen outbound endpoint
+fetches — each with a 5 s timeout — and a dozen `workspace_entitlements` UPSERTs.
+
+The resolver therefore memoises per **request**, not per interval
+(`common/workspace/entitlement-request-scope.ts`, an `AsyncLocalStorage` opened by
+`RequestContextMiddleware`, which already runs before guards on every route):
+the first call for a workspace reads the source, every later call in that request
+reuses the same in-flight promise, and the next request starts empty. Freshness
+and request volume are both fixed; **do not raise
+`WORKSPACE_ENTITLEMENTS_JWT_TTL_MS` to "fix" load** — that only buys staleness.
+Pinned by `workspace-entitlements.hardening.spec.ts` (N call sites in one request
+⇒ exactly one fetch; a second request re-fetches).
+
 #### The mint snapshot is now workspace-scoped — and a mint FAILS LOUDLY
 
 `PatService.create()` snapshots `sessionClaim ∩ serverSide(workspaceId)` instead
@@ -364,7 +422,9 @@ gated per-workspace by the SKU gates instead. Covered by
 |---|---|---|
 | `WORKSPACE_ENTITLEMENTS_TTL_MS` | `60000` (falls back to `ENTITLEMENTS_CACHE_TTL_MS`) | the revocation window above, for the **PAT** lane |
 | `WORKSPACE_ENTITLEMENTS_JWT_TTL_MS` | `0` — **no cache** | max staleness the **JWT/session** lane accepts. `0` reproduces the pre-resolver behaviour exactly: `Workspace.entitlementCache` is re-read every request, so an operator pin edit lands on the very next call. Raise it only if you have configured a network entitlements source and want to cut its request volume — you are buying that many ms of under-enforcement. |
-| `ENTITLEMENTS_SERVICE_TOKEN` | unset ⇒ the per-workspace endpoint lookup is **dormant** | service credential for `GET {ENTITLEMENTS_ENDPOINT_URL}?workspace_id=…`. ⚠️ Setting `ENTITLEMENTS_ENDPOINT_URL` **without** this yields zero server-side enforcement; the service now logs a loud `WARN` at boot when it sees that combination, and the boot log states plainly whether each lane is LIVE or INERT. |
+| `ENTITLEMENTS_SERVICE_TOKEN` | unset ⇒ the per-workspace endpoint lookup is **dormant** | service credential for `GET {ENTITLEMENTS_ENDPOINT_URL}?workspace_id=…`. ⚠️ Setting `ENTITLEMENTS_ENDPOINT_URL` **without** this yields zero server-side enforcement; the service logs a loud `WARN` at boot when it sees that combination, and the boot log states plainly whether each lane is LIVE or INERT. The resolver gates the server-side lane on `EntitlementsService.isWorkspaceLookupConfigured()` (URL **and** credential) rather than on `isConfigured()` (URL only), so a half-configured lane never even attempts a call it cannot authenticate. |
+| `WORKSPACE_ENTITLEMENTS_OUTAGE_POSTURE` | `deny` | see the OUTAGE POSTURE box above. |
+| `WORKSPACE_ENTITLEMENTS_FAILURE_TTL_MS` | `1000` | see the OUTAGE POSTURE box above. |
 
 `UC_ENTITLEMENT_MODE` is **untouched** — same variable, same reducer, same
 default (`enforce` for anything that is not literally `open`).
@@ -375,8 +435,26 @@ Every PAT fence used to be written `if (workspaceId) { …check… }` — at the
 guard, in the MCP `workspace_id` arg check, and in the entitlement bind. A NULL
 therefore did not *fail* those checks, it **skipped** them, producing a token that
 could address any workspace and that carried its snapshot unbound.
-`PatService.create` has never been able to produce such a row, but a hand-inserted
-row, a restored backup, or a future migration could. All three sites now treat
+
+⚠️ **CORRECTION.** An earlier version of this section said "`PatService.create`
+has never been able to produce such a row". That was true of `NULL` and **false
+of a BLANK**. `ConfigService.get(key, default)` applies its default only to
+`undefined`, so an explicitly-empty `DEFAULT_WORKSPACE_ID=` (trivial in a compose
+file or a templated env) made `MembershipService.bootstrapWorkspaceId` return
+`''`, `resolveAndAuthorize` return `''`, and `create()` persist `workspaceId: ''`
+— which the sentinel then rejected with a generic 401 on **every** request,
+forever, for a token that worked before this branch. A `201 Created` handing back
+a permanently dead credential is exactly the failure mode the mint-time `503`
+exists to prevent.
+
+Fixed at the **write** side: `bootstrapWorkspaceId` (and
+`WorkspaceContextService.defaultWorkspaceId`) now treat blank/whitespace as
+absent and fall back to `DEFAULT_WORKSPACE_FALLBACK`, and `PatService.create()`
+refuses outright (`503`) rather than persisting an unbindable binding. Pinned by
+`auth/pat/pat-blank-workspace.spec.ts`, including the full mint → authenticate
+round-trip. The sentinel itself is unchanged — it remains the last line for
+hand-inserted rows, restored backups, and future migrations. All three sites
+treat
 "no bound workspace" as a **deny**, and `findByPlaintext` refuses the row outright
 (generic 401). Each site is pinned by its own test, driven directly — not merely
 shadowed by the layer in front of it.

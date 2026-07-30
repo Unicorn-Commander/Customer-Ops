@@ -111,7 +111,32 @@ export class PatService {
 
     const scopes = this.normalizeScopes(input.scopes);
     const expiresAt = this.normalizeExpiry(input.expiresAt);
-    const workspaceId = await this.membership.resolveAndAuthorize(user, input.workspaceId ?? null);
+    const resolvedWorkspaceId = await this.membership.resolveAndAuthorize(
+      user,
+      input.workspaceId ?? null,
+    );
+    // BLANK IS ABSENT, AND ABSENT IS UNMINTABLE.
+    //
+    // The auth chokepoint's sentinel (findByPlaintext) refuses any PAT whose
+    // workspaceId is null OR blank, because such a token skips every workspace
+    // fence. That is right — but it means persisting a blank here mints a
+    // credential that is DEAD FOREVER while returning `201 Created` with a
+    // plaintext token. `MembershipService.bootstrapWorkspaceId` now normalises a
+    // blank `DEFAULT_WORKSPACE_ID` away, so this should be unreachable; keep it
+    // anyway, because "unreachable" is exactly what the previous blank-vs-null
+    // analysis assumed. Refusing loudly at the WRITE is recoverable; a bricked
+    // token discovered as a 401 weeks later is not.
+    const workspaceId = (resolvedWorkspaceId ?? '').trim();
+    if (!workspaceId) {
+      this.logger.error(
+        `PAT mint REFUSED for user ${user.id}: workspace resolution produced a blank id ` +
+          `(check DEFAULT_WORKSPACE_ID — an explicitly-empty value is a misconfiguration). ` +
+          `Refusing to persist an unbindable token that every request would reject.`,
+      );
+      throw new ServiceUnavailableException(
+        'Cannot issue a token right now: no workspace could be resolved for this account.',
+      );
+    }
     // Snapshot the minting session user's verified entitlement SKUs, SCOPED TO
     // THE TOKEN'S WORKSPACE. The mint route is JWT-only, so `user.__entitlements`
     // here is the session token's live claim — but that claim is the user's
@@ -201,12 +226,20 @@ export class PatService {
       // (jwt-auth.guard.ts), the MCP `workspace_id` arg check (mcp-access.ts),
       // and the entitlement bind below. A NULL therefore does not fail those
       // checks — it SKIPS them, yielding a PAT that can address any workspace it
-      // likes. `create()` has never produced one (MembershipService.resolveAndAuthorize
-      // always returns a string), so this is unreachable from the app; it is
-      // reachable from a hand-inserted row, a restored backup, or a future
-      // migration that widens the column's use. Refuse it here, at the one
-      // chokepoint every PAT request passes through, rather than trusting three
-      // separate `if`s to stay correct forever.
+      // likes. Refuse it here, at the one chokepoint every PAT request passes
+      // through, rather than trusting three separate `if`s to stay correct forever.
+      //
+      // ⚠️ CORRECTION to this comment's earlier claim that "create() has never
+      // produced one": true for NULL, NOT for a BLANK. With tenancy off and
+      // `DEFAULT_WORKSPACE_ID` explicitly set to the empty string,
+      // MembershipService.resolveAndAuthorize returned `''` (ConfigService's
+      // default argument only fires on `undefined`) and `create()` persisted
+      // `workspaceId: ''` — which this sentinel then 401'd forever, bricking a
+      // token that worked before the sentinel existed. Fixed at the WRITE side
+      // (bootstrapWorkspaceId normalises blank -> fallback, and `create()`
+      // refuses a blank outright), so a legitimately-minted token can no longer
+      // be bricked here. This stays the last line for hand-inserted rows,
+      // restored backups, and migrations that widen the column's use.
       //
       // Returns null => the caller emits the same generic 401 as any other bad
       // token. Fail closed: an unbindable credential denies, it does not roam.

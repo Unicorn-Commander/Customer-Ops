@@ -16,6 +16,7 @@
 import { Injectable, NestMiddleware } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { Request, Response, NextFunction } from 'express';
+import { runInEntitlementRequestScope } from '../workspace/entitlement-request-scope';
 
 /** Response + request header carrying the correlation id. */
 export const REQUEST_ID_HEADER = 'x-request-id';
@@ -47,6 +48,12 @@ export class RequestContextMiddleware implements NestMiddleware {
     const id = inboundRequestId(req) ?? randomUUID();
     req.id = id;
     res.setHeader('X-Request-Id', id);
-    next();
+    // Open the per-request entitlement memo scope here — this middleware already
+    // runs before guards, interceptors and handlers, so EVERY server-side
+    // entitlement resolve in this request (including the PAT auth chokepoint)
+    // shares one answer per workspace instead of re-fetching per call site.
+    // See common/workspace/entitlement-request-scope.ts. The store dies with the
+    // request, so it adds no cross-request staleness.
+    runInEntitlementRequestScope(() => next());
   }
 }

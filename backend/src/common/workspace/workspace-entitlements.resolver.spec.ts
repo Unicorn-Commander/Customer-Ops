@@ -57,6 +57,12 @@ function build(stub: Stub) {
   } as unknown as ConfigService;
 
   const entitlements = {
+    isConfigured: () => !!stub.endpoint || !!stub.endpointUnavailable,
+    // The resolver now gates the server-side lane on this (URL *and* service
+    // credential), so the stub has to answer it. `build()` models "an endpoint
+    // that can answer or fail" as fully configured; the URL-without-credential
+    // case is covered explicitly in the dedicated describe below.
+    isWorkspaceLookupConfigured: () => !!stub.endpoint || !!stub.endpointUnavailable,
     lookupWorkspace: jest.fn(async (wsId: string) => {
       if (stub.endpointUnavailable) {
         return { status: 'unavailable', reason: stub.endpointUnavailable };

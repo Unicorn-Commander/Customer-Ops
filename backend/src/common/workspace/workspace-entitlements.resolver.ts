@@ -1,7 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
-import { EntitlementsService } from '../../entitlements/entitlements.service';
+import {
+  EntitlementsService,
+  WorkspaceEntitlementsLookup,
+} from '../../entitlements/entitlements.service';
+import { entitlementRequestScope } from './entitlement-request-scope';
 import { parseWorkspaceEntitlements } from './workspace.util';
 
 /**
@@ -48,7 +52,33 @@ export interface WorkspaceEntitlementResolution {
 interface CacheEntry {
   at: number;
   value: WorkspaceEntitlementResolution;
+  /**
+   * How long THIS entry may be served, in ms. A definitive answer gets the
+   * resolver's TTL; an INDETERMINATE one (`stale: true`) gets the much shorter
+   * failure TTL, so a one-second upstream blip cannot deny for a full minute.
+   * See {@link WorkspaceEntitlementsResolver.failureTtlMs}.
+   */
+  ttlMs: number;
 }
+
+/**
+ * What the resolver does when a server-side source IS configured but cannot give
+ * a current answer (endpoint unreachable/erroring, expired mirror, DB error) —
+ * i.e. the availability/enforcement trade-off during an upstream outage.
+ *
+ *  - `deny` (DEFAULT): indeterminate ⇒ `skus: []` ⇒ every gate in that workspace
+ *    denies. Correct fail-closed behaviour; also means an outage longer than the
+ *    mirror TTL denies EVERY user in EVERY workspace on EVERY gate.
+ *  - `trust-claim`: indeterminate ⇒ `skus: null` ⇒ downstream falls back to the
+ *    caller's token claim / PAT mint snapshot (what this repo did before the
+ *    server-side lane existed). This is FAIL-OPEN and must be chosen
+ *    deliberately: a broken service credential then silently restores full trust.
+ *
+ * Unrecognised values fall back to `deny` — an unparseable posture is not a
+ * licence to fail open. Mint-time behaviour is unaffected by this setting:
+ * `PatService` still refuses to bake an indeterminate moment into a credential.
+ */
+export type EntitlementOutagePosture = 'deny' | 'trust-claim';
 
 export interface ResolveOptions {
   /**
@@ -59,6 +89,24 @@ export interface ResolveOptions {
 }
 
 const MAX_ENTRIES = 5_000;
+
+/**
+ * Default lifetime of an INDETERMINATE (failed) answer in the process cache.
+ * Deliberately tiny: long enough to collapse a burst of concurrent requests onto
+ * one upstream attempt during an outage, short enough that recovery is visible
+ * almost immediately. Caching a failure at the SUCCESS ttl (60s) is what turned a
+ * 1-second endpoint blip into a 60-second denial. `0` disables it entirely.
+ */
+const DEFAULT_FAILURE_TTL_MS = 1_000;
+
+/** Re-log the "serving denials" line at most this often while degraded. */
+const DEGRADED_RELOG_MS = 60_000;
+
+/** Grep key for the outage log line — quoted in the runbook. */
+export const ENTITLEMENTS_DEGRADED_MARKER = 'ENTITLEMENTS-SOURCE-DEGRADED';
+
+/** Grep key for the recovery log line. */
+export const ENTITLEMENTS_RECOVERED_MARKER = 'ENTITLEMENTS-SOURCE-RECOVERED';
 
 /**
  * Resolves a WORKSPACE's entitlement SKUs server-side, with a bounded cache.
@@ -98,6 +146,17 @@ const MAX_ENTRIES = 5_000;
  *     shipping default lands on; populate `workspace_entitlements` (or
  *     `Workspace.entitlementCache`) to get a bounded window.
  *
+ * OUTAGE POSTURE (`WORKSPACE_ENTITLEMENTS_OUTAGE_POSTURE`, default `deny`) — the
+ * availability side of that trade, made explicit rather than implied. With a
+ * source configured and unreachable and no usable mirror, the DEFAULT denies:
+ * correct fail-closed enforcement, and also an outage that outlives the mirror
+ * TTL denies every user in every workspace on every gate. An operator who cannot
+ * accept that can set `trust-claim` to fall back to the caller's claim during an
+ * outage (fail-OPEN, deliberately opt-in). Either way the resolver logs
+ * `ENTITLEMENTS-SOURCE-DEGRADED` the moment it starts serving degraded answers,
+ * and `ENTITLEMENTS-SOURCE-RECOVERED` when it stops — an outage is meant to be
+ * diagnosable from one grep, not inferred from a wave of 403s.
+ *
  * Fail posture is CLOSED throughout: any DB/parse/endpoint error on a workspace
  * that HAS a source yields `{ skus: [], stale: true }` (deny), never a widening.
  * A workspace with no source at all still resolves to `null` (trust the claim) —
@@ -118,7 +177,12 @@ const MAX_ENTRIES = 5_000;
 export class WorkspaceEntitlementsResolver {
   private readonly logger = new Logger(WorkspaceEntitlementsResolver.name);
   private readonly ttlMs: number;
+  private readonly failureTtl: number;
+  private readonly posture: EntitlementOutagePosture;
   private readonly cache = new Map<string, CacheEntry>();
+  /** When the source first stopped answering (null = healthy). Log throttling. */
+  private degradedSince: number | null = null;
+  private lastDegradedLogAt = 0;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -130,11 +194,30 @@ export class WorkspaceEntitlementsResolver {
         this.config.get<string>('ENTITLEMENTS_CACHE_TTL_MS'),
       60_000,
     );
+    this.failureTtl = this.intAllowZero(
+      this.config.get<string>('WORKSPACE_ENTITLEMENTS_FAILURE_TTL_MS'),
+      DEFAULT_FAILURE_TTL_MS,
+    );
+    this.posture = this.readPosture();
   }
 
-  /** The bounded staleness window, in ms. Exposed for the runbook/tests. */
+  /** The bounded staleness window for a DEFINITIVE answer, in ms. */
   get cacheTtlMs(): number {
     return this.ttlMs;
+  }
+
+  /**
+   * How long an INDETERMINATE answer is cached, in ms (0 = not cached at all).
+   * Separately configurable via `WORKSPACE_ENTITLEMENTS_FAILURE_TTL_MS` precisely
+   * so a failure never inherits the 60s success TTL.
+   */
+  get failureTtlMs(): number {
+    return this.failureTtl;
+  }
+
+  /** The configured outage posture. Default `deny` (fail closed). */
+  get outagePosture(): EntitlementOutagePosture {
+    return this.posture;
   }
 
   /** Drop the in-process cache (tests + an operator-triggered refresh). */
@@ -179,10 +262,40 @@ export class WorkspaceEntitlementsResolver {
         ? opts.maxAgeMs
         : this.ttlMs;
 
+    // 1. REQUEST-SCOPED memo. One source read per workspace per REQUEST, shared
+    //    by all ~12 `effectiveEntitlements` call sites, and gone when the request
+    //    ends — so this collapses the amplification WITHOUT buying any
+    //    cross-request staleness (the `maxAgeMs: 0` JWT lane still re-reads the
+    //    source on the next request, which is what makes an operator pin edit
+    //    land immediately). Memoising the PROMISE, not the value, also collapses
+    //    concurrent call sites (Promise.all in the agents) onto one fetch.
+    const scope = entitlementRequestScope();
+    if (scope) {
+      const inflight = scope.get(key) as Promise<WorkspaceEntitlementResolution> | undefined;
+      if (inflight) return inflight;
+    }
+
+    // 2. Process cache, bounded by BOTH the caller's max-age and the entry's own
+    //    lifetime (a failed answer carries the short failure TTL, not the 60s one).
     const now = Date.now();
     const hit = this.cache.get(key);
-    if (maxAgeMs > 0 && hit && now - hit.at < maxAgeMs) return hit.value;
+    if (maxAgeMs > 0 && hit && now - hit.at < Math.min(maxAgeMs, hit.ttlMs)) return hit.value;
 
+    const pending = this.resolveFresh(key, now);
+    // Only a FRESH source read is memoised: a process-cache hit above is not
+    // written into the request scope, so a later `maxAgeMs: 0` caller in the same
+    // request still gets its guaranteed-fresh read.
+    if (scope) scope.set(key, pending);
+    return pending;
+  }
+
+  // --- internals -------------------------------------------------------------
+
+  /** Read the source, apply the outage posture, and cache with the right TTL. */
+  private async resolveFresh(
+    key: string,
+    now: number,
+  ): Promise<WorkspaceEntitlementResolution> {
     let value: WorkspaceEntitlementResolution;
     try {
       value = await this.resolveUncached(key);
@@ -194,11 +307,91 @@ export class WorkspaceEntitlementsResolver {
       );
       value = { skus: [], source: 'error', stale: true };
     }
-    this.put(key, { at: now, value });
+    value = this.applyOutagePosture(key, value);
+    // A FAILURE MUST NOT BE CACHED AT THE SUCCESS TTL. Doing so turned a
+    // one-second endpoint blip into a full-TTL (60s) denial that outlived the
+    // recovery, and let a `maxAgeMs: 0` JWT read poison the shared cache the PAT
+    // lane reads from. Indeterminate answers get `failureTtl` (default 1s, `0` =
+    // never served from cache) instead.
+    this.put(key, {
+      at: now,
+      value,
+      ttlMs: value.stale ? this.failureTtl : this.ttlMs,
+    });
     return value;
   }
 
-  // --- internals -------------------------------------------------------------
+  /**
+   * Apply the configured outage posture to an indeterminate answer, and make the
+   * degradation LOUD — an operator should be able to tell in seconds, not hours,
+   * that gates are denying because the entitlement source stopped answering.
+   */
+  private applyOutagePosture(
+    workspaceId: string,
+    value: WorkspaceEntitlementResolution,
+  ): WorkspaceEntitlementResolution {
+    if (!value.stale) {
+      this.noteSourceHealthy();
+      return value;
+    }
+    this.noteSourceDegraded(workspaceId, value.source);
+    if (this.posture === 'trust-claim') {
+      // OPT-IN FAIL-OPEN: `null` reads downstream as "no server-side opinion", so
+      // the caller falls back to its token claim / PAT snapshot. `stale` stays
+      // true so PAT MINTING still refuses (never bake an outage into a
+      // credential) — the posture only governs request-time gating.
+      return { skus: null, source: value.source, stale: true };
+    }
+    return value;
+  }
+
+  private noteSourceDegraded(workspaceId: string, source: WorkspaceEntitlementSource): void {
+    const now = Date.now();
+    const first = this.degradedSince === null;
+    if (first) this.degradedSince = now;
+    if (!first && now - this.lastDegradedLogAt < DEGRADED_RELOG_MS) return;
+    this.lastDegradedLogAt = now;
+    const forMs = now - (this.degradedSince ?? now);
+    this.logger.error(
+      `${ENTITLEMENTS_DEGRADED_MARKER}: the server-side entitlement source is NOT ANSWERING ` +
+        `(workspace=${workspaceId}, source=${source}, ` +
+        `endpointConfigured=${this.entitlements.isConfigured()}, ` +
+        `workspaceLookupConfigured=${this.entitlements.isWorkspaceLookupConfigured()}, ` +
+        `posture=${this.posture}, degradedForMs=${forMs}). ` +
+        (this.posture === 'deny'
+          ? 'The resolver is now serving DENIALS: every entitlement gate for this workspace ' +
+            'fails closed until the source recovers. Set ' +
+            'WORKSPACE_ENTITLEMENTS_OUTAGE_POSTURE=trust-claim to trade enforcement for ' +
+            'availability during an outage (fail-OPEN — read the runbook first).'
+          : 'WORKSPACE_ENTITLEMENTS_OUTAGE_POSTURE=trust-claim is set: the resolver is FALLING ' +
+            'BACK TO THE CALLER CLAIM (fail-OPEN). Server-side entitlement enforcement is ' +
+            'currently OFF for this workspace.'),
+    );
+  }
+
+  private noteSourceHealthy(): void {
+    if (this.degradedSince === null) return;
+    const forMs = Date.now() - this.degradedSince;
+    this.degradedSince = null;
+    this.lastDegradedLogAt = 0;
+    this.logger.log(
+      `${ENTITLEMENTS_RECOVERED_MARKER}: the server-side entitlement source is answering again ` +
+        `after ${forMs}ms; gates resume normal enforcement.`,
+    );
+  }
+
+  private readPosture(): EntitlementOutagePosture {
+    const raw = (this.config.get<string>('WORKSPACE_ENTITLEMENTS_OUTAGE_POSTURE') ?? '')
+      .trim()
+      .toLowerCase();
+    if (!raw) return 'deny';
+    if (raw === 'deny' || raw === 'trust-claim') return raw;
+    this.logger.warn(
+      `WORKSPACE_ENTITLEMENTS_OUTAGE_POSTURE='${raw}' is not recognised (expected 'deny' or ` +
+        `'trust-claim') — falling back to 'deny' (fail closed).`,
+    );
+    return 'deny';
+  }
 
   private async resolveUncached(workspaceId: string): Promise<WorkspaceEntitlementResolution> {
     // 1. Operator pin wins. An offline/dedicated node sets this by hand and it
@@ -219,7 +412,16 @@ export class WorkspaceEntitlementsResolver {
     //    THREE states, not two. `unavailable` (a configured endpoint that 401'd /
     //    500'd / timed out / returned junk) must NOT be allowed to reach the
     //    `source: 'none'` return below, because 'none' means TRUST THE CLAIM.
-    const lookup = await this.entitlements.lookupWorkspace(workspaceId);
+    //
+    //    THE SERVER-SIDE LANE NEEDS BOTH the endpoint URL *and* the service
+    //    credential. `isConfigured()` (URL only) is NOT a proxy for that — a URL
+    //    with no credential is a lane that enforces nothing, which is exactly the
+    //    footgun `isWorkspaceLookupConfigured()` exists to name. Gate on it HERE,
+    //    at the one place the server-side lane actually runs, so the resolver
+    //    never even attempts a call it cannot authenticate.
+    const lookup: WorkspaceEntitlementsLookup = this.entitlements.isWorkspaceLookupConfigured()
+      ? await this.entitlements.lookupWorkspace(workspaceId)
+      : { status: 'unconfigured' };
     if (lookup.status === 'ok') {
       const skus = this.entitlements.toSkuList(lookup.data.featureKeys);
       await this.writeMirror(workspaceId, skus, 'endpoint');
@@ -298,5 +500,13 @@ export class WorkspaceEntitlementsResolver {
   private int(v: string | undefined, dflt: number): number {
     const n = Number.parseInt((v ?? '').trim(), 10);
     return Number.isFinite(n) && n > 0 ? n : dflt;
+  }
+
+  /** Like {@link int} but `0` is a MEANINGFUL value ("never cache"), not "unset". */
+  private intAllowZero(v: string | undefined, dflt: number): number {
+    const raw = (v ?? '').trim();
+    if (!raw) return dflt;
+    const n = Number.parseInt(raw, 10);
+    return Number.isFinite(n) && n >= 0 ? n : dflt;
   }
 }

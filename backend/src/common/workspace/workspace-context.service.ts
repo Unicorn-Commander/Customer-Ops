@@ -4,7 +4,7 @@ import { User } from '@prisma/client';
 import { PrismaService, WorkspaceTxClient } from '../../prisma/prisma.service';
 import { MembershipService } from './membership.service';
 import {
-  DEFAULT_WORKSPACE_FALLBACK,
+  defaultWorkspaceId as defaultWorkspaceIdFromEnv,
   entitlementsOf,
   intersectEntitlements,
   parseWorkspaceEntitlements,
@@ -62,6 +62,16 @@ export class WorkspaceContextService {
    * exactly; an operator who later configures a network entitlements source and
    * wants to cut its request volume can set
    * `WORKSPACE_ENTITLEMENTS_JWT_TTL_MS` explicitly and accept the window.
+   *
+   * ⚠️ 0 DOES NOT MEAN "one fetch per call site". `effectiveEntitlements` has a
+   * dozen production call sites (customers.service x5, the five relationship
+   * agents, the relations officer), so a max-age of 0 on its own turned ONE
+   * inbound request into a dozen outbound entitlement fetches and a dozen mirror
+   * UPSERTs. That amplification is collapsed by the resolver's REQUEST-SCOPED
+   * memo (common/workspace/entitlement-request-scope.ts): one source read per
+   * workspace per request, reused by every call site, discarded when the request
+   * ends. So this lane is both un-stale AND un-amplified — the two are not in
+   * tension, and this default must NOT be raised to "fix" request volume.
    */
   private get jwtLaneMaxAgeMs(): number {
     const raw = (this.config.get<string>('WORKSPACE_ENTITLEMENTS_JWT_TTL_MS') ?? '').trim();
@@ -69,8 +79,14 @@ export class WorkspaceContextService {
     return Number.isFinite(n) && n > 0 ? n : 0;
   }
 
+  /**
+   * A BLANK `DEFAULT_WORKSPACE_ID` is treated as ABSENT — ConfigService's default
+   * argument only fires on `undefined`, so an explicitly-empty env var would
+   * otherwise resolve every claim-less request to the workspace id `''`. See
+   * MembershipService.bootstrapWorkspaceId for what that broke.
+   */
   get defaultWorkspaceId(): string {
-    return this.config.get<string>('DEFAULT_WORKSPACE_ID', DEFAULT_WORKSPACE_FALLBACK);
+    return defaultWorkspaceIdFromEnv((k) => this.config.get<string>(k));
   }
 
   /** Resolve the active workspace id for the given (claim-augmented) user. */
