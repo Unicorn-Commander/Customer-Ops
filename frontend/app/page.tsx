@@ -1,4 +1,6 @@
 import type { Metadata } from 'next';
+import Image from 'next/image';
+import Link from 'next/link';
 import { ArrowRight, CheckCircle2, Radar, ShieldCheck } from 'lucide-react';
 import { LandingGate } from '@/components/LandingGate';
 
@@ -34,13 +36,13 @@ export default function Home() {
       <LandingGate />
       <main className="co-ambient co-ambient-grid min-h-screen overflow-hidden px-6 py-8 sm:px-10 lg:px-14">
         <nav className="mx-auto flex w-full max-w-6xl items-center justify-between" aria-label="Primary navigation">
-          <a href="/" className="flex items-center gap-3" aria-label="Customer-Ops home">
-            <img src="/brand-mark.png" alt="" className="h-11 w-11 rounded-[13px] shadow-glow" />
+          <Link href="/" className="flex items-center gap-3" aria-label="Customer-Ops home">
+            <Image src="/brand-mark.png" alt="" width={44} height={44} className="h-11 w-11 rounded-[13px] shadow-glow" />
             <span className="text-lg font-semibold tracking-tight"><span className="co-wordmark">Customer</span><span className="text-tertiary">-Ops</span></span>
-          </a>
-          <a href="/?app=1" className="inline-flex items-center gap-2 rounded-token bg-accent px-4 py-2.5 text-sm font-semibold text-accent-contrast shadow-glow transition-transform hover:-translate-y-0.5">
+          </Link>
+          <Link href="/?app=1" className="inline-flex items-center gap-2 rounded-token bg-accent px-4 py-2.5 text-sm font-semibold text-accent-contrast shadow-glow transition-transform hover:-translate-y-0.5">
             Open the app <ArrowRight className="h-4 w-4" />
-          </a>
+          </Link>
         </nav>
 
         <section className="mx-auto grid w-full max-w-6xl gap-10 pb-20 pt-20 lg:grid-cols-[1.2fr_0.8fr] lg:items-center lg:pt-28">
@@ -57,9 +59,9 @@ export default function Home() {
               <span className="rounded-full border border-success/30 bg-success/10 px-4 py-2 text-sm font-semibold text-success">We run our company on this.</span>
             </div>
             <div className="mt-9 flex flex-wrap gap-3">
-              <a href="/?app=1" className="inline-flex items-center gap-2 rounded-token bg-accent px-5 py-3 text-sm font-semibold text-accent-contrast shadow-glow transition-transform hover:-translate-y-0.5">
+              <Link href="/?app=1" className="inline-flex items-center gap-2 rounded-token bg-accent px-5 py-3 text-sm font-semibold text-accent-contrast shadow-glow transition-transform hover:-translate-y-0.5">
                 Open the live app <ArrowRight className="h-4 w-4" />
-              </a>
+              </Link>
               <a href="https://magicunicorn.dev/log" className="inline-flex items-center gap-2 rounded-token border border-subtle bg-surface-raised px-5 py-3 text-sm font-semibold text-secondary transition-colors hover:text-primary">
                 Follow the build log
               </a>
@@ -91,7 +93,7 @@ export default function Home() {
 
         <section className="mx-auto flex w-full max-w-6xl flex-col gap-6 border-t border-subtle py-16 sm:flex-row sm:items-center sm:justify-between">
           <div><p className="flex items-center gap-2 text-sm font-semibold text-success"><ShieldCheck className="h-4 w-4" /> Sovereign infrastructure</p><h2 className="mt-3 text-3xl font-semibold tracking-tight text-primary">Your customer data stays on a stack you control.</h2></div>
-          <a href="/?app=1" className="inline-flex shrink-0 items-center justify-center gap-2 rounded-token bg-accent px-5 py-3 text-sm font-semibold text-accent-contrast shadow-glow">Open the app <ArrowRight className="h-4 w-4" /></a>
+          <Link href="/?app=1" className="inline-flex shrink-0 items-center justify-center gap-2 rounded-token bg-accent px-5 py-3 text-sm font-semibold text-accent-contrast shadow-glow">Open the app <ArrowRight className="h-4 w-4" /></Link>
         </section>
       </main>
     </>
