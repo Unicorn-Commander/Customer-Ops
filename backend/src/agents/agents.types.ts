@@ -136,6 +136,10 @@ export interface CollectionsNudgeResult extends AgentResultBase {
   totalOverdue: string | null;
   /** Whether Accounting-Ops was reachable to read invoices (degrade-clean). */
   accountingConfigured: boolean;
+  /** Set when stageDraft was requested AND a draft was produced: the Email-Ops
+   *  agent-inbox row awaiting human approval (mode='draft' — never a send).
+   *  Null when staging was not requested, produced no draft, or failed. */
+  stagedDraft: { messageId: string; threadId: string | null; status: string } | null;
 }
 
 /** One overdue invoice the collections agent reasoned over (read-only projection). */

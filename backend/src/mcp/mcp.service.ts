@@ -592,10 +592,14 @@ export class McpService {
           'drafts a POLITE payment reminder, returning the DRAFT (subject + body) plus ' +
           'the overdue-invoice snapshot. DRAFT-ONLY — it never sends, never charges, ' +
           'and never posts a ledger entry (Accounting-Ops stays the AR system-of-' +
-          'record). Degrade-clean when Accounting-Ops or inference is unconfigured.',
+          'record). With stage_draft=true it ALSO stages the draft into the Email-Ops ' +
+          'AGENT INBOX (mode=draft) for a human to approve — still NOT a send. ' +
+          'Degrade-clean when Accounting-Ops or inference is unconfigured.',
         inputSchema: {
           customer_id: z.string(),
           workspace_id: z.string().optional(),
+          stage_draft: z.boolean().optional(),
+          idempotency_key: z.string().max(200).optional(),
         },
       },
       async (args: any) => {

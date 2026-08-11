@@ -357,9 +357,22 @@ export class CustomerOpsTools {
 
   /** Run the collections-nudge agent: gather the customer's overdue invoices
    *  (Accounting-Ops, live status) and draft a polite payment reminder. Returns a
-   *  DRAFT — never sends, never charges, never posts a ledger entry. */
-  async draftCollectionsNudge(user: User, args: { customer_id: string; workspace_id?: string }) {
-    return this.collections.draftNudge(user, args.customer_id, args.workspace_id ?? null);
+   *  DRAFT — never sends, never charges, never posts a ledger entry. When
+   *  stage_draft=true it ALSO stages the draft into the Email-Ops agent inbox
+   *  (mode=draft) for human approval — still NOT a send. */
+  async draftCollectionsNudge(
+    user: User,
+    args: {
+      customer_id: string;
+      workspace_id?: string;
+      stage_draft?: boolean;
+      idempotency_key?: string;
+    },
+  ) {
+    return this.collections.draftNudge(user, args.customer_id, args.workspace_id ?? null, 'bundled', {
+      stageDraft: args.stage_draft,
+      idempotencyKey: args.idempotency_key,
+    });
   }
 
   // ── Phase 6 lead-ingestion tools (delegate to LeadIntakeService) ──
