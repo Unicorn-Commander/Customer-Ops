@@ -5,6 +5,18 @@ import { CampaignEnrollment, SocialTouchRequest } from './outreach-ops.types';
 import { BrigadeTokenSource } from '../common/federation/brigade-token-source';
 
 /**
+ * The federation workspace map (added with the per-workspace map in 0d09be3).
+ * `resolveSync` returning null means "this workspace has no explicit mapping for
+ * that app", and every client then falls back to ctx.workspaceId — i.e. exactly
+ * the behaviour these specs were written against. Override per-test if a case
+ * ever needs a real mapping.
+ */
+function makeFedMap(mapped: string | null = null) {
+  return { resolveSync: jest.fn().mockReturnValue(mapped) } as any;
+}
+
+
+/**
  * The Outreach federation client speaks JSON-RPC 2.0 to the (future) Outreach
  * app's `POST /mcp` (list_campaigns / list_touches_for_contact / enroll_contact /
  * schedule_social_touch). Outreach is MOCKED here via a fake global.fetch — the
@@ -129,7 +141,7 @@ describe('OutreachClient (Outreach app MOCKED)', () => {
   });
 
   describe('degrade-clean: OUTREACH_BASE_URL unset (dormant)', () => {
-    const client = new OutreachClient(makeConfig({}), brigade);
+    const client = new OutreachClient(makeConfig({}), brigade, makeFedMap());
 
     it('isConfigured() is false', () => {
       expect(client.isConfigured()).toBe(false);
@@ -154,26 +166,26 @@ describe('OutreachClient (Outreach app MOCKED)', () => {
 
   describe('dual-SKU entitlement gate', () => {
     it('PASS only when BOTH customer-ops AND outreach are present (enforce)', () => {
-      const client = new OutreachClient(makeConfig(CONFIGURED_ENFORCE), brigade);
+      const client = new OutreachClient(makeConfig(CONFIGURED_ENFORCE), brigade, makeFedMap());
       expect(client.checkEntitlement(ENTITLED)).toMatchObject({ allowed: true, mode: 'enforce' });
     });
 
     it('DENY when outreach is missing (enforce)', () => {
-      const client = new OutreachClient(makeConfig(CONFIGURED_ENFORCE), brigade);
+      const client = new OutreachClient(makeConfig(CONFIGURED_ENFORCE), brigade, makeFedMap());
       const deny = client.checkEntitlement(HALF_ENTITLED);
       expect(deny.allowed).toBe(false);
       expect(deny.mode).toBe('enforce');
     });
 
     it('DENY when no entitlements at all (enforce)', () => {
-      const client = new OutreachClient(makeConfig(CONFIGURED_ENFORCE), brigade);
+      const client = new OutreachClient(makeConfig(CONFIGURED_ENFORCE), brigade, makeFedMap());
       expect(client.checkEntitlement(NOT_ENTITLED).allowed).toBe(false);
     });
 
     it('a denied enrollContact makes NO fetch (defense-in-depth)', async () => {
       const fetchSpy = jest.fn();
       global.fetch = fetchSpy as any;
-      const client = new OutreachClient(makeConfig(CONFIGURED_ENFORCE), brigade);
+      const client = new OutreachClient(makeConfig(CONFIGURED_ENFORCE), brigade, makeFedMap());
       await expect(client.enrollContact(HALF_ENTITLED, ENROLLMENT)).resolves.toBeNull();
       expect(fetchSpy).not.toHaveBeenCalled();
     });
@@ -181,7 +193,7 @@ describe('OutreachClient (Outreach app MOCKED)', () => {
     it('a denied scheduleSocialTouch makes NO fetch (defense-in-depth)', async () => {
       const fetchSpy = jest.fn();
       global.fetch = fetchSpy as any;
-      const client = new OutreachClient(makeConfig(CONFIGURED_ENFORCE), brigade);
+      const client = new OutreachClient(makeConfig(CONFIGURED_ENFORCE), brigade, makeFedMap());
       await expect(client.scheduleSocialTouch(NOT_ENTITLED, SOCIAL)).resolves.toBeNull();
       expect(fetchSpy).not.toHaveBeenCalled();
     });
@@ -189,7 +201,7 @@ describe('OutreachClient (Outreach app MOCKED)', () => {
     it('OPEN bootstrap (UC_ENTITLEMENT_MODE=open) bypasses the dual-SKU check', () => {
       const client = new OutreachClient(
         makeConfig({ ...CONFIGURED_ENFORCE, UC_ENTITLEMENT_MODE: 'open' }),
-        brigade,
+        brigade, makeFedMap()
       );
       expect(client.checkEntitlement(NOT_ENTITLED)).toMatchObject({ allowed: true, mode: 'open' });
     });
@@ -200,13 +212,13 @@ describe('OutreachClient (Outreach app MOCKED)', () => {
           OUTREACH_BASE_URL: 'https://outreach.example.test',
           OUTREACH_CROSS_APP_ENTITLEMENT_MODE: 'open',
         }),
-        brigade,
+        brigade, makeFedMap()
       );
       expect(client.checkEntitlement(NOT_ENTITLED)).toMatchObject({ allowed: true, mode: 'open' });
     });
 
     it('accepts SKU aliases (e.g. outreach_ops) on read', () => {
-      const client = new OutreachClient(makeConfig(CONFIGURED_ENFORCE), brigade);
+      const client = new OutreachClient(makeConfig(CONFIGURED_ENFORCE), brigade, makeFedMap());
       const aliased: FederationContext = {
         workspaceId: 'ws-aaaa',
         ucUid: 'u',
@@ -237,7 +249,7 @@ describe('OutreachClient (Outreach app MOCKED)', () => {
         ),
       );
       global.fetch = fetchSpy as any;
-      const client = new OutreachClient(makeConfig(CONFIGURED_ENFORCE), brigade);
+      const client = new OutreachClient(makeConfig(CONFIGURED_ENFORCE), brigade, makeFedMap());
 
       const campaigns = await client.listCampaigns(ENTITLED);
       const [url, init] = fetchSpy.mock.calls[0];
@@ -263,7 +275,7 @@ describe('OutreachClient (Outreach app MOCKED)', () => {
     it('listCampaigns does NOT require the dual SKU (viewer-level)', async () => {
       const fetchSpy = jest.fn().mockResolvedValue(jsonResponse(rpcOk({ campaigns: [] })));
       global.fetch = fetchSpy as any;
-      const client = new OutreachClient(makeConfig(CONFIGURED_ENFORCE), brigade);
+      const client = new OutreachClient(makeConfig(CONFIGURED_ENFORCE), brigade, makeFedMap());
       await client.listCampaigns(NOT_ENTITLED);
       expect(fetchSpy).toHaveBeenCalledTimes(1);
     });
@@ -289,7 +301,7 @@ describe('OutreachClient (Outreach app MOCKED)', () => {
         ),
       );
       global.fetch = fetchSpy as any;
-      const client = new OutreachClient(makeConfig(CONFIGURED_ENFORCE), brigade);
+      const client = new OutreachClient(makeConfig(CONFIGURED_ENFORCE), brigade, makeFedMap());
 
       const touches = await client.listTouchesForContact(ENTITLED, 'contact-42');
       const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
@@ -305,7 +317,7 @@ describe('OutreachClient (Outreach app MOCKED)', () => {
 
     it('reads return [] (never throw) on a transport error', async () => {
       global.fetch = jest.fn().mockRejectedValue(new Error('ECONNREFUSED')) as any;
-      const client = new OutreachClient(makeConfig(CONFIGURED_ENFORCE), brigade);
+      const client = new OutreachClient(makeConfig(CONFIGURED_ENFORCE), brigade, makeFedMap());
       await expect(client.listCampaigns(ENTITLED)).resolves.toEqual([]);
       await expect(client.listTouchesForContact(ENTITLED, 'c')).resolves.toEqual([]);
     });
@@ -315,7 +327,7 @@ describe('OutreachClient (Outreach app MOCKED)', () => {
     it('posts enroll_contact with the mapped args (deterministic ref) and maps the view', async () => {
       const fetchSpy = jest.fn().mockResolvedValue(jsonResponse(rpcOk(enrollmentView())));
       global.fetch = fetchSpy as any;
-      const client = new OutreachClient(makeConfig(CONFIGURED_ENFORCE), brigade);
+      const client = new OutreachClient(makeConfig(CONFIGURED_ENFORCE), brigade, makeFedMap());
 
       const result = await client.enrollContact(ENTITLED, ENROLLMENT);
 
@@ -349,7 +361,7 @@ describe('OutreachClient (Outreach app MOCKED)', () => {
     it('IDEMPOTENT on external_ref: the same enrollment yields the same enrollment view', async () => {
       const fetchSpy = jest.fn().mockResolvedValue(jsonResponse(rpcOk(enrollmentView())));
       global.fetch = fetchSpy as any;
-      const client = new OutreachClient(makeConfig(CONFIGURED_ENFORCE), brigade);
+      const client = new OutreachClient(makeConfig(CONFIGURED_ENFORCE), brigade, makeFedMap());
 
       const first = await client.enrollContact(ENTITLED, ENROLLMENT);
       const second = await client.enrollContact(ENTITLED, ENROLLMENT);
@@ -364,7 +376,7 @@ describe('OutreachClient (Outreach app MOCKED)', () => {
 
     it('returns null (never throws) on a transport error — link persists upstream', async () => {
       global.fetch = jest.fn().mockRejectedValue(new Error('ECONNREFUSED')) as any;
-      const client = new OutreachClient(makeConfig(CONFIGURED_ENFORCE), brigade);
+      const client = new OutreachClient(makeConfig(CONFIGURED_ENFORCE), brigade, makeFedMap());
       await expect(client.enrollContact(ENTITLED, ENROLLMENT)).resolves.toBeNull();
     });
 
@@ -374,7 +386,7 @@ describe('OutreachClient (Outreach app MOCKED)', () => {
         .mockResolvedValue(
           jsonResponse({ jsonrpc: '2.0', id: 1, error: { code: -32000, message: 'denied' } }),
         ) as any;
-      const client = new OutreachClient(makeConfig(CONFIGURED_ENFORCE), brigade);
+      const client = new OutreachClient(makeConfig(CONFIGURED_ENFORCE), brigade, makeFedMap());
       await expect(client.enrollContact(ENTITLED, ENROLLMENT)).resolves.toBeNull();
     });
 
@@ -386,7 +398,7 @@ describe('OutreachClient (Outreach app MOCKED)', () => {
           result: { isError: true, content: [{ type: 'text', text: 'campaign not found' }] },
         }),
       ) as any;
-      const client = new OutreachClient(makeConfig(CONFIGURED_ENFORCE), brigade);
+      const client = new OutreachClient(makeConfig(CONFIGURED_ENFORCE), brigade, makeFedMap());
       await expect(client.enrollContact(ENTITLED, ENROLLMENT)).resolves.toBeNull();
     });
   });
@@ -397,7 +409,7 @@ describe('OutreachClient (Outreach app MOCKED)', () => {
         .fn()
         .mockResolvedValue(jsonResponse(rpcOk(enrollmentView({ id: 'enr-2', channel: 'social', campaign_id: null }))));
       global.fetch = fetchSpy as any;
-      const client = new OutreachClient(makeConfig(CONFIGURED_ENFORCE), brigade);
+      const client = new OutreachClient(makeConfig(CONFIGURED_ENFORCE), brigade, makeFedMap());
 
       const result = await client.scheduleSocialTouch(ENTITLED, SOCIAL);
       const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
@@ -416,7 +428,7 @@ describe('OutreachClient (Outreach app MOCKED)', () => {
 
     it('returns null on HTTP 500 (never throws)', async () => {
       global.fetch = jest.fn().mockResolvedValue(jsonResponse({}, false, 500)) as any;
-      const client = new OutreachClient(makeConfig(CONFIGURED_ENFORCE), brigade);
+      const client = new OutreachClient(makeConfig(CONFIGURED_ENFORCE), brigade, makeFedMap());
       await expect(client.scheduleSocialTouch(ENTITLED, SOCIAL)).resolves.toBeNull();
     });
   });
@@ -436,7 +448,7 @@ describe('OutreachClient (Outreach app MOCKED)', () => {
       const fed = fakeBrigade('brigade-minted-token');
       const fetchSpy = jest.fn().mockResolvedValue(jsonResponse(rpcOk({ campaigns: [] })));
       global.fetch = fetchSpy as any;
-      const client = new OutreachClient(makeConfig(BRIGADE_ENV), fed);
+      const client = new OutreachClient(makeConfig(BRIGADE_ENV), fed, makeFedMap());
 
       await client.listCampaigns(ENTITLED);
 
@@ -451,19 +463,22 @@ describe('OutreachClient (Outreach app MOCKED)', () => {
       global.fetch = jest.fn().mockResolvedValue(jsonResponse(rpcOk({ campaigns: [] }))) as any;
       const client = new OutreachClient(
         makeConfig({ ...BRIGADE_ENV, OUTREACH_AUDIENCE: 'outreach-app', OUTREACH_SCOPE: 'outreach:read' }),
-        fed,
+        fed, makeFedMap()
       );
       await client.listCampaigns(ENTITLED);
       expect(fed.calls[0]).toMatchObject({ audience: 'outreach-app', scope: 'outreach:read' });
     });
 
-    it('addresses the OVERRIDE workspace on BOTH the exchange claim and the body arg', async () => {
+    it('addresses the MAPPED workspace on BOTH the exchange claim and the body arg', async () => {
+      // The per-workspace federation map replaced OUTREACH_WORKSPACE_OVERRIDE in
+      // 0d09be3; the invariant is unchanged — claim and body must agree, or
+      // Outreach's server-side re-gate rejects the call.
       const fed = fakeBrigade('tok');
       const fetchSpy = jest.fn().mockResolvedValue(jsonResponse(rpcOk({ campaigns: [] })));
       global.fetch = fetchSpy as any;
       const client = new OutreachClient(
-        makeConfig({ ...BRIGADE_ENV, OUTREACH_WORKSPACE_OVERRIDE: 'canonical-ws-9' }),
-        fed,
+        makeConfig(BRIGADE_ENV),
+        fed, makeFedMap('canonical-ws-9')
       );
       await client.listCampaigns(ENTITLED); // ctx.workspaceId = 'ws-aaaa'
       expect(fed.calls[0].workspaceId).toBe('canonical-ws-9');
@@ -472,13 +487,13 @@ describe('OutreachClient (Outreach app MOCKED)', () => {
       expect(JSON.parse(init.body).params.arguments.workspace_id).toBe('canonical-ws-9');
     });
 
-    it('enroll_contact under an override addresses the override on the exchange + body arg', async () => {
+    it('enroll_contact under a mapping addresses the mapped ws on the exchange + body arg', async () => {
       const fed = fakeBrigade('tok');
       const fetchSpy = jest.fn().mockResolvedValue(jsonResponse(rpcOk(enrollmentView())));
       global.fetch = fetchSpy as any;
       const client = new OutreachClient(
-        makeConfig({ ...BRIGADE_ENV, OUTREACH_WORKSPACE_OVERRIDE: 'canonical-ws-9' }),
-        fed,
+        makeConfig(BRIGADE_ENV),
+        fed, makeFedMap('canonical-ws-9')
       );
       await client.enrollContact(ENTITLED, ENROLLMENT);
       expect(fed.calls[0].workspaceId).toBe('canonical-ws-9');
@@ -491,7 +506,7 @@ describe('OutreachClient (Outreach app MOCKED)', () => {
       const fed = fakeBrigade(null); // exchange fails → no bearer
       const fetchSpy = jest.fn().mockResolvedValue(jsonResponse(rpcOk({ campaigns: [] })));
       global.fetch = fetchSpy as any;
-      const client = new OutreachClient(makeConfig(BRIGADE_ENV), fed);
+      const client = new OutreachClient(makeConfig(BRIGADE_ENV), fed, makeFedMap());
       await client.listCampaigns(ENTITLED);
       expect(fetchSpy.mock.calls[0][1].headers['Authorization']).toBeUndefined();
       expect(fetchSpy).toHaveBeenCalledTimes(1);

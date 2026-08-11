@@ -3,6 +3,18 @@ import { MeetingOpsClient } from './meeting-ops.client';
 import { FederationContext } from './meeting-ops.port';
 import { BrigadeTokenSource } from '../common/federation/brigade-token-source';
 
+/**
+ * The federation workspace map (added with the per-workspace map in 0d09be3).
+ * `resolveSync` returning null means "this workspace has no explicit mapping for
+ * that app", and every client then falls back to ctx.workspaceId — i.e. exactly
+ * the behaviour these specs were written against. Override per-test if a case
+ * ever needs a real mapping.
+ */
+function makeFedMap(mapped: string | null = null) {
+  return { resolveSync: jest.fn().mockReturnValue(mapped) } as any;
+}
+
+
 /** These tests exercise STATIC auth mode (MEETING_OPS_SERVICE_TOKEN forwarded);
  *  the Brigade source isn't reached. The brigade-sts path is proven live. */
 function makeBrigade(): BrigadeTokenSource {
@@ -53,7 +65,7 @@ describe('MeetingOpsClient (Meeting-Ops MOCKED)', () => {
   });
 
   describe('when MEETING_OPS_BASE_URL is unset (dormant)', () => {
-    const client = new MeetingOpsClient(makeConfig({}), makeBrigade());
+    const client = new MeetingOpsClient(makeConfig({}), makeBrigade(), makeFedMap());
 
     it('isConfigured() is false', () => {
       expect(client.isConfigured()).toBe(false);
@@ -99,7 +111,7 @@ describe('MeetingOpsClient (Meeting-Ops MOCKED)', () => {
     };
 
     it('isConfigured() is true', () => {
-      expect(new MeetingOpsClient(makeConfig(env), makeBrigade()).isConfigured()).toBe(true);
+      expect(new MeetingOpsClient(makeConfig(env), makeBrigade(), makeFedMap()).isConfigured()).toBe(true);
     });
 
     it('list_meetings_for_contact: posts JSON-RPC tools/call and maps Meeting → FederatedMeeting', async () => {
@@ -128,7 +140,7 @@ describe('MeetingOpsClient (Meeting-Ops MOCKED)', () => {
         ),
       );
       global.fetch = fetchSpy as any;
-      const client = new MeetingOpsClient(makeConfig(env), makeBrigade());
+      const client = new MeetingOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
 
       const page = await client.listMeetingsForContact(CTX, 'contact-42', { limit: 10 });
 
@@ -185,7 +197,7 @@ describe('MeetingOpsClient (Meeting-Ops MOCKED)', () => {
           }),
         ),
       ) as any;
-      const client = new MeetingOpsClient(makeConfig(env), makeBrigade());
+      const client = new MeetingOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
 
       const summaries = await client.listSummariesForContact(CTX, 'contact-42');
       expect(summaries).toHaveLength(1);
@@ -224,7 +236,7 @@ describe('MeetingOpsClient (Meeting-Ops MOCKED)', () => {
           }),
         ),
       ) as any;
-      const client = new MeetingOpsClient(makeConfig(env), makeBrigade());
+      const client = new MeetingOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
 
       const items = await client.listActionItemsForContact(CTX, 'contact-42');
       expect(items).toHaveLength(2);
@@ -282,7 +294,7 @@ describe('MeetingOpsClient (Meeting-Ops MOCKED)', () => {
         );
       });
       global.fetch = fetchSpy as any;
-      const client = new MeetingOpsClient(makeConfig(env), makeBrigade());
+      const client = new MeetingOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
 
       const signal = await client.getMeetingSignal(CTX, 'contact-42');
       expect(signal.meetingCount).toBe(2);
@@ -301,7 +313,7 @@ describe('MeetingOpsClient (Meeting-Ops MOCKED)', () => {
       global.fetch = jest.fn().mockResolvedValue(
         jsonResponse({ jsonrpc: '2.0', id: 1, error: { code: -32000, message: 'boom' } }),
       ) as any;
-      const client = new MeetingOpsClient(makeConfig(env), makeBrigade());
+      const client = new MeetingOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
       await expect(client.listMeetingsForContact(CTX, 'p1')).resolves.toEqual({
         items: [],
         count: 0,
@@ -317,20 +329,20 @@ describe('MeetingOpsClient (Meeting-Ops MOCKED)', () => {
           result: { isError: true, content: [{ type: 'text', text: 'CONTACT_NOT_FOUND' }] },
         }),
       ) as any;
-      const client = new MeetingOpsClient(makeConfig(env), makeBrigade());
+      const client = new MeetingOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
       await expect(client.listActionItemsForContact(CTX, 'missing')).resolves.toEqual([]);
     });
 
     it('returns empty (never throws) on a transport error / HTTP 500', async () => {
       global.fetch = jest.fn().mockRejectedValue(new Error('ECONNREFUSED')) as any;
-      const client = new MeetingOpsClient(makeConfig(env), makeBrigade());
+      const client = new MeetingOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
       await expect(client.listMeetingsForContact(CTX, 'p1')).resolves.toEqual({
         items: [],
         count: 0,
         nextCursor: null,
       });
       global.fetch = jest.fn().mockResolvedValue(jsonResponse({}, false, 500)) as any;
-      const client2 = new MeetingOpsClient(makeConfig(env), makeBrigade());
+      const client2 = new MeetingOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
       await expect(client2.listSummariesForContact(CTX, 'p1')).resolves.toEqual([]);
     });
   });

@@ -4,6 +4,18 @@ import { FederationContext } from './email-ops.port';
 import { EmailComposeRequest } from './email-ops.types';
 import { BrigadeTokenSource } from '../common/federation/brigade-token-source';
 
+/**
+ * The federation workspace map (added with the per-workspace map in 0d09be3).
+ * `resolveSync` returning null means "this workspace has no explicit mapping for
+ * that app", and every client then falls back to ctx.workspaceId — i.e. exactly
+ * the behaviour these specs were written against. Override per-test if a case
+ * ever needs a real mapping.
+ */
+function makeFedMap(mapped: string | null = null) {
+  return { resolveSync: jest.fn().mockReturnValue(mapped) } as any;
+}
+
+
 /** These tests exercise STATIC auth mode (EMAIL_OPS_SERVICE_TOKEN forwarded), so
  *  the Brigade source is never reached; a stub that returns null suffices. The
  *  brigade-sts path is proven live, not unit-mocked (mirrors Contact-Ops). */
@@ -122,7 +134,7 @@ describe('EmailOpsClient (Email-Ops app MOCKED)', () => {
   });
 
   describe('degrade-clean: EMAIL_OPS_BASE_URL unset (dormant)', () => {
-    const client = new EmailOpsClient(makeConfig({}), makeBrigade());
+    const client = new EmailOpsClient(makeConfig({}), makeBrigade(), makeFedMap());
 
     it('isConfigured() is false', () => {
       expect(client.isConfigured()).toBe(false);
@@ -146,26 +158,26 @@ describe('EmailOpsClient (Email-Ops app MOCKED)', () => {
 
   describe('dual-SKU entitlement gate', () => {
     it('PASS only when BOTH customer-ops AND email-ops are present (enforce)', () => {
-      const client = new EmailOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade());
+      const client = new EmailOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade(), makeFedMap());
       expect(client.checkEntitlement(ENTITLED)).toMatchObject({ allowed: true, mode: 'enforce' });
     });
 
     it('DENY when email-ops is missing (enforce)', () => {
-      const client = new EmailOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade());
+      const client = new EmailOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade(), makeFedMap());
       const deny = client.checkEntitlement(HALF_ENTITLED);
       expect(deny.allowed).toBe(false);
       expect(deny.mode).toBe('enforce');
     });
 
     it('DENY when no entitlements at all (enforce)', () => {
-      const client = new EmailOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade());
+      const client = new EmailOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade(), makeFedMap());
       expect(client.checkEntitlement(NOT_ENTITLED).allowed).toBe(false);
     });
 
     it('a denied composeEmail makes NO fetch (defense-in-depth)', async () => {
       const fetchSpy = jest.fn();
       global.fetch = fetchSpy as any;
-      const client = new EmailOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade());
+      const client = new EmailOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade(), makeFedMap());
       await expect(client.composeEmail(HALF_ENTITLED, SEND)).resolves.toBeNull();
       expect(fetchSpy).not.toHaveBeenCalled();
     });
@@ -173,7 +185,7 @@ describe('EmailOpsClient (Email-Ops app MOCKED)', () => {
     it('OPEN bootstrap (UC_ENTITLEMENT_MODE=open) bypasses the dual-SKU check', () => {
       const client = new EmailOpsClient(
         makeConfig({ ...CONFIGURED_ENFORCE, UC_ENTITLEMENT_MODE: 'open' }),
-        makeBrigade(),
+        makeBrigade(), makeFedMap()
       );
       expect(client.checkEntitlement(NOT_ENTITLED)).toMatchObject({ allowed: true, mode: 'open' });
     });
@@ -184,13 +196,13 @@ describe('EmailOpsClient (Email-Ops app MOCKED)', () => {
           EMAIL_OPS_BASE_URL: 'https://mail.example.test',
           EMAIL_OPS_CROSS_APP_ENTITLEMENT_MODE: 'open',
         }),
-        makeBrigade(),
+        makeBrigade(), makeFedMap()
       );
       expect(client.checkEntitlement(NOT_ENTITLED)).toMatchObject({ allowed: true, mode: 'open' });
     });
 
     it('accepts SKU aliases (e.g. email_ops / mail) on read', () => {
-      const client = new EmailOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade());
+      const client = new EmailOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade(), makeFedMap());
       const aliased: FederationContext = {
         workspaceId: 'ws-aaaa',
         ucUid: 'u',
@@ -223,7 +235,7 @@ describe('EmailOpsClient (Email-Ops app MOCKED)', () => {
         ),
       );
       global.fetch = fetchSpy as any;
-      const client = new EmailOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade());
+      const client = new EmailOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade(), makeFedMap());
 
       const threads = await client.listThreadsWithContact(ENTITLED, 'contact-42');
       const [url, init] = fetchSpy.mock.calls[0];
@@ -250,7 +262,7 @@ describe('EmailOpsClient (Email-Ops app MOCKED)', () => {
     it('listThreadsWithContact does NOT require the dual SKU (viewer-level)', async () => {
       const fetchSpy = jest.fn().mockResolvedValue(jsonResponse(rpcOk({ threads: [] })));
       global.fetch = fetchSpy as any;
-      const client = new EmailOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade());
+      const client = new EmailOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade(), makeFedMap());
       await client.listThreadsWithContact(NOT_ENTITLED, 'contact-42');
       expect(fetchSpy).toHaveBeenCalledTimes(1);
     });
@@ -275,7 +287,7 @@ describe('EmailOpsClient (Email-Ops app MOCKED)', () => {
         ),
       );
       global.fetch = fetchSpy as any;
-      const client = new EmailOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade());
+      const client = new EmailOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade(), makeFedMap());
 
       const messages = await client.listThreadMessages(ENTITLED, 'thread-1');
       const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
@@ -293,7 +305,7 @@ describe('EmailOpsClient (Email-Ops app MOCKED)', () => {
 
     it('reads return [] (never throw) on a transport error', async () => {
       global.fetch = jest.fn().mockRejectedValue(new Error('ECONNREFUSED')) as any;
-      const client = new EmailOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade());
+      const client = new EmailOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade(), makeFedMap());
       await expect(client.listThreadsWithContact(ENTITLED, 'c')).resolves.toEqual([]);
       await expect(client.listThreadMessages(ENTITLED, 't')).resolves.toEqual([]);
     });
@@ -303,7 +315,7 @@ describe('EmailOpsClient (Email-Ops app MOCKED)', () => {
     it('SEND: posts compose_email with mode=send + the mapped args (deterministic ref)', async () => {
       const fetchSpy = jest.fn().mockResolvedValue(jsonResponse(rpcOk(composeView())));
       global.fetch = fetchSpy as any;
-      const client = new EmailOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade());
+      const client = new EmailOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade(), makeFedMap());
 
       const result = await client.composeEmail(ENTITLED, SEND);
       const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
@@ -336,7 +348,7 @@ describe('EmailOpsClient (Email-Ops app MOCKED)', () => {
           jsonResponse(rpcOk(composeView({ id: 'msg-2', status: 'pending_approval', mode: 'draft', external_ref: 'cust:cust-1:email:idem-key-456' }))),
         );
       global.fetch = fetchSpy as any;
-      const client = new EmailOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade());
+      const client = new EmailOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade(), makeFedMap());
 
       const result = await client.composeEmail(ENTITLED, DRAFT);
       const args = JSON.parse(fetchSpy.mock.calls[0][1].body).params.arguments;
@@ -348,7 +360,7 @@ describe('EmailOpsClient (Email-Ops app MOCKED)', () => {
     it('IDEMPOTENT on external_ref: the same send yields the same message view', async () => {
       const fetchSpy = jest.fn().mockResolvedValue(jsonResponse(rpcOk(composeView())));
       global.fetch = fetchSpy as any;
-      const client = new EmailOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade());
+      const client = new EmailOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade(), makeFedMap());
 
       const first = await client.composeEmail(ENTITLED, SEND);
       const second = await client.composeEmail(ENTITLED, SEND);
@@ -362,7 +374,7 @@ describe('EmailOpsClient (Email-Ops app MOCKED)', () => {
 
     it('returns null (never throws) on a transport error', async () => {
       global.fetch = jest.fn().mockRejectedValue(new Error('ECONNREFUSED')) as any;
-      const client = new EmailOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade());
+      const client = new EmailOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade(), makeFedMap());
       await expect(client.composeEmail(ENTITLED, SEND)).resolves.toBeNull();
     });
 
@@ -374,7 +386,7 @@ describe('EmailOpsClient (Email-Ops app MOCKED)', () => {
           result: { isError: true, content: [{ type: 'text', text: 'mailbox not found' }] },
         }),
       ) as any;
-      const client = new EmailOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade());
+      const client = new EmailOpsClient(makeConfig(CONFIGURED_ENFORCE), makeBrigade(), makeFedMap());
       await expect(client.composeEmail(ENTITLED, SEND)).resolves.toBeNull();
     });
   });
@@ -384,7 +396,7 @@ describe('EmailOpsClient (Email-Ops app MOCKED)', () => {
       const fetchSpy = jest.fn().mockResolvedValue(jsonResponse(rpcOk({ threads: [] })));
       global.fetch = fetchSpy as any;
       const brigade = makeBrigade();
-      const client = new EmailOpsClient(makeConfig(CONFIGURED_ENFORCE), brigade);
+      const client = new EmailOpsClient(makeConfig(CONFIGURED_ENFORCE), brigade, makeFedMap());
 
       await client.listThreadsWithContact(ENTITLED, 'contact-42');
 
@@ -400,7 +412,7 @@ describe('EmailOpsClient (Email-Ops app MOCKED)', () => {
       } as unknown as BrigadeTokenSource;
       const client = new EmailOpsClient(
         makeConfig({ ...CONFIGURED_ENFORCE, EMAIL_OPS_AUTH_MODE: 'brigade-sts' }),
-        brigade,
+        brigade, makeFedMap()
       );
 
       await client.listThreadsWithContact(ENTITLED, 'contact-42');
@@ -423,7 +435,7 @@ describe('EmailOpsClient (Email-Ops app MOCKED)', () => {
           EMAIL_OPS_AUTH_MODE: 'brigade-sts',
           EMAIL_OPS_AUDIENCE: 'email-ops-prod',
         }),
-        brigade,
+        brigade, makeFedMap()
       );
 
       await client.listThreadsWithContact(ENTITLED, 'contact-42');
