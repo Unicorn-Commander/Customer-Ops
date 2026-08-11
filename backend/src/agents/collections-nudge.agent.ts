@@ -40,6 +40,16 @@ import { AgentInferenceEcho, CollectionsNudgeResult, OverdueInvoiceView } from '
 import { InferenceTier } from './inference/agent-inference.types';
 import { safeJsonObject, strOrNull } from './agent-parse.util';
 
+/** Options for a collections nudge. `stageDraft` opts into staging the draft
+ *  into the Email-Ops agent inbox (mode='draft' — NEVER a send); it mirrors
+ *  FollowUpDraftOptions so both draft-only agents share one contract. */
+export interface CollectionsNudgeOptions {
+  /** Stage the produced draft into the Email-Ops agent inbox for human approval. */
+  stageDraft?: boolean;
+  /** Idempotency key for that staging (compose is idempotent on it). */
+  idempotencyKey?: string;
+}
+
 @Injectable()
 export class CollectionsNudgeAgent {
   private readonly logger = new Logger(CollectionsNudgeAgent.name);
@@ -57,6 +67,7 @@ export class CollectionsNudgeAgent {
     customerId: string,
     requestedWorkspaceId?: string | null,
     tier: InferenceTier = 'bundled',
+    opts: CollectionsNudgeOptions = {},
   ): Promise<CollectionsNudgeResult> {
     const ucUid = ucUidOf(user);
     const workspaceId = await this.workspaces.resolveAuthorized(user, requestedWorkspaceId);
@@ -153,7 +164,42 @@ export class CollectionsNudgeAgent {
       }
     }
 
-    // 4) LOG the agent run (RLS tx).
+    // 4) OPTIONAL: stage the draft into the Email-Ops agent inbox (mode='draft'
+    //    ONLY — never a send). Mirrors FollowUpDrafterAgent exactly: best-effort,
+    //    independently dual-SKU gated, and a failure leaves the draft returned to
+    //    the caller with the reason appended to `note`.
+    //
+    //    Before this existed, a collections nudge could not reach the approval
+    //    queue at all without the caller holding Email-Ops' agent-inbox:approve
+    //    scope — i.e. a draft-only agent had to be handed send authority to file
+    //    a draft. Parity with draft_followup removes that pressure.
+    let stagedDraft: CollectionsNudgeResult['stagedDraft'] = null;
+    if (opts.stageDraft && subject && body) {
+      try {
+        const staged = await this.customers.sendEmailForUser(
+          user,
+          customerId,
+          {
+            toAddress: toAddress ?? undefined,
+            subject,
+            body,
+            mode: 'draft', // HARD-CODED draft — the agent NEVER sends.
+            idempotencyKey: opts.idempotencyKey,
+          },
+          requestedWorkspaceId,
+        );
+        stagedDraft = {
+          messageId: staged.message.id,
+          threadId: staged.message.threadId ?? null,
+          status: staged.message.status,
+        };
+        note += ' Staged into the Email-Ops agent inbox for approval (not sent).';
+      } catch (err) {
+        note += ` Could not stage into Email-Ops (${(err as Error).message}); draft returned to you instead.`;
+      }
+    }
+
+    // 5) LOG the agent run (RLS tx).
     await this.logRun(user, customerId, requestedWorkspaceId, note, inferenceEcho);
 
     return {
@@ -172,6 +218,7 @@ export class CollectionsNudgeAgent {
       overdueInvoices,
       totalOverdue,
       accountingConfigured,
+      stagedDraft,
     };
   }
 

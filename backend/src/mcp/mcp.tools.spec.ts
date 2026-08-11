@@ -92,10 +92,7 @@ describe('CustomerOpsTools — MCP arg → DTO delegation mapping', () => {
       },
     );
 
-    it.each([
-      { name: 'triageCustomer', agent: 'leadTriage', method: 'triage' },
-      { name: 'draftCollectionsNudge', agent: 'collections', method: 'draftNudge' },
-    ] as const)(
+    it.each([{ name: 'triageCustomer', agent: 'leadTriage', method: 'triage' }] as const)(
       '$name delegates to the $agent agent with (user, customer_id, workspace_id ?? null)',
       async ({ name, agent, method }) => {
         const ctx = makeTools();
@@ -105,6 +102,41 @@ describe('CustomerOpsTools — MCP arg → DTO delegation mapping', () => {
         expect((ctx as any)[agent][method]).toHaveBeenLastCalledWith(aaron, 'cust-9', null);
       },
     );
+
+    // draftCollectionsNudge carries the staging contract (parity with
+    // draft_followup), so it delegates with the tier + options tail rather than
+    // the bare 3-arg shape the table above asserts.
+    it('draftCollectionsNudge delegates with (user, customer_id, workspace_id ?? null, tier, opts)', async () => {
+      const ctx = makeTools();
+
+      await ctx.tools.draftCollectionsNudge(aaron, { customer_id: 'cust-1', workspace_id: WS });
+      expect(ctx.collections.draftNudge).toHaveBeenLastCalledWith(aaron, 'cust-1', WS, 'bundled', {
+        stageDraft: undefined,
+        idempotencyKey: undefined,
+      });
+
+      await ctx.tools.draftCollectionsNudge(aaron, { customer_id: 'cust-9' });
+      expect(ctx.collections.draftNudge).toHaveBeenLastCalledWith(aaron, 'cust-9', null, 'bundled', {
+        stageDraft: undefined,
+        idempotencyKey: undefined,
+      });
+    });
+
+    it('draftCollectionsNudge forwards stage_draft + idempotency_key to the agent', async () => {
+      const ctx = makeTools();
+
+      await ctx.tools.draftCollectionsNudge(aaron, {
+        customer_id: 'cust-1',
+        workspace_id: WS,
+        stage_draft: true,
+        idempotency_key: 'nudge-1',
+      });
+
+      expect(ctx.collections.draftNudge).toHaveBeenLastCalledWith(aaron, 'cust-1', WS, 'bundled', {
+        stageDraft: true,
+        idempotencyKey: 'nudge-1',
+      });
+    });
 
     it('every delegating tool returns the service/agent result verbatim', async () => {
       const { tools } = makeTools();

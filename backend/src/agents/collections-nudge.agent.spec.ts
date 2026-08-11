@@ -45,6 +45,7 @@ function makeAgent(opts?: {
   contact?: Partial<ContactOpsPort>;
   inference?: Partial<AgentInferencePort>;
   panel?: any; // the CustomersService.invoicesForUser return
+  customers?: Partial<Record<keyof CustomersService, unknown>>; // override the staging seam
 }) {
   const contact: ContactOpsPort = {
     getContact: jest.fn().mockResolvedValue({ contactId: 'contact-42', displayName: 'Jane Lead', primaryEmail: 'ap@acme.test', currentOrgId: null, currentOrgName: 'Acme', lastInteractionAt: null, communicationStrength: null, tags: [], etag: null, vcardUid: null, kind: 'individual', status: 'active', emails: [], phones: [], recentEvents: [] }),
@@ -74,6 +75,11 @@ function makeAgent(opts?: {
   };
   const customers = {
     invoicesForUser: jest.fn().mockResolvedValue(opts?.panel ?? defaultPanel),
+    // Staging seam (mode='draft' only) — mirrors the follow-up drafter's harness.
+    sendEmailForUser: jest.fn().mockResolvedValue({
+      message: { id: 'msg-col-1', threadId: null, status: 'pending_approval' },
+    }),
+    ...(opts?.customers ?? {}),
   } as unknown as CustomersService;
 
   const lastTx = { current: null as any };
@@ -186,5 +192,99 @@ describe('CollectionsNudgeAgent (Accounting-Ops panel + inference MOCKED)', () =
     tx.customer.findUnique.mockResolvedValue(null);
     lastTx.current = tx;
     await expect(agent.draftNudge(aaron, 'missing', WS)).rejects.toThrow(NotFoundException);
+  });
+});
+
+
+describe('CollectionsNudgeAgent — agent-inbox staging (stage_draft parity with draft_followup)', () => {
+  const realNow = Date.now;
+  beforeAll(() => {
+    jest.spyOn(Date, 'now').mockReturnValue(new Date('2026-06-10T00:00:00Z').getTime());
+  });
+  afterAll(() => {
+    (Date.now as any) = realNow;
+  });
+
+  it('does NOT stage by default — the draft comes back to the caller', async () => {
+    const { agent, customers, lastTx } = makeAgent();
+    const { tx } = makeTx(makeRow());
+    lastTx.current = tx;
+
+    const result = await agent.draftNudge(aaron, 'cust-1', WS);
+
+    expect(customers.sendEmailForUser).not.toHaveBeenCalled();
+    expect(result.stagedDraft).toBeNull();
+    expect(result.draftOnly).toBe(true);
+  });
+
+  it('stageDraft=true hands the nudge to Email-Ops with mode=DRAFT exactly (never send)', async () => {
+    const { agent, customers, lastTx } = makeAgent();
+    const { tx } = makeTx(makeRow());
+    lastTx.current = tx;
+
+    const result = await agent.draftNudge(aaron, 'cust-1', WS, 'bundled', {
+      stageDraft: true,
+      idempotencyKey: 'col-1',
+    });
+
+    expect(customers.sendEmailForUser).toHaveBeenCalledTimes(1);
+    const [, customerId, dto] = (customers.sendEmailForUser as jest.Mock).mock.calls[0];
+    expect(customerId).toBe('cust-1');
+    // THE INVARIANT: the agent passes mode='draft' — NEVER 'send'.
+    expect(dto.mode).toBe('draft');
+    expect(dto.idempotencyKey).toBe('col-1');
+    expect(result.stagedDraft).toMatchObject({ messageId: 'msg-col-1', status: 'pending_approval' });
+    expect(result.draftOnly).toBe(true);
+    expect(result.note).toMatch(/staged into the email-ops agent inbox/i);
+  });
+
+  it('never passes mode=send under ANY option combination', async () => {
+    const { agent, customers, lastTx } = makeAgent();
+    const { tx } = makeTx(makeRow());
+    lastTx.current = tx;
+
+    await agent.draftNudge(aaron, 'cust-1', WS, 'bundled', { stageDraft: true });
+    await agent.draftNudge(aaron, 'cust-1', WS, 'bundled', { stageDraft: true, idempotencyKey: 'k' });
+
+    const calls = (customers.sendEmailForUser as jest.Mock).mock.calls;
+    expect(calls.length).toBeGreaterThan(0);
+    for (const call of calls) {
+      expect(call[2].mode).toBe('draft');
+      expect(call[2].mode).not.toBe('send');
+    }
+  });
+
+  it('staging failure leaves the draft returned to the caller (best-effort, no throw)', async () => {
+    const { agent, lastTx } = makeAgent({
+      customers: { sendEmailForUser: jest.fn().mockRejectedValue(new Error('not entitled')) },
+    });
+    const { tx } = makeTx(makeRow());
+    lastTx.current = tx;
+
+    const result = await agent.draftNudge(aaron, 'cust-1', WS, 'bundled', { stageDraft: true });
+
+    expect(result.subject).not.toBeNull(); // draft still returned
+    expect(result.stagedDraft).toBeNull();
+    expect(result.note).toMatch(/could not stage/i);
+  });
+
+  it('no draft produced → nothing staged even when stageDraft was requested', async () => {
+    const { agent, customers, lastTx } = makeAgent({
+      inference: {
+        isConfigured: jest.fn().mockReturnValue(false),
+        checkEntitlement: jest
+          .fn()
+          .mockReturnValue({ allowed: false, tierAllowed: 'bundled', mode: 'enforce', reason: 'x' }),
+        complete: jest.fn().mockResolvedValue(null),
+      },
+    });
+    const { tx } = makeTx(makeRow());
+    lastTx.current = tx;
+
+    const result = await agent.draftNudge(aaron, 'cust-1', WS, 'bundled', { stageDraft: true });
+
+    expect(result.subject).toBeNull();
+    expect(customers.sendEmailForUser).not.toHaveBeenCalled();
+    expect(result.stagedDraft).toBeNull();
   });
 });

@@ -40,7 +40,7 @@ import { FollowUpDrafterAgent } from './follow-up-drafter.agent';
 import { CollectionsNudgeAgent } from './collections-nudge.agent';
 import { NextBestActionAgent } from './next-best-action.agent';
 import { MeetingPrepAgent } from './meeting-prep.agent';
-import { AgentTierDto, DraftFollowUpDto } from './dto/agents.dto';
+import { AgentTierDto, DraftCollectionsNudgeDto, DraftFollowUpDto } from './dto/agents.dto';
 import { resolveTier } from './agent-tier.util';
 
 type AuthedUser = User & Partial<WithWorkspaceClaim>;
@@ -149,18 +149,22 @@ export class AgentsController {
   @ApiOperation({
     summary:
       "Run the collections-nudge agent: gather the customer's overdue invoices " +
-      '(Accounting-Ops, live status) and draft a polite payment reminder (draft only).',
+      '(Accounting-Ops, live status) and draft a polite payment reminder (draft only). ' +
+      'Optionally stage it into the Email-Ops agent inbox (mode=draft) — NEVER auto-sends.',
   })
   @ApiQuery(TIER_QUERY)
   async collectionsNudge(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
     @Param('id') id: string,
-    @Body() dto: AgentTierDto = {},
+    @Body() dto: DraftCollectionsNudgeDto = {},
     @Query('tier') tierQuery?: string,
   ) {
     const tier = resolveTier(this.config, 'collections-nudge', dto.tier ?? tierQuery);
-    const result = await this.collections.draftNudge(user, id, workspaceId, tier);
+    const result = await this.collections.draftNudge(user, id, workspaceId, tier, {
+      stageDraft: dto.stageDraft,
+      idempotencyKey: dto.idempotencyKey,
+    });
     await this.auditRun(user, workspaceId, id, 'collections-nudge', tier);
     return result;
   }
