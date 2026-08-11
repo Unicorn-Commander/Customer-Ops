@@ -4,6 +4,18 @@ import { FederationContext, ProjectLookup } from './project-ops.port';
 import { BrigadeTokenSource } from '../common/federation/brigade-token-source';
 
 /**
+ * The federation workspace map (added with the per-workspace map in 0d09be3).
+ * `resolveSync` returning null means "this workspace has no explicit mapping for
+ * that app", and every client then falls back to ctx.workspaceId — i.e. exactly
+ * the behaviour these specs were written against. Override per-test if a case
+ * ever needs a real mapping.
+ */
+function makeFedMap(mapped: string | null = null) {
+  return { resolveSync: jest.fn().mockReturnValue(mapped) } as any;
+}
+
+
+/**
  * The Project-Ops federation client speaks JSON-RPC 2.0 to the Project-Ops app's
  * `POST /mcp` read surface (its native `search_projects` tool). Project-Ops is
  * MOCKED here via a fake global.fetch — the app is never running. Mirrors the
@@ -61,7 +73,7 @@ describe('ProjectOpsClient (Project-Ops MOCKED)', () => {
   });
 
   describe('when PROJECT_OPS_BASE_URL is unset (dormant)', () => {
-    const client = new ProjectOpsClient(makeConfig({}), makeBrigade());
+    const client = new ProjectOpsClient(makeConfig({}), makeBrigade(), makeFedMap());
     const lookup: ProjectLookup = { orgName: 'Acme', contactName: 'Jane Lead' };
 
     it('isConfigured() is false', () => {
@@ -95,7 +107,7 @@ describe('ProjectOpsClient (Project-Ops MOCKED)', () => {
     };
 
     it('isConfigured() is true', () => {
-      expect(new ProjectOpsClient(makeConfig(env), makeBrigade()).isConfigured()).toBe(true);
+      expect(new ProjectOpsClient(makeConfig(env), makeBrigade(), makeFedMap()).isConfigured()).toBe(true);
     });
 
     it('happy path: posts JSON-RPC tools/call for search_projects and maps Project → FederatedProject', async () => {
@@ -120,7 +132,7 @@ describe('ProjectOpsClient (Project-Ops MOCKED)', () => {
         ),
       );
       global.fetch = fetchSpy as any;
-      const client = new ProjectOpsClient(makeConfig(env), makeBrigade());
+      const client = new ProjectOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
 
       const projects = await client.listProjectsForContact(CTX, {
         orgName: 'Acme',
@@ -159,7 +171,7 @@ describe('ProjectOpsClient (Project-Ops MOCKED)', () => {
     it('prefers the org name over the contact name as the search query', async () => {
       const fetchSpy = jest.fn().mockResolvedValue(textResponse(rpcOk({ projects: [] })));
       global.fetch = fetchSpy as any;
-      const client = new ProjectOpsClient(makeConfig(env), makeBrigade());
+      const client = new ProjectOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
 
       await client.listProjectsForContact(CTX, { orgName: 'Acme Corp', contactName: 'Jane Lead' });
       const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
@@ -169,7 +181,7 @@ describe('ProjectOpsClient (Project-Ops MOCKED)', () => {
     it('falls back to the contact name when there is no org name', async () => {
       const fetchSpy = jest.fn().mockResolvedValue(textResponse(rpcOk({ projects: [] })));
       global.fetch = fetchSpy as any;
-      const client = new ProjectOpsClient(makeConfig(env), makeBrigade());
+      const client = new ProjectOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
 
       await client.listProjectsForContact(CTX, { orgName: null, contactName: 'Jane Lead' });
       const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
@@ -179,7 +191,7 @@ describe('ProjectOpsClient (Project-Ops MOCKED)', () => {
     it('no usable match key (org + contact both empty) → [] with NO fetch', async () => {
       const fetchSpy = jest.fn();
       global.fetch = fetchSpy as any;
-      const client = new ProjectOpsClient(makeConfig(env), makeBrigade());
+      const client = new ProjectOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
 
       await expect(
         client.listProjectsForContact(CTX, { orgName: null, contactName: null }),
@@ -198,7 +210,7 @@ describe('ProjectOpsClient (Project-Ops MOCKED)', () => {
           }),
         ),
       ) as any;
-      const client = new ProjectOpsClient(makeConfig(env), makeBrigade());
+      const client = new ProjectOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
 
       const projects = await client.listProjectsForContact(CTX, { orgName: 'Acme', contactName: null });
       expect(projects).toHaveLength(1);
@@ -214,7 +226,7 @@ describe('ProjectOpsClient (Project-Ops MOCKED)', () => {
       global.fetch = jest.fn().mockResolvedValue(
         textResponse({ jsonrpc: '2.0', id: 1, error: { code: -32000, message: 'boom' } }),
       ) as any;
-      const client = new ProjectOpsClient(makeConfig(env), makeBrigade());
+      const client = new ProjectOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
       await expect(
         client.listProjectsForContact(CTX, { orgName: 'Acme', contactName: null }),
       ).resolves.toEqual([]);
@@ -228,7 +240,7 @@ describe('ProjectOpsClient (Project-Ops MOCKED)', () => {
           result: { isError: true, content: [{ type: 'text', text: 'ORG_NOT_FOUND' }] },
         }),
       ) as any;
-      const client = new ProjectOpsClient(makeConfig(env), makeBrigade());
+      const client = new ProjectOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
       await expect(
         client.listProjectsForContact(CTX, { orgName: 'Acme', contactName: null }),
       ).resolves.toEqual([]);
@@ -236,7 +248,7 @@ describe('ProjectOpsClient (Project-Ops MOCKED)', () => {
 
     it('returns [] (never throws) on a transport error (fetch rejects)', async () => {
       global.fetch = jest.fn().mockRejectedValue(new Error('ECONNREFUSED')) as any;
-      const client = new ProjectOpsClient(makeConfig(env), makeBrigade());
+      const client = new ProjectOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
       await expect(
         client.listProjectsForContact(CTX, { orgName: 'Acme', contactName: null }),
       ).resolves.toEqual([]);
@@ -244,7 +256,7 @@ describe('ProjectOpsClient (Project-Ops MOCKED)', () => {
 
     it('returns [] (never throws) on an HTTP 500', async () => {
       global.fetch = jest.fn().mockResolvedValue(textResponse({}, false, 500)) as any;
-      const client = new ProjectOpsClient(makeConfig(env), makeBrigade());
+      const client = new ProjectOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
       await expect(
         client.listProjectsForContact(CTX, { orgName: 'Acme', contactName: null }),
       ).resolves.toEqual([]);
@@ -256,7 +268,7 @@ describe('ProjectOpsClient (Project-Ops MOCKED)', () => {
         status: 200,
         text: async () => 'not json at all',
       } as unknown as Response) as any;
-      const client = new ProjectOpsClient(makeConfig(env), makeBrigade());
+      const client = new ProjectOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
       await expect(
         client.listProjectsForContact(CTX, { orgName: 'Acme', contactName: null }),
       ).resolves.toEqual([]);
@@ -272,7 +284,7 @@ describe('ProjectOpsClient (Project-Ops MOCKED)', () => {
         status: 200,
         text: async () => sse,
       } as unknown as Response) as any;
-      const client = new ProjectOpsClient(makeConfig(env), makeBrigade());
+      const client = new ProjectOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
 
       const projects = await client.listProjectsForContact(CTX, { orgName: 'Acme', contactName: null });
       expect(projects).toHaveLength(1);
