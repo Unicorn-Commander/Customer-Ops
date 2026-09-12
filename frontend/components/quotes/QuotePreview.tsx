@@ -181,8 +181,16 @@ export function QuotePreview({
         key={nonce}
         title={`${mode === 'studio' ? 'Studio' : 'Client'} preview of ${record.quote.number}`}
         srcDoc={html}
-        // The document is our own HTML, but it is still the CLIENT's surface:
-        // sandbox it so a pasted script in a description cannot reach the cockpit.
+        // NOT a trust boundary. `allow-same-origin` together with `allow-scripts`
+        // is documented as removing the sandbox's protection — same-origin
+        // script can reach out of the frame. Both are needed here (the
+        // document's own progressive-enhancement script, and same-origin so the
+        // toolbar's print() works), and the content is our own template rendered
+        // from this member's own draft, so the frame is a STYLE boundary: it
+        // keeps the document's bare `p`/`table`/`a` rules out of the cockpit and
+        // the cockpit's out of the document. If a quote ever renders
+        // third-party HTML this must become a srcdoc frame WITHOUT
+        // allow-same-origin, printing via postMessage. See docs/quotes/RENDER.md.
         sandbox="allow-same-origin allow-scripts allow-modals allow-popups"
         className={cn('min-h-[560px] w-full flex-1 rounded-b-token-lg border-0 bg-white')}
       />

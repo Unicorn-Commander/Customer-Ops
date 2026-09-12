@@ -290,3 +290,54 @@ describe('show_delivery_partner gates the partner on the client\'s paper', () =>
     expect(toStudioOverlay(record).split_rule.percent).toBe(50);
   });
 });
+
+describe('the client view carries no studio pricing hygiene', () => {
+  it('strips option_group_errors and line_errors from the projection and the render', () => {
+    const record = orderPadRecord();
+    // A split that cannot invoice, and a line carrying both discount forms.
+    record.lines = record.lines.map((l) =>
+      l.id === 'l-m21' ? { ...l, milestone: { ...l.milestone, payment_split: [60, 60] } } : l.id === 'l-engagement' ? { ...l, discount_bps: 100, discount_cents: 5 } : l,
+    );
+    const view = toQuoteView(record, { state: 'open', now: '2026-09-12T20:00:00Z' });
+
+    // Structural, not filtered: the type has no field for them.
+    expect('option_group_errors' in view.totals).toBe(false);
+    expect('line_errors' in view.totals).toBe(false);
+    // Which means the public JSON cannot carry them either.
+    expect(JSON.stringify(view)).not.toMatch(/line_errors|option_group_errors|sum to 100/);
+
+    for (const mode of ['web', 'print'] as const) {
+      const html = renderQuoteDocument(view, { mode, theme, acceptUrl: null, confirmUrl: null, pdfUrl: null });
+      expect(html).not.toContain('sum to 100');
+      expect(html).not.toContain('Pricing hygiene');
+    }
+
+    // The studio still gets them, and the totals are still whole.
+    const overlay = toStudioOverlay(record);
+    expect(overlay.pricing_errors.some((e) => /sum to 100/.test(e.message))).toBe(true);
+    expect(overlay.pricing_errors.some((e) => /both a percentage and a cash discount/.test(e.message))).toBe(true);
+    const studio = renderQuoteDocument(view, { mode: 'web', theme, acceptUrl: null, confirmUrl: null, pdfUrl: null, preview: 'studio', studio: overlay });
+    expect(studio).toContain('Pricing hygiene');
+    expect(studio).toContain('sum to 100');
+  });
+
+  it('does not ship the partner\'s legal name when the paper does not name them', () => {
+    const record = orderPadRecord();
+    record.quote.show_delivery_partner = false;
+    const view = toQuoteView(record, { state: 'open', now: '2026-09-12T20:00:00Z' });
+
+    // Not hidden by a template condition — absent from the projection, so the
+    // /view JSON a reader can open in devtools does not carry it either.
+    expect(view.delivery_partner).toBeNull();
+    expect(JSON.stringify(view)).not.toContain('Magic Unicorn Unconventional');
+    const html = renderQuoteDocument(view, { mode: 'web', theme, acceptUrl: null, confirmUrl: null, pdfUrl: null });
+    expect(html).not.toContain('Magic Unicorn Unconventional');
+
+    // The studio still sees the partner, labelled as unnamed on the client's paper.
+    const overlay = toStudioOverlay(record);
+    expect(overlay.delivery_partner?.label).toContain('Magic Unicorn Unconventional');
+    const studio = renderQuoteDocument(view, { mode: 'web', theme, acceptUrl: null, confirmUrl: null, pdfUrl: null, preview: 'studio', studio: overlay });
+    expect(studio).toContain('Magic Unicorn Unconventional');
+    expect(studio).toContain('not named on the client');
+  });
+});

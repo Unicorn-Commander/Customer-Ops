@@ -29,6 +29,16 @@ import {
 
 export type AcceptanceState = 'draft' | 'open' | 'accepted' | 'declined' | 'superseded' | 'expired' | 'revoked' | 'voided';
 
+/**
+ * The totals a CLIENT may see. `option_group_errors` and `line_errors` are
+ * pricing hygiene for the studio — "this split does not sum to 100", "two
+ * primary hourly lines" — and they name the drafter's mistakes, not the
+ * client's business. They are removed structurally, not filtered in a template:
+ * the type has no field for them, so no render and no public JSON can carry
+ * them. `toStudioOverlay` is where a member gets them back.
+ */
+export type PublicTotals = Omit<QuoteTotals, 'option_group_errors' | 'line_errors'>;
+
 export interface AcceptanceView {
   state: AcceptanceState;
   /** True only for an open, current, unexpired, unrevoked version. */
@@ -94,7 +104,7 @@ export interface QuoteView {
   lede_md: string | null;
   sections: QuoteViewSection[];
   option_groups: OptionGroup[];
-  totals: QuoteTotals;
+  totals: PublicTotals;
   tax_estimate_cents: number | null;
   terms_md: string | null;
   acceptance: AcceptanceView;
@@ -103,6 +113,10 @@ export interface QuoteView {
 /** Studio-only material — rendered ONLY by the member preview. Never public. */
 export interface StudioOverlay {
   basis_by_section: Record<string, string>;
+  /** Pricing hygiene stripped from the client view: split/discount/hourly rules. */
+  pricing_errors: Array<{ key: string; message: string }>;
+  /** The partner, even when the client's paper does not name them. */
+  delivery_partner: OrgRef | null;
   internal_notes_md: string | null;
   split_rule: SplitRule;
   costs: QuoteCost[];
@@ -135,8 +149,11 @@ export function toQuoteView(source: QuoteRecord | QuoteSnapshot, state: Projecti
     const chosen = new Set(state.selected_line_ids);
     lines = lines.map((l) => (l.option_group ? { ...l, selected: chosen.has(l.id) } : l));
   }
-  const totals = computeQuote({ currency: q.currency, lines, option_groups: q.option_groups, tax_estimate_cents: q.tax_estimate_cents });
-  const comp = new Map(totals.lines.map((c) => [c.id, c]));
+  const computed = computeQuote({ currency: q.currency, lines, option_groups: q.option_groups, tax_estimate_cents: q.tax_estimate_cents });
+  // Drop the studio's pricing hygiene on the way out (see PublicTotals).
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { option_group_errors: _og, line_errors: _le, ...totals } = computed;
+  const comp = new Map(computed.lines.map((c) => [c.id, c]));
   const sections = [...source.sections].sort((a, b) => a.position - b.position);
   const lede = sections.find((s) => s.kind === 'summary');
   let no = 0;
@@ -200,7 +217,11 @@ export function toQuoteView(source: QuoteRecord | QuoteSnapshot, state: Projecti
     version,
     brand_slug: q.brand_slug,
     vendor: { ...q.letterhead, label: q.vendor_of_record.label },
-    delivery_partner: q.delivery_partner,
+    // Not naming the partner means not SHIPPING the partner: their legal name
+    // must not sit in the public JSON for anyone who opens devtools, only to be
+    // hidden by a template condition. The split and the partner bill are
+    // unaffected — neither ever leaves the workspace.
+    delivery_partner: q.show_delivery_partner !== false ? q.delivery_partner : null,
     show_delivery_partner: q.show_delivery_partner !== false,
     customer: q.customer,
     lede_md: lede?.body_md ?? null,
@@ -225,8 +246,16 @@ export function toQuoteView(source: QuoteRecord | QuoteSnapshot, state: Projecti
 export function toStudioOverlay(record: QuoteRecord): StudioOverlay {
   const basis: Record<string, string> = {};
   for (const s of record.sections) if (s.internal_basis_md?.trim()) basis[s.id] = s.internal_basis_md;
+  const totals = computeQuote({
+    currency: record.quote.currency,
+    lines: withDerivedAmounts(record.lines),
+    option_groups: record.quote.option_groups,
+    tax_estimate_cents: record.quote.tax_estimate_cents,
+  });
   return {
     basis_by_section: basis,
+    pricing_errors: [...totals.option_group_errors, ...totals.line_errors],
+    delivery_partner: record.quote.delivery_partner,
     internal_notes_md: record.quote.internal_notes_md,
     split_rule: record.quote.split_rule,
     costs: record.costs,

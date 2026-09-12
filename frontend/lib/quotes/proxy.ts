@@ -50,8 +50,21 @@ export async function forwardToApi(
     const value = req.headers.get(name);
     if (value) headers.set(name, value);
   }
-  const forwardedFor = req.headers.get('x-forwarded-for');
-  if (forwardedFor) headers.set('X-Forwarded-For', forwardedFor);
+  // X-Forwarded-For is an APPEND-ONLY chain: each hop adds the peer it saw, and
+  // the entries to the left of our own edge are whatever the browser chose to
+  // claim. Replacing the header — or rebuilding it — would either drop the
+  // edge's observation or let a client's forgery arrive looking like ours.
+  //
+  // A Next route handler has no socket view, so this hop observes nothing and
+  // therefore appends nothing: the chain reaches the API exactly as the edge
+  // left it, ending with the address the EDGE observed. That is what makes
+  // QUOTES_TRUSTED_PROXY_HOPS=1 correct — see the topology note in
+  // docs/quotes/RENDER.md. `append` rather than `set` so any value another
+  // layer has already put on this Headers object survives.
+  for (const name of ['x-forwarded-for', 'x-forwarded-proto']) {
+    const value = req.headers.get(name);
+    if (value) headers.append(name, value);
+  }
 
   let upstream: Response;
   try {
