@@ -21,11 +21,7 @@
  */
 
 import { WorkspaceRole } from '@prisma/client';
-import {
-  MCP_TOOL_NO_SCOPE,
-  MCP_TOOL_SCOPE_MAP,
-  expandScopes,
-} from '../auth/pat/pat.constants';
+import { MCP_TOOL_NO_SCOPE, MCP_TOOL_SCOPE_MAP, expandScopes } from '../auth/pat/pat.constants';
 import { roleMeetsMinimum } from '../common/workspace/workspace-role.util';
 
 /** A tool-result envelope that surfaces a denial to the MCP client (not a throw). */
@@ -76,6 +72,10 @@ export function workspaceDenial(toolName: string, bound: string, requested: stri
  * be added here (the tests assert the roster stays in lock-step).
  */
 export const MCP_TOOL_MIN_ROLE: Record<string, WorkspaceRole> = {
+  send_quote: WorkspaceRole.MEMBER,
+  supersede_quote: WorkspaceRole.MEMBER,
+  revoke_share_link: WorkspaceRole.MEMBER,
+  record_quote_acceptance: WorkspaceRole.OWNER,
   create_quote: WorkspaceRole.MEMBER,
   update_quote: WorkspaceRole.MEMBER,
   add_quote_section: WorkspaceRole.MEMBER,
@@ -171,7 +171,11 @@ export function mcpToolDenial(
   const wsArg = (args as { workspace_id?: unknown } | null | undefined)?.workspace_id;
   const requested = typeof wsArg === 'string' ? wsArg.trim() : '';
   if (!boundWorkspaceId) {
-    return workspaceDenial(toolName, '(none — token has no bound workspace)', requested || '(none)');
+    return workspaceDenial(
+      toolName,
+      '(none — token has no bound workspace)',
+      requested || '(none)',
+    );
   }
   if (requested && requested !== boundWorkspaceId) {
     return workspaceDenial(toolName, boundWorkspaceId, requested);

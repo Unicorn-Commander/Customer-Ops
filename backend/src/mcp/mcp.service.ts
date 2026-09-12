@@ -1,5 +1,7 @@
+import { QuoteDocumentService } from '../quotes/quote-document.service';
+import { QuotesLifecycleService } from '../quotes/quotes-lifecycle.service';
 import { QuotesService } from '../quotes/quotes.service';
-import { registerQuoteTools } from './quotes.tools';
+import { registerQuoteTools, registerQuoteLifecycleTools } from './quotes.tools';
 /**
  * Builds a per-request MCP server scoped to one authenticated user.
  *
@@ -50,6 +52,8 @@ export class McpService {
     private readonly workspaces: WorkspaceContextService,
     private readonly audit: AuditService,
     @Optional() private readonly quotes?: QuotesService,
+    @Optional() private readonly quotesLifecycle?: QuotesLifecycleService,
+    @Optional() private readonly quoteDocuments?: QuoteDocumentService,
   ) {}
 
   /**
@@ -65,7 +69,10 @@ export class McpService {
     result: { customerId: string; agent: string; tierUsed?: string | null },
   ): Promise<void> {
     try {
-      const workspaceId = await this.workspaces.resolveAuthorized(user, requestedWorkspaceId ?? null);
+      const workspaceId = await this.workspaces.resolveAuthorized(
+        user,
+        requestedWorkspaceId ?? null,
+      );
       await this.audit.log({
         workspaceId,
         userId: ucUidOf(user),
@@ -722,7 +729,10 @@ export class McpService {
       async (args: any) => wrap(await tools.discardLeadIntake(user, args)),
     );
 
-    registerQuoteTools(server, user, this.quotes);
+    if (this.quotes) {
+      registerQuoteTools(server, user, this.quotes);
+      registerQuoteLifecycleTools(server, user, this.quotesLifecycle, this.quoteDocuments);
+    }
     return server;
   }
 }

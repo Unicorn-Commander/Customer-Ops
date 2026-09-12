@@ -1,10 +1,5 @@
 import { WorkspaceRole } from '@prisma/client';
-import {
-  MCP_TOOL_MIN_ROLE,
-  mcpRoleDenial,
-  mcpToolDenial,
-  mcpToolMinRole,
-} from './mcp-access';
+import { MCP_TOOL_MIN_ROLE, mcpRoleDenial, mcpToolDenial, mcpToolMinRole } from './mcp-access';
 import { MCP_TOOL_SCOPE_MAP } from '../auth/pat/pat.constants';
 
 const WS = '0190a000-7e57-7000-8000-00000000c007';
@@ -21,7 +16,9 @@ describe('mcpToolDenial — JWT / federation callers', () => {
   it('never gates a non-PAT caller (grantedScopes null) — full RBAC', () => {
     // Even a write tool addressing another workspace is allowed for a JWT caller;
     // their membership RBAC (resolveAuthorized) is the gate, not a PAT binding.
-    expect(mcpToolDenial('transition_customer_stage', { workspace_id: OTHER_WS }, null, null)).toBeNull();
+    expect(
+      mcpToolDenial('transition_customer_stage', { workspace_id: OTHER_WS }, null, null),
+    ).toBeNull();
     expect(mcpToolDenial('not_a_real_tool', {}, null, null)).toBeNull();
   });
 });
@@ -63,7 +60,9 @@ describe('mcpToolDenial — PAT scope gate', () => {
 
 describe('mcpToolDenial — PAT workspace fence', () => {
   it('allows an arg workspace_id equal to the bound workspace', () => {
-    expect(mcpToolDenial('list_customers', { workspace_id: WS }, ['read:customers'], WS)).toBeNull();
+    expect(
+      mcpToolDenial('list_customers', { workspace_id: WS }, ['read:customers'], WS),
+    ).toBeNull();
   });
 
   it('allows omitting workspace_id (falls back to the bound workspace)', () => {
@@ -71,7 +70,12 @@ describe('mcpToolDenial — PAT workspace fence', () => {
   });
 
   it('DENIES an arg workspace_id that escapes the PAT binding', () => {
-    const denial = mcpToolDenial('list_customers', { workspace_id: OTHER_WS }, ['read:customers'], WS);
+    const denial = mcpToolDenial(
+      'list_customers',
+      { workspace_id: OTHER_WS },
+      ['read:customers'],
+      WS,
+    );
     const detail = detailOf(denial);
     expect(detail.error).toBe('workspace_denied');
     expect(detail.pat_workspace).toBe(WS);
@@ -80,19 +84,26 @@ describe('mcpToolDenial — PAT workspace fence', () => {
 
   it('checks the workspace fence BEFORE the scope (a cross-ws read is still denied)', () => {
     // Even with the right scope, a cross-workspace arg is refused.
-    const denial = mcpToolDenial('list_customers', { workspace_id: OTHER_WS }, ['read:customers'], WS);
+    const denial = mcpToolDenial(
+      'list_customers',
+      { workspace_id: OTHER_WS },
+      ['read:customers'],
+      WS,
+    );
     expect(detailOf(denial).error).toBe('workspace_denied');
   });
 
   it('ignores a blank/whitespace workspace_id arg', () => {
-    expect(mcpToolDenial('list_customers', { workspace_id: '  ' }, ['read:customers'], WS)).toBeNull();
+    expect(
+      mcpToolDenial('list_customers', { workspace_id: '  ' }, ['read:customers'], WS),
+    ).toBeNull();
   });
 });
 
 describe('MCP_TOOL_MIN_ROLE — the mutation roster', () => {
   it('every write/agent tool requires at least MEMBER (a viewer cannot mutate)', () => {
     for (const role of Object.values(MCP_TOOL_MIN_ROLE)) {
-      expect(role).toBe(WorkspaceRole.MEMBER);
+      expect([WorkspaceRole.MEMBER, WorkspaceRole.OWNER]).toContain(role);
     }
   });
 
@@ -122,7 +133,7 @@ describe('mcpRoleDenial — workspace role RBAC on MCP tools', () => {
       const detail = detailOf(denial);
       expect(detail.error).toBe('role_denied');
       expect(detail.tool).toBe(tool);
-      expect(detail.required_role).toBe('member');
+      expect(detail.required_role).toBe(MCP_TOOL_MIN_ROLE[tool].toLowerCase());
       expect(detail.your_role).toBe('viewer');
     }
   });

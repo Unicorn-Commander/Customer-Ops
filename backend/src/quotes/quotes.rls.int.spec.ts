@@ -62,6 +62,7 @@ describeDb('quotes real RLS and CRUD', () => {
   afterAll(async () => {
     if (owner) {
       for (const t of [
+        'quote_events',
         'quote_lines',
         'quote_sections',
         'quote_costs',
@@ -72,6 +73,7 @@ describeDb('quotes real RLS and CRUD', () => {
         'quote_counters',
       ])
         await owner.$executeRawUnsafe(`DELETE FROM "${t}" WHERE workspace_id IN ($1,$2)`, a, b);
+      await owner.auditLog.deleteMany({ where: { workspaceId: { in: [a, b] } } });
       await owner.customer.deleteMany({ where: { workspaceId: { in: [a, b] } } });
       await owner.workspace.deleteMany({ where: { id: { in: [a, b] } } });
       await owner.$disconnect();
@@ -136,9 +138,14 @@ describeDb('quotes real RLS and CRUD', () => {
     ).rejects.toThrow('reused');
     expect(
       (
-        await db.withWorkspace(a, user.keycloakId, (tx) =>
-          tx.quoteCounter.deleteMany({ where: { workspaceId: a } }),
-        )
+        await db
+          .withWorkspace(a, user.keycloakId, (tx) =>
+            tx.quoteCounter.deleteMany({ where: { workspaceId: a } }),
+          )
+          .catch((e) => {
+            if (String(e).includes('permission denied')) return { count: 0 };
+            throw e;
+          })
       ).count,
     ).toBe(0);
   });
@@ -300,9 +307,14 @@ describeDb('quotes real RLS and CRUD', () => {
         ),
       ).toBe(0);
       expect(
-        await db.withWorkspace(b, user.keycloakId, (tx) =>
-          tx.$executeRawUnsafe(`DELETE FROM "${table}" WHERE workspace_id=$1`, a),
-        ),
+        await db
+          .withWorkspace(b, user.keycloakId, (tx) =>
+            tx.$executeRawUnsafe(`DELETE FROM "${table}" WHERE workspace_id=$1`, a),
+          )
+          .catch((e) => {
+            if (table === 'quote_counters' && String(e).includes('permission denied')) return 0;
+            throw e;
+          }),
       ).toBe(0);
     }
     const attempts = [
@@ -434,5 +446,54 @@ describeDb('quotes real RLS and CRUD', () => {
     await expect(
       call('add_quote_section', { quote_id: q.id, data: { kind: 'scope', heading: 'No' } }),
     ).rejects.toThrow('unlocked draft');
+  });
+  it('viewer query never fetches margin, private notes, recipients or pricing errors (A39)', async () => {
+    const privateQuote = await call('create_quote', {
+      data: {
+        customerId: customerA,
+        title: 'Synthetic private quote',
+        vendorOfRecord: 'Synthetic vendor',
+        internalNotesMd: 'PRIVATE-VIEWER-SENTINEL',
+      },
+    });
+    await call('add_quote_section', {
+      quote_id: privateQuote.id,
+      data: { kind: 'scope', heading: 'Scope', internalBasisMd: 'PRIVATE-VIEWER-SENTINEL' },
+    });
+    const queries: string[] = [];
+    const viewerDb = new PrismaService({
+      datasources: { db: { url: appUrl } },
+      log: [{ emit: 'event', level: 'query' }],
+    });
+    (viewerDb as any).$on('query', (e: any) => queries.push(e.query));
+    const viewer = new QuotesService(
+      viewerDb,
+      { get: () => '1' } as any,
+      { resolveAuthorized: async () => a } as any,
+      { roleInWorkspace: async () => WorkspaceRole.VIEWER } as any,
+    );
+    try {
+      const view = await viewer.execute(user, a, 'get_quote', { quote_id: privateQuote.id });
+      expect(JSON.stringify(view)).not.toContain('PRIVATE-VIEWER-SENTINEL');
+      for (const field of ['costs', 'splitRule', 'internalNotesMd', 'recipients'])
+        expect(view).not.toHaveProperty(field);
+      expect(view.totals).not.toHaveProperty('line_errors');
+      expect(view.totals).not.toHaveProperty('option_group_errors');
+      const sql = queries.join(' ');
+      for (const column of [
+        'internal_notes_md',
+        'internal_basis_md',
+        'split_rule',
+        'quote_costs',
+        'quote_recipients',
+      ])
+        expect(sql).not.toContain(column);
+      expect(await owner.quoteEvent.count({ where: { quoteId: privateQuote.id } })).toBe(2);
+      expect(
+        await owner.auditLog.count({ where: { workspaceId: a, resourceId: privateQuote.id } }),
+      ).toBe(2);
+    } finally {
+      await viewerDb.$disconnect();
+    }
   });
 });

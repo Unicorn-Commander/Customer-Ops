@@ -55,7 +55,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { BrigadeTokenSource } from '../common/federation/brigade-token-source';
 import { FederationWorkspaceMapService } from '../common/federation/federation-workspace-map.service';
-import { EmailOpsPort, FederationContext } from './email-ops.port';
+import { EmailOpsPort, FederationContext, AgentInboxObservation } from './email-ops.port';
 import {
   EmailComposeRequest,
   EmailComposeResult,
@@ -380,10 +380,23 @@ export class EmailOpsClient extends EmailOpsPort {
   async ping(): Promise<SeamHealth> {
     const seam = 'email-ops';
     if (!this.isConfigured()) {
-      return { seam, configured: false, ok: false, status: null, detail: 'not-configured', latencyMs: null };
+      return {
+        seam,
+        configured: false,
+        ok: false,
+        status: null,
+        detail: 'not-configured',
+        latencyMs: null,
+      };
     }
     const base = this.baseUrl as string;
-    const ws = this.federationMap.resolveSync(this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ?? '', 'email-ops') ?? this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ?? '';
+    const ws =
+      this.federationMap.resolveSync(
+        this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ?? '',
+        'email-ops',
+      ) ??
+      this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ??
+      '';
     const ctx: FederationContext = { workspaceId: ws, ucUid: null, entitlements: [] };
     const body = { jsonrpc: '2.0', id: ++this.rpcId, method: 'tools/list', params: {} };
 
@@ -486,6 +499,66 @@ export class EmailOpsClient extends EmailOpsPort {
   }
 
   // --- EmailOpsPort implementation ---------------------------------------
+
+  private async inboxRead(ctx: FederationContext, suffix: string): Promise<any | null> {
+    if (!this.baseUrl) return null;
+    try {
+      const ws = this.effectiveWorkspaceId(ctx);
+      const base = this.baseUrl.replace(/\/api\/v1$/, '');
+      const headers = await this.authHeaders(ctx);
+      if (!headers.Authorization) return null;
+      const response = await fetch(
+        `${base}/api/v1/workspaces/${encodeURIComponent(ws)}/agent-inbox${suffix}`,
+        {
+          headers: { ...headers, Accept: 'application/json' },
+          signal: AbortSignal.timeout(this.timeoutMs),
+          redirect: 'error',
+        },
+      );
+      if (!response.ok) return null;
+      return await response.json();
+    } catch {
+      return null;
+    } // Never log the full message bodies this UI endpoint returns.
+  }
+  private inboxObservation(item: any): AgentInboxObservation | null {
+    if (!item || typeof item.id !== 'string' || typeof item.message_id !== 'string') return null;
+    const state = String(item.state).toLowerCase();
+    const sent = ['sent', 'delivered'].includes(String(item.message?.status).toLowerCase());
+    const status =
+      state === 'rejected'
+        ? 'rejected'
+        : state === 'approved'
+          ? 'approved'
+          : sent
+            ? 'sent'
+            : state === 'pending'
+              ? 'pending'
+              : null;
+    return status
+      ? { id: item.id, messageId: item.message_id, status, sentAt: item.message?.sentAt ?? null }
+      : null;
+  }
+  async getAgentInboxItem(
+    ctx: FederationContext,
+    id: string,
+  ): Promise<AgentInboxObservation | null> {
+    const raw = await this.inboxRead(ctx, '/' + encodeURIComponent(id));
+    const out = this.inboxObservation(raw?.item);
+    return out?.id === id ? out : null;
+  }
+  async findAgentInboxItem(
+    ctx: FederationContext,
+    messageId: string,
+  ): Promise<AgentInboxObservation | null> {
+    for (const state of ['pending', 'approved', 'rejected']) {
+      const raw = await this.inboxRead(ctx, '?state=' + state);
+      if (!raw || !Array.isArray(raw.items)) return null;
+      const item = raw.items.find((row: any) => row.message_id === messageId);
+      if (item) return this.getAgentInboxItem(ctx, item.id);
+    }
+    return null; // Absence from a bounded queue is not approval.
+  }
 
   async listThreadsWithContact(ctx: FederationContext, contactId: string): Promise<EmailThread[]> {
     if (!this.baseUrl) return [];

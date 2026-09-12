@@ -144,7 +144,7 @@ import { EntitlementsInterceptor } from './entitlements/entitlements.interceptor
     // modes) over the cockpit's reads + the 4 confirm-gated relationship writes.
     RelationsOfficerModule,
     // MCP last so it can consume the cockpit tools + the agents.
-    McpModule,
+    McpModule.register(quotesEnabled(process.env.QUOTES_ENABLED)),
     // The background maintenance loop — runs lead-reconciliation / invoice-refresh
     // / graph-repair per workspace on an interval (flag-gated OFF by default via
     // RECONCILE_SCHEDULER_ENABLED). After the feature modules it composes.

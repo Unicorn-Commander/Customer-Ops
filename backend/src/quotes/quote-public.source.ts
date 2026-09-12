@@ -1,49 +1,25 @@
 import { Injectable } from '@nestjs/common';
 import {
-  AcceptOutcome,
-  AcceptPayload,
-  ConfirmOutcome,
-  ConfirmPayload,
-  PublicLookup,
   QuotePublicSource,
+  AcceptPayload,
+  ConfirmPayload,
   RequestMeta,
 } from '../quotes-render/quotes-render.port';
+import { QuotesLifecycleService } from './quotes-lifecycle.service';
 
-/**
- * M1 has draft CRUD, but cannot issue a persisted share token. Bind a closed
- * production source rather than the renderer's dev fixture. M2 replaces this
- * implementation with version/token/pending-acceptance persistence; none of
- * those operations can report success before that repository exists.
- */
+/** Production capability repository; no fixture or authentication bypass. */
 @Injectable()
-export class M1QuotePublicSource extends QuotePublicSource {
-  async lookup(_token: string, _meta: RequestMeta): Promise<PublicLookup> {
-    return { found: false };
+export class PersistedQuotePublicSource extends QuotePublicSource {
+  constructor(private readonly lifecycle: QuotesLifecycleService) {
+    super();
   }
-
-  async beginAcceptance(
-    _token: string,
-    _payload: AcceptPayload,
-    _meta: RequestMeta,
-  ): Promise<AcceptOutcome> {
-    return {
-      ok: false,
-      status: 503,
-      code: 'QUOTE_SHARING_UNAVAILABLE',
-      detail: 'Quote sharing is not available yet.',
-    };
+  lookup(token: string, meta: RequestMeta) {
+    return this.lifecycle.lookup(token, meta);
   }
-
-  async confirmAcceptance(
-    _token: string,
-    _payload: ConfirmPayload,
-    _meta: RequestMeta,
-  ): Promise<ConfirmOutcome> {
-    return {
-      ok: false,
-      status: 503,
-      code: 'QUOTE_SHARING_UNAVAILABLE',
-      detail: 'Quote sharing is not available yet.',
-    };
+  beginAcceptance(token: string, payload: AcceptPayload, meta: RequestMeta) {
+    return this.lifecycle.begin(token, payload, meta);
+  }
+  confirmAcceptance(token: string, payload: ConfirmPayload, meta: RequestMeta) {
+    return this.lifecycle.confirm(token, payload, meta);
   }
 }

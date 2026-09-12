@@ -62,6 +62,7 @@ export async function prepareQuoteSnapshot(
   workspaceId: string,
   quoteId: string,
   presentation: QuotePresentation,
+  forSend = true,
 ) {
   const row = await tx.quote.findUnique({
     where: { workspaceId_id: { workspaceId, id: quoteId } },
@@ -76,7 +77,7 @@ export async function prepareQuoteSnapshot(
     >[0]['lines'],
   };
   const input = quoteComputeInput(data);
-  const { totals } = computeStoredQuote(data, { forSend: true });
+  const { totals } = computeStoredQuote(data, { forSend });
   const sections: QuoteSnapshot['sections'] = row.sections.map((s) => ({
     id: s.id,
     quote_id: s.quoteId,
@@ -114,15 +115,8 @@ export async function prepareQuoteSnapshot(
       org_name: presentation.customer.org_name,
       attention: presentation.customer.attention,
     },
-    letterhead: {
-      legal_name: presentation.letterhead.legal_name,
-      address_lines: [...presentation.letterhead.address_lines],
-      tax_id_label: presentation.letterhead.tax_id_label,
-      tax_id: presentation.letterhead.tax_id,
-      email: presentation.letterhead.email,
-      phone: presentation.letterhead.phone,
-      website: presentation.letterhead.website,
-    },
+    // A34: legal entity details are federated at render time, never snapshotted.
+    letterhead: { legal_name: '', address_lines: [] },
     sections,
     lines: input.lines.map((line) => ({
       ...line,

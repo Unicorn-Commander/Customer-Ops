@@ -13,6 +13,13 @@ import {
  * it. Keep in lock-step with mcp.service.ts (the test below enforces it both ways).
  */
 const REGISTERED_MCP_TOOLS = [
+  'render_quote',
+  'send_quote',
+  'supersede_quote',
+  'revoke_share_link',
+  'record_quote_acceptance',
+  'list_quote_versions',
+  'list_quote_events',
   'create_quote',
   'update_quote',
   'add_quote_section',

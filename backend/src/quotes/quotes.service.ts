@@ -16,6 +16,8 @@ import { tenancyEnabled } from '../common/workspace/feature-flags';
 import { ucUidOf } from '../common/workspace/workspace.util';
 import { computeStoredQuote, validateCurrency, QuoteComputationError } from './compute-quote';
 import * as S from './quote.schemas';
+import { AuditService } from '../audit/audit.service';
+import { quoteSnapshotSelect } from './quote-snapshot';
 import { quotesEnabled } from './quotes-enabled';
 const include = {
   sections: { orderBy: { position: 'asc' as const } },
@@ -43,6 +45,7 @@ export class QuotesService {
     private readonly config: ConfigService,
     private readonly workspaces: WorkspaceContextService,
     private readonly membership: MembershipService,
+    private readonly audit: AuditService = new AuditService(workspaces),
   ) {}
   private enabled() {
     if (!quotesEnabled(this.config.get<string>('QUOTES_ENABLED')))
@@ -69,6 +72,23 @@ export class QuotesService {
     if (!q) throw new NotFoundException('Quote not found');
     return q;
   }
+  private async changed(
+    tx: WorkspaceTxClient,
+    workspaceId: string,
+    quoteId: string,
+    kind: string,
+    actor: string,
+  ) {
+    await tx.quoteEvent.create({ data: { workspaceId, quoteId, kind, actor } });
+    await this.audit.logInTransaction(tx, {
+      workspaceId,
+      userId: actor,
+      action: kind === 'create_quote' ? 'CREATE' : 'UPDATE',
+      resource: 'quote',
+      resourceId: quoteId,
+      details: { kind },
+    });
+  }
   async execute(
     user: User,
     requestedWorkspace: string | null | undefined,
@@ -77,8 +97,11 @@ export class QuotesService {
   ) {
     this.enabled();
     const workspaceId = await this.workspaces.resolveAuthorized(user, requestedWorkspace ?? null);
-    if (writes.has(action) && tenancyEnabled()) {
-      const role = await this.membership.roleInWorkspace(user, workspaceId);
+    const role = await this.membership.roleInWorkspace(user, workspaceId);
+    const manage = [WorkspaceRole.OWNER, WorkspaceRole.ADMIN, WorkspaceRole.MEMBER].includes(
+      role as any,
+    );
+    if (writes.has(action)) {
       if (![WorkspaceRole.OWNER, WorkspaceRole.ADMIN, WorkspaceRole.MEMBER].includes(role as any))
         throw new ForbiddenException('Quote mutations require workspace member role');
     }
@@ -89,6 +112,34 @@ export class QuotesService {
             where: { workspaceId, active: true },
             orderBy: { sku: 'asc' },
           });
+        if (!manage && ['get_quote', 'list_quotes'].includes(action)) {
+          const where: any = { workspaceId };
+          if (action === 'get_quote') where.id = z.string().uuid().parse(args.quote_id);
+          if (args.customerId) where.customerId = z.string().uuid().parse(args.customerId);
+          const rows = await tx.quote.findMany({
+            where,
+            select: {
+              ...quoteSnapshotSelect,
+              status: true,
+              currentVersionNo: true,
+              createdAt: true,
+              updatedAt: true,
+            },
+            orderBy: { createdAt: 'desc' },
+            take:
+              action === 'get_quote'
+                ? 1
+                : z.coerce.number().int().min(1).max(100).default(50).parse(args.limit),
+          });
+          if (action === 'get_quote' && !rows.length)
+            throw new NotFoundException('Quote not found');
+          const views = rows.map((row) => {
+            const view = this.view(row);
+            const { line_errors, option_group_errors, ...totals } = view.totals;
+            return { ...view, totals };
+          });
+          return action === 'get_quote' ? views[0] : views;
+        }
         if (action === 'list_quotes') {
           const limit = z.coerce.number().int().min(1).max(100).default(50).parse(args.limit);
           const customerId =
@@ -126,7 +177,9 @@ export class QuotesService {
             },
             include,
           });
-          return this.view(q, true);
+          const result = this.view(q, true);
+          await this.changed(tx, workspaceId, q.id, action, ucUidOf(user));
+          return result;
         }
         const id = z.string().uuid().parse(args.quote_id);
         if (action === 'get_quote') return this.view(await this.load(tx, workspaceId, id));
@@ -233,7 +286,9 @@ export class QuotesService {
             data: { ...key, ...S.attachmentInput.parse(args.data) },
           });
         await tx.quote.update({ where: { id }, data: { updatedAt: new Date() } });
-        return this.view(await this.load(tx, workspaceId, id), true); // Invalid money/options rolls the whole edit back.
+        const result = this.view(await this.load(tx, workspaceId, id), true);
+        await this.changed(tx, workspaceId, id, action, ucUidOf(user));
+        return result; // Invalid money/options rolls the whole edit back.
       });
     } catch (e) {
       if (e instanceof z.ZodError)

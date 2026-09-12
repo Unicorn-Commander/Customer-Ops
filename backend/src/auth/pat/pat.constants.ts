@@ -77,6 +77,13 @@ export function expandScopes(granted: readonly string[]): Set<string> {
  * Project-Ops MCP_TOOL_SCOPE_MAP convention.
  */
 export const MCP_TOOL_SCOPE_MAP: Record<string, PatScope> = {
+  render_quote: 'read:quotes',
+  send_quote: 'write:quotes',
+  supersede_quote: 'write:quotes',
+  revoke_share_link: 'write:quotes',
+  record_quote_acceptance: 'write:quotes',
+  list_quote_versions: 'read:quotes',
+  list_quote_events: 'read:quotes',
   create_quote: 'write:quotes',
   update_quote: 'write:quotes',
   add_quote_section: 'write:quotes',
