@@ -1,3 +1,4 @@
+import { QuotesModule } from '../quotes/quotes.module';
 import { Module } from '@nestjs/common';
 import { McpController } from './mcp.controller';
 import { McpService } from './mcp.service';
@@ -16,7 +17,7 @@ import { AuditModule } from '../audit/audit.module';
   // REST cockpit actions (one implementation, two surfaces). LeadIntakeModule
   // exports LeadIntakeService so the Phase-6 ingest tools (ingest_lead /
   // list_lead_intakes / resolve_pending_leads) hit the same pipeline.
-  imports: [AuthModule, WorkspaceModule, CustomersModule, AgentsModule, LeadIntakeModule, AuditModule],
+  imports: [QuotesModule, AuthModule, WorkspaceModule, CustomersModule, AgentsModule, LeadIntakeModule, AuditModule],
   controllers: [McpController],
   providers: [McpService],
 })

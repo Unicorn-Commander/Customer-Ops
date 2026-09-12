@@ -13,6 +13,19 @@ import {
  * it. Keep in lock-step with mcp.service.ts (the test below enforces it both ways).
  */
 const REGISTERED_MCP_TOOLS = [
+  'create_quote',
+  'update_quote',
+  'add_quote_section',
+  'add_quote_line',
+  'update_quote_line',
+  'remove_quote_line',
+  'set_quote_options',
+  'set_quote_recipients',
+  'add_quote_cost',
+  'add_quote_attachment',
+  'list_quotes',
+  'get_quote',
+  'list_price_book',
   'health',
   'list_my_workspaces',
   'list_customers',
@@ -43,6 +56,7 @@ describe('expandScopes (write ⊇ read implication)', () => {
     expect(expandScopes(['write:customers']).has('read:customers')).toBe(true);
     expect(expandScopes(['write:activity']).has('read:activity')).toBe(true);
     expect(expandScopes(['write:leads']).has('read:leads')).toBe(true);
+    expect(expandScopes(['write:quotes']).has('read:quotes')).toBe(true);
   });
 
   it('keeps the originally-granted scopes', () => {

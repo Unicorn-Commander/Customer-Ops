@@ -1,3 +1,5 @@
+import { QuotesService } from '../quotes/quotes.service';
+import { registerQuoteTools } from './quotes.tools';
 /**
  * Builds a per-request MCP server scoped to one authenticated user.
  *
@@ -8,7 +10,7 @@
  * identity / membership and inside the RLS transaction (via CustomersService).
  */
 
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { User, AuditAction, WorkspaceRole } from '@prisma/client';
 import { z } from 'zod';
 import { MembershipService } from '../common/workspace/membership.service';
@@ -47,6 +49,7 @@ export class McpService {
     private readonly leads: LeadIntakeService,
     private readonly workspaces: WorkspaceContextService,
     private readonly audit: AuditService,
+    @Optional() private readonly quotes?: QuotesService,
   ) {}
 
   /**
@@ -719,6 +722,7 @@ export class McpService {
       async (args: any) => wrap(await tools.discardLeadIntake(user, args)),
     );
 
+    registerQuoteTools(server, user, this.quotes);
     return server;
   }
 }

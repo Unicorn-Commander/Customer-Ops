@@ -76,6 +76,17 @@ export function workspaceDenial(toolName: string, bound: string, requested: stri
  * be added here (the tests assert the roster stays in lock-step).
  */
 export const MCP_TOOL_MIN_ROLE: Record<string, WorkspaceRole> = {
+  create_quote: WorkspaceRole.MEMBER,
+  update_quote: WorkspaceRole.MEMBER,
+  add_quote_section: WorkspaceRole.MEMBER,
+  add_quote_line: WorkspaceRole.MEMBER,
+  update_quote_line: WorkspaceRole.MEMBER,
+  remove_quote_line: WorkspaceRole.MEMBER,
+  set_quote_options: WorkspaceRole.MEMBER,
+  set_quote_recipients: WorkspaceRole.MEMBER,
+  add_quote_cost: WorkspaceRole.MEMBER,
+  add_quote_attachment: WorkspaceRole.MEMBER,
+
   // Relationship + federated-action mutations.
   transition_customer_stage: WorkspaceRole.MEMBER,
   add_customer_note: WorkspaceRole.MEMBER,
