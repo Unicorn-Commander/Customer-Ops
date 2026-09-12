@@ -231,3 +231,62 @@ describe('document details that have bitten', () => {
     expect(html).toContain('see here and there');
   });
 });
+
+describe('the live total the reader actually sees (M1)', () => {
+  it('carries each option line\'s OWN deposit, so the browser never redoes a split', () => {
+    const html = renderQuoteDocument(openView(), { mode: 'web', theme, ...links });
+    // The old attribute was the raw first percentage, which nothing read.
+    expect(html).not.toContain('data-split=');
+    const deposits = [...html.matchAll(/data-deposit="(\d+)"/g)].map((m) => Number(m[1]));
+    expect(deposits.length).toBeGreaterThanOrEqual(4);
+    // Recurring packages do not schedule a deposit; the numbers are computeQuote's.
+    expect(deposits.every((d) => Number.isInteger(d))).toBe(true);
+  });
+
+  it('starts the script from the non-option deposit and repaints [data-fig=deposit]', () => {
+    const html = renderQuoteDocument(openView(), { mode: 'web', theme, ...links });
+    const cfg = JSON.parse((html.match(/data-q="([^"]*)"/) ?? [])[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&#39;/g, "'"));
+    const view = openView();
+    const nonOption = view.sections
+      .flatMap((s) => s.lines)
+      .filter((l) => !l.option_group)
+      .reduce((sum, l) => sum + l.deposit_cents, 0);
+    expect(cfg.base.deposit).toBe(nonOption);
+    // Base + the selected package's own deposit must equal the server's total.
+    const selected = view.sections.flatMap((s) => s.lines).filter((l) => l.option_group && l.selected);
+    expect(cfg.base.deposit + selected.reduce((s, l) => s + l.deposit_cents, 0)).toBe(view.totals.deposit_cents);
+    expect(html).toContain('data-fig="deposit"');
+    expect(html).toContain("setText('[data-fig=deposit]',money(t.deposit))");
+  });
+});
+
+describe('the package headline stacks (H4)', () => {
+  it('gives the three option spans their own lines', () => {
+    const css = renderQuoteDocumentParts(openView(), { mode: 'web', theme, ...links }).css;
+    // They are <span>s: without display:block they ignore margin-top and run
+    // together as "Keep it running$600PER MONTH".
+    expect(css).toMatch(/\.q-opt-name\{display:block/);
+    expect(css).toMatch(/\.q-opt-price\{display:block/);
+    expect(css).toMatch(/\.q-opt-per\{display:block/);
+    expect(css).toContain('.q-opt-card .q-opt-name,.q-opt-card .q-opt-price,.q-opt-card .q-opt-per{display:block}');
+  });
+});
+
+describe('show_delivery_partner gates the partner on the client\'s paper', () => {
+  it('names the partner by default and drops the phrase when the flag is off', () => {
+    const eyebrow = (html: string) => (html.match(/class="q-label q-eyebrow">([^<]*)</) ?? [])[1] ?? '';
+
+    const on = renderQuoteDocument(openView(), { mode: 'web', theme, ...links });
+    expect(eyebrow(on)).toBe('Proposal · Brightwater Labs with Magic Unicorn Unconventional Technology &amp; Stuff Inc');
+
+    const record = orderPadRecord();
+    record.quote.show_delivery_partner = false;
+    const off = renderQuoteDocument(toQuoteView(record, { state: 'open', now: '2026-09-12T20:00:00Z' }), { mode: 'web', theme, ...links });
+    expect(eyebrow(off)).toBe('Proposal · Brightwater Labs');
+    // The lede is the drafter's prose and is NOT rewritten by the flag — the
+    // flag gates the masthead attribution, not the words someone chose.
+    expect(off).toContain('with Magic Unicorn as platform partner');
+    // The split is unaffected — it never leaves the workspace either way.
+    expect(toStudioOverlay(record).split_rule.percent).toBe(50);
+  });
+});

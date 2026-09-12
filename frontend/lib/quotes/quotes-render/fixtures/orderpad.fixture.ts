@@ -184,7 +184,8 @@ const lines: QuoteLine[] = withDerivedAmounts([
 export function orderPadRecord(): QuoteRecord {
   const optionGroups = [{ key: 'care', label: 'Keeping it running', mode: 'exclusive' as const, intro_md: 'Three packages, or hosting alone. Pick the one that matches the year you are about to have; change it with thirty days\' notice.' }];
   const totals = computeQuote({ currency: 'USD', lines, option_groups: optionGroups, tax_estimate_cents: null });
-  if (totals.option_group_errors.length) throw new Error(totals.option_group_errors.map((e) => e.message).join('; '));
+  const bad = [...totals.option_group_errors, ...totals.line_errors];
+  if (bad.length) throw new Error(bad.map((e) => e.message).join('; '));
   return {
     quote: {
       id: Q,
@@ -198,6 +199,7 @@ export function orderPadRecord(): QuoteRecord {
       brand_slug: 'brightwater-labs',
       vendor_of_record: { label: 'Brightwater Labs', contact_ops_org_id: null },
       delivery_partner: { label: 'Magic Unicorn Unconventional Technology & Stuff Inc', contact_ops_org_id: null },
+      show_delivery_partner: true,
       split_rule: { kind: 'percent_net', percent: 50, hosting_to_partner: true, notes: 'Option B: hosting to Magic Unicorn in full; milestones and packages 50/50 after direct costs, tracked as lanes on Project-Ops so the split is visible, not remembered.' },
       terms_md: null,
       internal_notes_md:

@@ -19,7 +19,7 @@ export const DOCUMENT_SCRIPT = `
     applyTheme(saved||(root.getAttribute('data-theme')||'auto'));
   }
   var cfg={};try{cfg=JSON.parse(doc.getAttribute('data-q')||'{}')}catch(e){}
-  var base=cfg.base||{one_time:0,milestone:0,month:0,quarter:0,year:0};
+  var base=cfg.base||{one_time:0,milestone:0,month:0,quarter:0,year:0,deposit:0};
   var sym=cfg.symbol||'$';
   function money(c){var neg=c<0;c=Math.abs(c);var w=Math.floor(c/100),f=c%100;var g=String(w).replace(/\\B(?=(\\d{3})+(?!\\d))/g,',');return (neg?'\\u2212':'')+sym+(f?g+'.'+String(f).padStart(2,'0'):g)}
   function suffix(i){return i==='month'?'/mo':i==='quarter'?'/qtr':i==='year'?'/yr':''}
@@ -31,8 +31,12 @@ export const DOCUMENT_SCRIPT = `
   var bound=bind();
   var inputs=[].slice.call(document.querySelectorAll('input[data-opt]'));
   function selectedIds(){var ids={};inputs.forEach(function(i){if(i.checked)ids[i.value]=true});return Object.keys(ids)}
-  function selectedOpts(){var seen={},out=[];inputs.forEach(function(i){if(i.checked&&!seen[i.value]){seen[i.value]=1;out.push({id:i.value,label:i.getAttribute('data-label')||'',amount:+i.getAttribute('data-amount')||0,kind:i.getAttribute('data-kind')||'one_time',interval:i.getAttribute('data-interval')||''})}});return out}
-  function totals(){var t={one_time:base.one_time,milestone:base.milestone,month:base.month,quarter:base.quarter,year:base.year};selectedOpts().forEach(function(o){if(o.kind==='recurring'){t[o.interval||'month']+=o.amount}else if(o.kind==='milestone'){t.milestone+=o.amount}else if(o.kind==='one_time'){t.one_time+=o.amount}});t.monthly=Math.round(t.month+t.quarter/3+t.year/12);t.year_one=t.one_time+t.milestone+t.month*12+t.quarter*4+t.year;return t}
+  function selectedOpts(){var seen={},out=[];inputs.forEach(function(i){if(i.checked&&!seen[i.value]){seen[i.value]=1;out.push({id:i.value,label:i.getAttribute('data-label')||'',amount:+i.getAttribute('data-amount')||0,deposit:+i.getAttribute('data-deposit')||0,kind:i.getAttribute('data-kind')||'one_time',interval:i.getAttribute('data-interval')||''})}});return out}
+  // Every figure below is a SUM of numbers computeQuote already produced — the
+  // line amounts and each line's own first payment part. The browser never
+  // redoes a payment split, so "Due on acceptance" cannot drift from the server
+  // by a rounding cent as the reader changes package.
+  function totals(){var t={one_time:base.one_time,milestone:base.milestone,month:base.month,quarter:base.quarter,year:base.year,deposit:base.deposit||0};selectedOpts().forEach(function(o){if(o.kind==='recurring'){t[o.interval||'month']+=o.amount}else if(o.kind==='milestone'){t.milestone+=o.amount}else if(o.kind==='one_time'){t.one_time+=o.amount}t.deposit+=o.deposit});t.monthly=Math.round(t.month+t.quarter/3+t.year/12);t.year_one=t.one_time+t.milestone+t.month*12+t.quarter*4+t.year;return t}
   function setText(sel,txt){[].slice.call(document.querySelectorAll(sel)).forEach(function(el){el.textContent=txt})}
   function paint(){
     var ids=selectedIds();
@@ -43,6 +47,7 @@ export const DOCUMENT_SCRIPT = `
     setText('[data-fig=milestone]',money(t.milestone));
     setText('[data-fig=monthly]',money(t.monthly));
     setText('[data-fig=year_one]',money(t.year_one));
+    setText('[data-fig=deposit]',money(t.deposit));
     var names=opts.map(function(o){return o.label}).join(', ');
     setText('[data-fig-note=selection]',opts.length?('with '+names):cfg.no_selection_note||'no package selected');
     [].slice.call(document.querySelectorAll('[data-opt-summary]')).forEach(function(box){

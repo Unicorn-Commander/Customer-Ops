@@ -97,3 +97,58 @@ describe('FixtureQuoteSource — the two-step acceptance (A1/A2/A10)', () => {
     expect(rec.events.filter((e) => e.kind === 'acceptance_pending').length).toBe(1);
   });
 });
+
+describe('FixtureQuoteSource — what step one may and may not do', () => {
+  let src: FixtureQuoteSource;
+  beforeEach(() => {
+    src = new FixtureQuoteSource();
+    src.setClock(() => new Date('2026-09-12T20:00:00Z'));
+  });
+
+  it('does NOT change the quote until the code is confirmed (H2)', async () => {
+    const before = src.record(FIXTURE_TOKENS.current)!.lines.filter((l) => l.selected).map((l) => l.id);
+    const begin = await src.beginAcceptance(FIXTURE_TOKENS.current, { ...payload, selected_line_ids: ['l-pkg-build'] }, meta);
+    expect(begin.ok).toBe(true);
+    // An unverified stranger picked a different package. The quote must not move.
+    const during = src.record(FIXTURE_TOKENS.current)!.lines.filter((l) => l.selected).map((l) => l.id);
+    expect(during).toEqual(before);
+    const view = await src.lookup(FIXTURE_TOKENS.current, meta);
+    expect(view.found && view.view.totals.year_one_cents).toBe(6_280_000);
+    if (!begin.ok) throw new Error('begin failed');
+    await src.confirmAcceptance(FIXTURE_TOKENS.current, { pending_id: begin.pending_id, code: FIXTURE_CODE }, meta);
+    // Only now does the choice land.
+    expect(src.record(FIXTURE_TOKENS.current)!.lines.filter((l) => l.selected).map((l) => l.id)).toEqual(['l-pkg-build']);
+  });
+
+  it('refuses a confirm without a pending id, and one pending id never confirms another (H3)', async () => {
+    const first = await src.beginAcceptance(FIXTURE_TOKENS.current, payload, meta);
+    const second = await src.beginAcceptance(FIXTURE_TOKENS.current, { ...payload, name: 'Someone Else' }, meta);
+    if (!first.ok || !second.ok) throw new Error('begin failed');
+    expect(first.pending_id).not.toBe(second.pending_id);
+
+    const bare = await src.confirmAcceptance(FIXTURE_TOKENS.current, { pending_id: null, code: FIXTURE_CODE }, meta);
+    expect(!bare.ok && [bare.status, bare.code]).toEqual([400, 'PENDING_ID_REQUIRED']);
+    expect(src.record(FIXTURE_TOKENS.current)!.quote.status).not.toBe('accepted');
+
+    const unknown = await src.confirmAcceptance(FIXTURE_TOKENS.current, { pending_id: 'pa-not-real', code: FIXTURE_CODE }, meta);
+    expect(!unknown.ok && unknown.code).toBe('PENDING_NOT_FOUND');
+
+    // The code belongs to the record it was minted for: confirming the FIRST id
+    // must accept the first person's claim, not whichever was started last.
+    const done = await src.confirmAcceptance(FIXTURE_TOKENS.current, { pending_id: first.pending_id, code: FIXTURE_CODE }, meta);
+    expect(done.ok).toBe(true);
+    expect(src.record(FIXTURE_TOKENS.current)!.quote.accepted_by?.name).toBe('Jordan Mercer');
+  });
+
+  it('still explains an expired or voided pending record instead of forgetting it', async () => {
+    const begin = await src.beginAcceptance(FIXTURE_TOKENS.current, payload, meta);
+    if (!begin.ok) throw new Error('begin failed');
+    src.setClock(() => new Date('2026-09-12T20:12:00Z'));
+    const late = await src.confirmAcceptance(FIXTURE_TOKENS.current, { pending_id: begin.pending_id, code: FIXTURE_CODE }, meta);
+    expect(!late.ok && late.code).toBe('PENDING_EXPIRED');
+    // Well past the grace window it is gone, and the map does not grow forever.
+    src.setClock(() => new Date('2026-09-12T23:00:00Z'));
+    const gone = await src.confirmAcceptance(FIXTURE_TOKENS.current, { pending_id: begin.pending_id, code: FIXTURE_CODE }, meta);
+    expect(!gone.ok && gone.code).toBe('PENDING_NOT_FOUND');
+  });
+});

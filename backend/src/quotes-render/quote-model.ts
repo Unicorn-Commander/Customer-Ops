@@ -88,7 +88,12 @@ export interface HourlyTerms {
 export interface MilestoneTerms {
   acceptance_criteria_md?: string | null;
   weeks?: number | null;
-  /** Percent parts; default [50, 50] (A5). Applies to one_time and milestone money. */
+  /**
+   * Whole-percent parts that must sum to 100; default [50, 50] (A5). Applies to
+   * one_time and milestone money. `computeQuote` turns them into exact cents:
+   * the parts always sum back to the line, with the LAST part absorbing the
+   * rounding, so no invoice schedule can ever be a cent short or a cent over.
+   */
   payment_split?: number[] | null;
 }
 
@@ -274,6 +279,14 @@ export interface Quote {
   brand_slug: string | null;
   vendor_of_record: OrgRef;
   delivery_partner: OrgRef | null;
+  /**
+   * Whether the client's document names the delivery partner ("… with <partner>"
+   * in the proposal eyebrow). Default true. Some engagements are sold by the
+   * vendor of record alone and naming the partner on the client's paper is the
+   * vendor's call, not ours — but the split and the partner bill are unaffected
+   * either way, because those never leave the workspace.
+   */
+  show_delivery_partner: boolean;
   /** Internal — never leaves the workspace. */
   split_rule: SplitRule;
   terms_md: string | null;
@@ -323,6 +336,7 @@ export interface QuoteSnapshot {
   brand_slug: string | null;
   vendor_of_record: OrgRef;
   delivery_partner: OrgRef | null;
+  show_delivery_partner: boolean;
   terms_md: string | null;
   tax_estimate_cents: number | null;
   option_groups: OptionGroup[];
@@ -348,7 +362,18 @@ export interface LineComputation {
   counted: boolean;
   /** Reaches Accounting-Ops on accept (A16: included/excluded never invoice). */
   invoiceable: boolean;
+  /** = payment_parts[0]. The share due on acceptance (A5). */
   deposit_cents: number;
+  /**
+   * The line's amount split into exact cents by `payment_split` (A5). Empty for
+   * kinds that do not schedule (recurring, hourly, included, excluded).
+   * `payment_parts.reduce(sum) === amount_cents` ALWAYS: part[0] is the deposit
+   * and every later part is a milestone invoice, the last one absorbing the
+   * rounding. $3.33 on [50,50] is 167 + 166, never 167 + 167 or 166 + 166.
+   */
+  payment_parts: number[];
+  /** payment_parts.slice(1) — what invoices after acceptance. */
+  remainder_cents: number[];
   interval: RecurringInterval | null;
 }
 
@@ -365,13 +390,23 @@ export interface QuoteTotals {
   };
   hourly_primary: { line_id: string; label: string; rate_cents: number; minimum_hours: number | null } | null;
   discount_total_cents: number;
+  /** Σ of every counted line's payment_parts[0] — due on acceptance (A5). */
   deposit_cents: number;
+  /** Σ of every counted line's remainders — invoices after acceptance. */
+  remainder_total_cents: number;
   /** one_time + milestones + month×12 + quarter×4 + year×1 (A8). */
   year_one_cents: number;
   tax_estimate_cents: number | null;
   lines: LineComputation[];
   /** Option groups that violate their mode (exclusive needs exactly one selected). */
   option_group_errors: Array<{ key: string; message: string }>;
+  /**
+   * Per-line data errors that must stop a send: a payment_split that is not
+   * whole percents summing to 100, a line carrying both discount forms, more
+   * than one primary hourly line. Keyed by line id (or `hourly` for the
+   * quote-wide rule). Never thrown — a bad line must not 500 the client's page.
+   */
+  line_errors: Array<{ key: string; message: string }>;
 }
 
 /** Input to computeQuote: the minimum a snapshot or a live record carries. */
@@ -399,13 +434,21 @@ export function moneyKindOf(line: QuoteLine): LineComputation['money_kind'] {
   return line.kind;
 }
 
-/** Discount for one line (A4): bps → round(gross × bps / 10000); cents as given; never both. */
+/** True when a line carries BOTH discount forms, which A4 forbids. */
+export function hasBothDiscountForms(line: QuoteLine): boolean {
+  return !!(line.discount_bps && line.discount_cents);
+}
+
+/**
+ * Discount for one line (A4): bps → round(gross × bps / 10000); cents as given;
+ * never both. A line that carries both is a data error reported through
+ * `line_errors`, NOT an exception: the percentage wins so the figure stays
+ * deterministic, and the composer refuses to send until it is fixed. Throwing
+ * here would take down the client's public page over an editing mistake.
+ */
 export function discountCentsOf(line: QuoteLine, grossCents: number): number {
   const bps = line.discount_bps ?? null;
   const cents = line.discount_cents ?? null;
-  if (bps !== null && cents !== null && bps !== 0 && cents !== 0) {
-    throw new Error(`Line ${line.id}: carries both discount_bps and discount_cents`);
-  }
   if (bps !== null && bps !== 0) return Math.min(grossCents, roundCents((grossCents * bps) / 10000));
   if (cents !== null && cents !== 0) return Math.min(grossCents, roundCents(cents));
   return 0;
@@ -423,10 +466,47 @@ export function isCounted(line: QuoteLine): boolean {
   return line.option_group ? line.selected : true;
 }
 
-function depositShare(line: QuoteLine, amount: number): number {
-  const split = line.milestone?.payment_split ?? [50, 50];
-  const first = split[0] ?? 100;
-  return roundCents((amount * first) / 100);
+export const DEFAULT_PAYMENT_SPLIT = [50, 50];
+
+/**
+ * Is this a payment split we can invoice from? Whole percents, each ≥ 0, at
+ * least one part, summing to exactly 100. Anything else is a data error — a
+ * schedule that does not sum to the line is money that silently goes missing.
+ */
+export function paymentSplitError(split: number[] | null | undefined): string | null {
+  if (split === null || split === undefined) return null; // absent → the default
+  if (!Array.isArray(split) || split.length === 0) return 'payment_split must list at least one part.';
+  for (const part of split) {
+    if (!Number.isInteger(part) || part < 0) return `payment_split parts must be whole non-negative percents (got ${JSON.stringify(part)}).`;
+  }
+  const sum = split.reduce((a, b) => a + b, 0);
+  if (sum !== 100) return `payment_split must sum to 100 (got ${sum}).`;
+  return null;
+}
+
+/**
+ * Split an amount into exact cents by whole-percent parts. The parts ALWAYS sum
+ * back to `amount`: each part but the last is rounded independently and the
+ * LAST part takes whatever is left, absorbing the rounding.
+ *
+ *   333 on [50, 50]     → [167, 166]
+ *   333 on [40, 30, 30] → [133, 100, 100]
+ *
+ * An invalid split falls back to a single part, so the money is never lost even
+ * while `line_errors` is telling the studio to fix it.
+ */
+export function paymentParts(amountCents: number, split: number[] | null | undefined): number[] {
+  const parts = paymentSplitError(split) === null && split && split.length ? split : split === null || split === undefined ? DEFAULT_PAYMENT_SPLIT : [100];
+  if (parts.length === 1) return [amountCents];
+  const out: number[] = [];
+  let taken = 0;
+  for (let i = 0; i < parts.length - 1; i += 1) {
+    const part = roundCents((amountCents * parts[i]) / 100);
+    out.push(part);
+    taken += part;
+  }
+  out.push(amountCents - taken);
+  return out;
 }
 
 /**
@@ -444,7 +524,9 @@ export function computeQuote(input: ComputeInput): QuoteTotals {
   let year = 0;
   let discount_total = 0;
   let deposit = 0;
+  let remainder_total = 0;
   let hourly_primary: QuoteTotals['hourly_primary'] = null;
+  const line_errors: QuoteTotals['line_errors'] = [];
 
   const ordered = [...input.lines].sort((a, b) => a.position - b.position);
   for (const line of ordered) {
@@ -455,18 +537,28 @@ export function computeQuote(input: ComputeInput): QuoteTotals {
     const counted = isCounted(line);
     const invoiceable = counted && money_kind !== 'included' && money_kind !== 'excluded' && amount_cents !== 0;
     const interval = money_kind === 'recurring' ? line.recurring?.interval ?? 'month' : null;
-    let line_deposit = 0;
+    let parts: number[] = [];
+
+    // Validate the line's own data. Reported, never thrown (A4): a mistyped
+    // split must not take down the page the client is reading.
+    if (hasBothDiscountForms(line)) {
+      line_errors.push({ key: line.id, message: `“${line.label}” carries both a percentage and a cash discount; a line may have one (A4). The percentage is being used.` });
+    }
+    if (money_kind === 'one_time' || money_kind === 'milestone') {
+      const splitErr = paymentSplitError(line.milestone?.payment_split);
+      if (splitErr) line_errors.push({ key: line.id, message: `“${line.label}”: ${splitErr}` });
+    }
 
     if (counted) {
       discount_total += discount_cents;
       switch (money_kind) {
         case 'one_time':
           one_time += amount_cents;
-          line_deposit = depositShare(line, amount_cents);
+          parts = paymentParts(amount_cents, line.milestone?.payment_split);
           break;
         case 'milestone':
           milestone += amount_cents;
-          line_deposit = depositShare(line, amount_cents);
+          parts = paymentParts(amount_cents, line.milestone?.payment_split);
           break;
         case 'recurring':
           if (interval === 'month') month += amount_cents;
@@ -486,7 +578,8 @@ export function computeQuote(input: ComputeInput): QuoteTotals {
         default:
           break;
       }
-      deposit += line_deposit;
+      deposit += parts[0] ?? 0;
+      for (let i = 1; i < parts.length; i += 1) remainder_total += parts[i];
     }
 
     lines.push({
@@ -497,7 +590,9 @@ export function computeQuote(input: ComputeInput): QuoteTotals {
       amount_cents,
       counted,
       invoiceable,
-      deposit_cents: line_deposit,
+      deposit_cents: parts[0] ?? 0,
+      payment_parts: parts,
+      remainder_cents: parts.slice(1),
       interval,
     });
   }
@@ -523,7 +618,7 @@ export function computeQuote(input: ComputeInput): QuoteTotals {
   // A quote may declare only one primary hourly line (A14).
   const primaries = ordered.filter((l) => l.hourly?.primary && moneyKindOf(l) === 'hourly');
   if (primaries.length > 1) {
-    option_group_errors.push({ key: 'hourly', message: `Only one hourly line may be primary (has ${primaries.length}).` });
+    line_errors.push({ key: 'hourly', message: `Only one hourly line may be primary (has ${primaries.length}).` });
   }
 
   const monthly_equivalent = roundCents(month + quarter / 3 + year / 12);
@@ -535,10 +630,12 @@ export function computeQuote(input: ComputeInput): QuoteTotals {
     hourly_primary,
     discount_total_cents: discount_total,
     deposit_cents: deposit,
+    remainder_total_cents: remainder_total,
     year_one_cents: one_time + milestone + month * 12 + quarter * 4 + year,
     tax_estimate_cents: input.tax_estimate_cents ?? null,
     lines,
     option_group_errors,
+    line_errors,
   };
 }
 
@@ -594,6 +691,7 @@ export function snapshotOf(record: Pick<QuoteRecord, 'quote' | 'sections' | 'lin
     brand_slug: quote.brand_slug,
     vendor_of_record: quote.vendor_of_record,
     delivery_partner: quote.delivery_partner,
+    show_delivery_partner: quote.show_delivery_partner !== false,
     terms_md: quote.terms_md,
     tax_estimate_cents: quote.tax_estimate_cents,
     option_groups: quote.option_groups,

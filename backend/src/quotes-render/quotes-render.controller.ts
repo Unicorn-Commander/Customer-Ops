@@ -25,14 +25,50 @@ import { QuotesRenderService, type DocumentLinks } from './quotes-render.service
 import { QuotePublicSource, type RequestMeta } from './quotes-render.port';
 import { PdfUnavailableError } from './quote-pdf.service';
 import { AcceptBodySchema, ConfirmBodySchema } from './quotes-render.dto';
+import { TokenRateLimiter } from './token-rate-limit';
 
 const COOKIE = 'q_v';
 const TOKEN_RE = /^[A-Za-z0-9_-]{4,128}$/;
 
-export function requestMeta(req: Request): RequestMeta {
+/** An address we are willing to write into an acceptance record. */
+const IP_RE = /^(?:\d{1,3}(?:\.\d{1,3}){3}|[0-9a-f:]{2,45})$/i;
+
+/**
+ * The client address, taken from the TRUSTED hop only.
+ *
+ * `X-Forwarded-For` arrives as `<whatever the browser sent>, <what each proxy
+ * saw>`. Everything to the left of our own edge is attacker-controlled: a
+ * browser can post `X-Forwarded-For: 8.8.8.8` and Traefik will happily forward
+ * it with the real address appended. So we count `hops` in from the RIGHT —
+ * with the default of one hop (Traefik alone) that is the last entry, the
+ * address our own edge observed. Two hops covers an edge behind Cloudflare.
+ *
+ * `hops = 0` means "no trusted proxy": use the socket peer and ignore the
+ * header entirely. Anything unparseable yields null rather than a guess —
+ * an acceptance record with a forged IP is worse than one with no IP.
+ */
+export function clientIp(req: Request, hops: number): string | null {
+  const peer = req.socket?.remoteAddress ?? null;
+  if (hops <= 0) return peer && IP_RE.test(peer) ? peer : null;
+  const raw = req.headers['x-forwarded-for'];
+  const chain = (Array.isArray(raw) ? raw.join(',') : raw ?? '')
+    .split(',')
+    .map((entry) => {
+      const v = entry.trim().replace(/^\[|\]$/g, '');
+      // `1.2.3.4:5678` is an IPv4 with a port; a bare IPv6 is all colons and
+      // must keep them. Only strip a trailing port from the dotted form.
+      return /^\d{1,3}(?:\.\d{1,3}){3}:\d+$/.test(v) ? v.slice(0, v.lastIndexOf(':')) : v;
+    })
+    .filter(Boolean);
+  if (!chain.length) return peer && IP_RE.test(peer) ? peer : null;
+  const candidate = chain[Math.max(0, chain.length - hops)];
+  return candidate && IP_RE.test(candidate) ? candidate : null;
+}
+
+export function requestMeta(req: Request, hops: number): RequestMeta {
   const key = req.headers['idempotency-key'];
   return {
-    ip: req.ip ?? null,
+    ip: clientIp(req, hops),
     ua: typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'].slice(0, 300) : null,
     idempotency_key: typeof key === 'string' && key.length <= 200 ? key : null,
   };
@@ -42,6 +78,8 @@ export function requestMeta(req: Request): RequestMeta {
 @Controller('public/quotes/:token')
 export class QuotesRenderPublicController {
   private readonly secret: string;
+  private readonly trustedHops: number;
+  private readonly tokenLimiter: TokenRateLimiter;
 
   constructor(
     private readonly render: QuotesRenderService,
@@ -51,6 +89,31 @@ export class QuotesRenderPublicController {
     // A per-process secret is fine for the mock; L1 sets QUOTES_COOKIE_SECRET so
     // cookies survive restarts and rolling deploys.
     this.secret = config.get<string>('QUOTES_COOKIE_SECRET')?.trim() || randomBytes(32).toString('hex');
+    const hops = Number(config.get('QUOTES_TRUSTED_PROXY_HOPS') ?? 1);
+    this.trustedHops = Number.isInteger(hops) && hops >= 0 ? hops : 1;
+    this.tokenLimiter = new TokenRateLimiter(
+      Number(config.get('QUOTES_TOKEN_RATE_LIMIT') ?? 30),
+      Number(config.get('QUOTES_TOKEN_RATE_WINDOW_MS') ?? 60_000),
+    );
+  }
+
+  private meta(req: Request): RequestMeta {
+    return requestMeta(req, this.trustedHops);
+  }
+
+  /**
+   * Per-TOKEN limit, alongside the per-IP `@Throttle`. They catch different
+   * attacks: the throttler stops one address hammering everything, this stops a
+   * distributed grind against ONE share link — which is the shape that matters
+   * when the prize is a six-digit code. L1 replaces the in-memory counter with
+   * the shared Redis store; the call site does not change.
+   */
+  private tokenLimited(token: string, res: Response, weight = 1): boolean {
+    const verdict = this.tokenLimiter.hit(token, weight);
+    if (verdict.ok) return false;
+    res.setHeader('Retry-After', String(verdict.retry_after_s));
+    problem(res, 429, 'TOO_MANY_REQUESTS', 'Too many requests for this quote link. Wait a moment and try again.');
+    return true;
   }
 
   private bind_(token: string): string {
@@ -79,7 +142,8 @@ export class QuotesRenderPublicController {
       res.status(404).type('html').send(this.render.notFoundPage());
       return;
     }
-    const out = await this.render.renderPublic(token, requestMeta(req), this.links(req, token));
+    if (this.tokenLimited(token, res)) return;
+    const out = await this.render.renderPublic(token, this.meta(req), this.links(req, token));
     if (out.status === 200) {
       const secure = req.secure || req.headers['x-forwarded-proto'] === 'https';
       res.setHeader('Set-Cookie', `${COOKIE}=${this.bind_(token)}; Path=/; Max-Age=3600; HttpOnly; SameSite=Lax${secure ? '; Secure' : ''}`);
@@ -103,6 +167,7 @@ export class QuotesRenderPublicController {
       res.status(404).end();
       return;
     }
+    if (this.tokenLimited(token, res)) return;
     const secure = req.secure || req.headers['x-forwarded-proto'] === 'https';
     res.setHeader('Set-Cookie', `${COOKIE}=${this.bind_(token)}; Path=/; Max-Age=3600; HttpOnly; SameSite=Lax${secure ? '; Secure' : ''}`);
     res.status(204).end();
@@ -121,7 +186,8 @@ export class QuotesRenderPublicController {
       res.status(404).json({ found: false });
       return;
     }
-    const out = await this.render.resolvePublic(token, requestMeta(req));
+    if (this.tokenLimited(token, res)) return;
+    const out = await this.render.resolvePublic(token, this.meta(req));
     if (!out) {
       res.status(404).json({ found: false });
       return;
@@ -138,8 +204,11 @@ export class QuotesRenderPublicController {
       res.status(404).type('html').send(this.render.notFoundPage());
       return;
     }
+    // A PDF costs a browser page; weight it so a burst of them is rate-limited
+    // long before the concurrency gate has to start refusing.
+    if (this.tokenLimited(token, res, 5)) return;
     try {
-      const out = await this.render.renderPublicPdf(token, requestMeta(req), size === 'a4' ? 'a4' : 'letter');
+      const out = await this.render.renderPublicPdf(token, this.meta(req), size === 'a4' ? 'a4' : 'letter');
       if (!out) {
         res.status(404).type('html').send(this.render.notFoundPage());
         return;
@@ -164,6 +233,7 @@ export class QuotesRenderPublicController {
       problem(res, 404, 'QUOTE_NOT_FOUND', 'No quote at this link.');
       return;
     }
+    if (this.tokenLimited(token, res, 3)) return;
     if (!this.hasCookie(req, token)) {
       problem(res, 428, 'COOKIE_REQUIRED', 'Open the quote page first, then accept from it.');
       return;
@@ -187,7 +257,7 @@ export class QuotesRenderPublicController {
     const outcome = await this.source.beginAcceptance(
       token,
       { name: b.name, email: b.email, title: b.title ?? null, accepted: b.accepted === true || b.accepted === '1' || b.accepted === 'true' || b.accepted === 'on', selected_line_ids: selected },
-      requestMeta(req),
+      this.meta(req),
     );
     void contentType;
     if (outcome.ok) {
@@ -205,6 +275,7 @@ export class QuotesRenderPublicController {
       problem(res, 404, 'QUOTE_NOT_FOUND', 'No quote at this link.');
       return;
     }
+    if (this.tokenLimited(token, res, 3)) return;
     if (!this.hasCookie(req, token)) {
       problem(res, 428, 'COOKIE_REQUIRED', 'Open the quote page first, then accept from it.');
       return;
@@ -214,7 +285,7 @@ export class QuotesRenderPublicController {
       problem(res, 400, 'CONFIRM_BODY', 'The confirmation body is malformed.');
       return;
     }
-    const outcome = await this.source.confirmAcceptance(token, { pending_id: parsed.data.pending_id ?? null, code: parsed.data.code.replace(/\D/g, '') }, requestMeta(req));
+    const outcome = await this.source.confirmAcceptance(token, { pending_id: parsed.data.pending_id ?? null, code: parsed.data.code.replace(/\D/g, '') }, this.meta(req));
     if (outcome.ok) {
       res.status(200).json({ accepted_at: outcome.accepted_at });
       return;

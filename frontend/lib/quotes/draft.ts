@@ -237,15 +237,17 @@ export interface DraftProblem {
 }
 
 export function draftProblems(record: QuoteRecord, totals: QuoteTotals): DraftProblem[] {
-  const out: DraftProblem[] = totals.option_group_errors.map((e) => ({ level: 'error' as const, message: e.message }));
+  // computeQuote is the authority on data errors (option groups, payment splits,
+  // double discounts, the primary-hourly rule). The composer never re-derives
+  // them — it just says what it was told, so the studio and the invoice
+  // schedule can never disagree about what is wrong.
+  const out: DraftProblem[] = [...totals.option_group_errors, ...totals.line_errors].map((e) => ({
+    level: 'error' as const,
+    message: e.message,
+  }));
   if (!record.quote.title.trim()) out.push({ level: 'error', message: 'The quote needs a title.' });
   if (!record.sections.some((s) => s.kind === 'summary' && s.body_md?.trim())) {
     out.push({ level: 'warn', message: 'No summary section — the client view opens without a narrative lede.' });
-  }
-  for (const line of record.lines) {
-    if (line.discount_bps && line.discount_cents) {
-      out.push({ level: 'error', message: `“${line.label}” carries both a percentage and a cash discount; a line may have one (A4).` });
-    }
   }
   if (!record.recipients.length) {
     out.push({ level: 'warn', message: 'No named recipients — any address will be allowed to accept (A1).' });

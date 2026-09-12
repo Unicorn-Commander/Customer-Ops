@@ -14,10 +14,15 @@ import type { QuoteRecord } from '../quote-model';
 import { toQuoteView, type AcceptanceState, type QuoteView } from '../quote-view';
 import { FIXTURE_TOKEN_CURRENT, FIXTURE_TOKEN_SUPERSEDED, orderPadRecord } from './orderpad.fixture';
 import { AcceptOutcome, AcceptPayload, ConfirmOutcome, ConfirmPayload, PublicLookup, QuotePublicSource, RequestMeta } from '../quotes-render.port';
+import { ReplayCache } from '../token-rate-limit';
 
 export const FIXTURE_CODE = '424242';
 export const PENDING_TTL_MS = 10 * 60_000;
 export const MAX_CODE_ATTEMPTS = 5;
+/** How long an expired or voided pending record is kept so it can still explain itself. */
+export const PENDING_GRACE_MS = 30 * 60_000;
+/** Hard ceiling on pending acceptances held in memory at once. */
+export const MAX_PENDING = 1_000;
 
 export const FIXTURE_TOKENS = {
   current: FIXTURE_TOKEN_CURRENT,
@@ -52,7 +57,10 @@ const nextId = (p: string) => `${p}-${(++seq).toString(36)}`;
 export class FixtureQuoteSource extends QuotePublicSource {
   private readonly entries = new Map<string, Entry>();
   private readonly pending = new Map<string, Pending>();
-  private readonly replays = new Map<string, AcceptOutcome | ConfirmOutcome>();
+  // Keyed by a client-supplied Idempotency-Key, so it MUST be bounded and
+  // time-limited — see ReplayCache. A replay window longer than the pending
+  // acceptance TTL is pointless anyway.
+  private readonly replays = new ReplayCache<AcceptOutcome | ConfirmOutcome>(PENDING_TTL_MS + 5 * 60_000, 2_000);
   private now: () => Date = () => new Date();
 
   constructor() {
@@ -100,6 +108,28 @@ export class FixtureQuoteSource extends QuotePublicSource {
     declined.quote.decline_reason = 'Board chose to wait a quarter.';
     declined.events.push({ id: 'e-dec', quote_id: declined.quote.id, at: '2026-09-13T09:00:00Z', actor: 'client:fx-order', kind: 'declined', data: { reason: declined.quote.decline_reason }, ip: '203.0.113.7', ua: 'Chrome on macOS' });
     this.entries.set(FIXTURE_TOKENS.declined, { record: declined, version_no: 2 });
+  }
+
+  /**
+   * Drop pending acceptances nobody came back for — the map is keyed by a value
+   * an attacker can mint, so it is swept on every write path.
+   *
+   * The sweep keeps an expired or voided record for a GRACE period first. A
+   * client who typed five wrong codes, or came back after eleven minutes, has
+   * to be told "that code expired, start again" — pruning on the stroke of the
+   * deadline turns every one of those into "no acceptance is waiting", which is
+   * both confusing and a worse security answer (it stops distinguishing a real
+   * pending record from a guessed id).
+   */
+  private prunePending(): void {
+    const t = this.now().getTime();
+    for (const [id, p] of this.pending) if (p.expires_at + PENDING_GRACE_MS <= t) this.pending.delete(id);
+    // Hard bound, oldest first, however the clock behaves.
+    while (this.pending.size > MAX_PENDING) {
+      const oldest = this.pending.keys().next();
+      if (oldest.done) break;
+      this.pending.delete(oldest.value);
+    }
   }
 
   /** The live studio record (what the composer edits in the mock). */
@@ -176,7 +206,9 @@ export class FixtureQuoteSource extends QuotePublicSource {
 
   async beginAcceptance(token: string, payload: AcceptPayload, meta: RequestMeta): Promise<AcceptOutcome> {
     const replayKey = meta.idempotency_key ? `accept:${token}:${meta.idempotency_key}` : null;
-    if (replayKey && this.replays.has(replayKey)) return this.replays.get(replayKey) as AcceptOutcome;
+    const replayed = replayKey ? (this.replays.get(replayKey) as AcceptOutcome | undefined) : undefined;
+    if (replayed) return replayed;
+    this.prunePending();
     const entry = this.entries.get(token);
     const outcome = await this.beginInner(entry, token, payload, meta);
     if (replayKey) this.replays.set(replayKey, outcome);
@@ -203,8 +235,12 @@ export class FixtureQuoteSource extends QuotePublicSource {
     const pending_id = nextId('pa');
     const expires = this.now().getTime() + PENDING_TTL_MS;
     this.pending.set(pending_id, { token, payload, code: FIXTURE_CODE, expires_at: expires, attempts: 0, voided: false, ip: meta.ip, ua: meta.ua });
+    // The pending record holds the choice. The QUOTE is not touched until the
+    // code is confirmed (H2): step one is an unverified stranger's claim, and a
+    // quote whose selected package changed because someone typed an email — and
+    // then walked away — is a quote that lies to the next reader and to every
+    // federation payload derived from it. `markAccepted` applies the selection.
     rec.events.push({ id: nextId('e'), quote_id: rec.quote.id, at: this.now().toISOString(), actor: `client:${token.slice(0, 8)}`, kind: 'acceptance_pending', data: { name: payload.name, title: payload.title, selected_line_ids: payload.selected_line_ids, expires_at: new Date(expires).toISOString() }, ip: meta.ip, ua: meta.ua });
-    for (const l of rec.lines) if (l.option_group) l.selected = payload.selected_line_ids.includes(l.id);
     const [user, domain] = payload.email.trim().split('@');
     const hint = `We sent a six-digit code to ${user.slice(0, 1)}•••@${domain}. It is good for ten minutes.`;
     return { ok: true, status: 202, pending_id, expires_at: new Date(expires).toISOString(), email_hint: hint };
@@ -212,7 +248,9 @@ export class FixtureQuoteSource extends QuotePublicSource {
 
   async confirmAcceptance(token: string, payload: ConfirmPayload, meta: RequestMeta): Promise<ConfirmOutcome> {
     const replayKey = meta.idempotency_key ? `confirm:${token}:${meta.idempotency_key}` : null;
-    if (replayKey && this.replays.has(replayKey)) return this.replays.get(replayKey) as ConfirmOutcome;
+    const replayed = replayKey ? (this.replays.get(replayKey) as ConfirmOutcome | undefined) : undefined;
+    if (replayed) return replayed;
+    this.prunePending();
     const outcome = this.confirmInner(token, payload, meta);
     if (replayKey) this.replays.set(replayKey, outcome);
     return outcome;
@@ -223,7 +261,13 @@ export class FixtureQuoteSource extends QuotePublicSource {
     if (!entry) return { ok: false, status: 404, code: 'QUOTE_NOT_FOUND', detail: 'No quote at this link.' };
     const g = this.gate(entry);
     if (!g.ok) return g;
-    const p = payload.pending_id ? this.pending.get(payload.pending_id) : [...this.pending.values()].filter((x) => x.token === token && !x.voided).pop();
+    // The pending id is REQUIRED (H3). Falling back to "the newest pending for
+    // this token" let one visitor's code confirm another visitor's acceptance:
+    // two people open the same link, both start, and the six digits mailed to
+    // the first commit the second's name and package. A code is only ever a
+    // credential for the pending record it was minted for.
+    if (!payload.pending_id) return { ok: false, status: 400, code: 'PENDING_ID_REQUIRED', detail: 'Start the acceptance again from the quote page.' };
+    const p = this.pending.get(payload.pending_id);
     if (!p || p.token !== token) return { ok: false, status: 404, code: 'PENDING_NOT_FOUND', detail: 'No acceptance is waiting for a code.' };
     if (p.voided) return { ok: false, status: 410, code: 'PENDING_VOIDED', detail: 'Too many wrong codes; start again.' };
     if (p.expires_at < this.now().getTime()) return { ok: false, status: 410, code: 'PENDING_EXPIRED', detail: 'The code expired; start again.' };
@@ -239,7 +283,7 @@ export class FixtureQuoteSource extends QuotePublicSource {
     }
     const at = this.now().toISOString();
     this.markAccepted(entry.record, { name: p.payload.name.trim(), email: p.payload.email.trim(), title: p.payload.title?.trim() || null, ip: meta.ip ?? p.ip, ua: meta.ua ?? p.ua }, at, p.payload.selected_line_ids, `client:${token.slice(0, 8)}`);
-    this.pending.delete(payload.pending_id ?? '');
+    this.pending.delete(payload.pending_id);
     return { ok: true, status: 200, accepted_at: at };
   }
 }

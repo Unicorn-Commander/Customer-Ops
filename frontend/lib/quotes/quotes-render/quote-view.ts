@@ -54,6 +54,10 @@ export interface QuoteViewLine {
   gross_cents: number;
   discount_cents: number;
   amount_cents: number;
+  /** computeQuote's exact first payment part for this line (A5). */
+  deposit_cents: number;
+  /** The later payment parts, exact to the cent; they sum with the deposit to amount_cents. */
+  remainder_cents: number[];
   status_tag: QuoteLine['status_tag'];
   recurring: QuoteLine['recurring'];
   hourly: QuoteLine['hourly'];
@@ -83,6 +87,8 @@ export interface QuoteView {
   brand_slug: string | null;
   vendor: Letterhead & { label: string };
   delivery_partner: OrgRef | null;
+  /** Gates the "with <partner>" phrase on the client's document. */
+  show_delivery_partner: boolean;
   customer: { display_name: string; org_name: string | null; attention: string | null };
   /** The summary section, rendered as prose in the masthead. */
   lede_md: string | null;
@@ -161,6 +167,8 @@ export function toQuoteView(source: QuoteRecord | QuoteSnapshot, state: Projecti
               gross_cents: c?.gross_cents ?? 0,
               discount_cents: c?.discount_cents ?? 0,
               amount_cents: c?.amount_cents ?? l.amount_cents,
+              deposit_cents: c?.deposit_cents ?? 0,
+              remainder_cents: c?.remainder_cents ?? [],
               status_tag: l.status_tag,
               recurring: l.recurring,
               hourly: l.hourly,
@@ -193,6 +201,7 @@ export function toQuoteView(source: QuoteRecord | QuoteSnapshot, state: Projecti
     brand_slug: q.brand_slug,
     vendor: { ...q.letterhead, label: q.vendor_of_record.label },
     delivery_partner: q.delivery_partner,
+    show_delivery_partner: q.show_delivery_partner !== false,
     customer: q.customer,
     lede_md: lede?.body_md ?? null,
     sections: viewSections,

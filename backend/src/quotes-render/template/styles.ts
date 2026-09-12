@@ -140,9 +140,13 @@ a:hover{color:var(--q-ink)}
 .q-opt{display:block;border:1px solid var(--q-rule);background:var(--q-surface);padding:16px 16px 14px;position:relative;cursor:pointer;min-height:100%}
 .q-opt:hover{border-color:var(--q-muted)}
 .q-opt.is-selected{border-color:var(--q-ink);box-shadow:inset 0 0 0 1px var(--q-ink)}
-.q-opt-name{font-family:var(--q-font-display);font-size:23px;line-height:1.1}
-.q-opt-price{font-family:var(--q-font-display);font-size:32px;line-height:1;margin-top:12px;font-variant-numeric:tabular-nums;letter-spacing:-0.01em}
-.q-opt-per{font-family:var(--q-font-mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--q-muted);margin-top:6px}
+/* These three are <span>s inside the option label. They MUST be block: inline
+   spans ignore margin-top and run together on one line, which is how the
+   package headline shipped as "Keep it running$600PER MONTH". */
+.q-opt-name{display:block;font-family:var(--q-font-display);font-size:23px;line-height:1.1;text-wrap:balance}
+.q-opt-price{display:block;font-family:var(--q-font-display);font-size:32px;line-height:1;margin-top:12px;font-variant-numeric:tabular-nums;letter-spacing:-0.01em}
+.q-opt-per{display:block;font-family:var(--q-font-mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--q-muted);margin-top:6px}
+.q-opt-per .q-pill{margin-left:8px;vertical-align:baseline}
 .q-opt-ctl{display:flex;align-items:center;gap:9px;margin-top:14px;font-size:13.5px;color:var(--q-ink)}
 .q-opt-ctl input{width:17px;height:17px;margin:0;accent-color:var(--q-accent);flex:none}
 .q-opt-tag{position:absolute;top:-1px;right:-1px;background:var(--q-ink);color:var(--q-paper);font-family:var(--q-font-mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;padding:5px 9px 4px;display:none}
@@ -159,6 +163,7 @@ a:hover{color:var(--q-ink)}
 .q-opt-card.is-selected{border-color:var(--q-ink);box-shadow:inset 0 0 0 1px var(--q-ink)}
 .q-opt-card .q-opt-tag{display:none}
 .q-opt-card.is-selected .q-opt-tag{display:block}
+.q-opt-card .q-opt-name,.q-opt-card .q-opt-price,.q-opt-card .q-opt-per{display:block}
 .q-opt-card dl{margin:14px 0 0;display:grid;grid-template-columns:minmax(0,1fr);gap:0}
 .q-opt-card dt{font-family:var(--q-font-mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--q-muted);margin-top:9px}
 .q-opt-card dd{margin:2px 0 0;font-size:14px;line-height:1.45}

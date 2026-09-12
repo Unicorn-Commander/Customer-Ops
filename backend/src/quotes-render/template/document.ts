@@ -112,7 +112,7 @@ function termsList(lines: QuoteViewLine[], heading: string, excluded: boolean): 
 
 function optInput(l: QuoteViewLine, group: { key: string; mode: string }, disabled: boolean): string {
   const type = group.mode === 'additive' ? 'checkbox' : 'radio';
-  return `<input type="${type}" name="og-${esc(group.key)}" value="${esc(l.id)}" data-opt data-label="${esc(l.label)}" data-amount="${l.amount_cents}" data-kind="${l.money_kind}" data-interval="${l.recurring?.interval ?? ''}" data-split="${l.milestone?.payment_split?.[0] ?? 50}"${l.selected ? ' checked' : ''}${disabled ? ' disabled' : ''}>`;
+  return `<input type="${type}" name="og-${esc(group.key)}" value="${esc(l.id)}" data-opt data-label="${esc(l.label)}" data-amount="${l.amount_cents}" data-kind="${l.money_kind}" data-interval="${l.recurring?.interval ?? ''}" data-deposit="${l.deposit_cents}"${l.selected ? ' checked' : ''}${disabled ? ' disabled' : ''}>`;
 }
 
 /** The data-driven package matrix for one option group (+ its feature-less alternatives). */
@@ -301,6 +301,10 @@ export function renderQuoteDocumentParts(view: QuoteView, opts: RenderOptions): 
   const currency = view.currency;
   const t = view.totals;
   const all = view.sections.flatMap((s) => s.lines);
+  // The figures the script starts from: every line that is NOT in an option
+  // group. Each selected option then adds its OWN precomputed numbers, so the
+  // browser never redoes a payment split — `deposit` here is computeQuote's,
+  // exact to the cent, and stays exact as the reader changes package.
   const base = all
     .filter((l) => !l.option_group)
     .reduce(
@@ -308,9 +312,10 @@ export function renderQuoteDocumentParts(view: QuoteView, opts: RenderOptions): 
         if (l.money_kind === 'one_time') acc.one_time += l.amount_cents;
         else if (l.money_kind === 'milestone') acc.milestone += l.amount_cents;
         else if (l.money_kind === 'recurring') acc[(l.recurring?.interval ?? 'month') as RecurringInterval] += l.amount_cents;
+        acc.deposit += l.deposit_cents;
         return acc;
       },
-      { one_time: 0, milestone: 0, month: 0, quarter: 0, year: 0 },
+      { one_time: 0, milestone: 0, month: 0, quarter: 0, year: 0, deposit: 0 },
     );
   const symbol = formatMoney(0, currency).replace(/0$/, '');
   const cfg = { base, symbol, accept_url: opts.acceptUrl, confirm_url: opts.confirmUrl, bind_url: opts.bindUrl ?? null, no_selection_note: 'no package selected', sticky_empty: 'Choose a package' };
@@ -333,7 +338,7 @@ export function renderQuoteDocumentParts(view: QuoteView, opts: RenderOptions): 
 
   const letterhead = `<header class="q-letterhead"><div><div class="q-vendor-name">${esc(view.vendor.legal_name || view.vendor.label)}</div><div class="q-vendor-lines">${view.vendor.address_lines.map((l) => `<span>${esc(l)}</span>`).join('')}${view.vendor.tax_id ? `<span>${esc(view.vendor.tax_id_label ?? 'Tax ID')} ${esc(view.vendor.tax_id)}</span>` : ''}${join([view.vendor.email ? esc(view.vendor.email) : null, view.vendor.phone ? esc(view.vendor.phone) : null, view.vendor.website ? esc(view.vendor.website) : null], ' · ') ? `<span>${join([view.vendor.email ? esc(view.vendor.email) : null, view.vendor.phone ? esc(view.vendor.phone) : null, view.vendor.website ? esc(view.vendor.website) : null], ' · ')}</span>` : ''}</div></div><div><div class="q-folio" aria-label="Quote number">${esc(view.number)}</div><dl class="q-meta"><dt>Quote</dt><dd>${esc(view.number)} · v${view.version.no}</dd><dt>Date</dt><dd>${longDate(view.issued_on)}</dd><dt>Valid until</dt><dd>${longDate(view.valid_until)}</dd></dl></div></header>`;
 
-  const masthead = `<div class="q-masthead"><div><div class="q-label q-eyebrow">Proposal · ${esc(view.vendor.label)}${view.delivery_partner ? ` with ${esc(view.delivery_partner.label)}` : ''}</div><h1 class="q-h1">${esc(view.title)}</h1>${view.lede_md ? `<div class="q-lede">${renderMarkdown(view.lede_md, { proseOnly: true })}</div>` : ''}</div><div class="q-masthead-side">${stamp(view)}<div class="q-prepared">Prepared for<strong>${esc(view.customer.org_name ?? view.customer.display_name)}</strong>${view.customer.attention ? `${esc(view.customer.attention)}` : ''}</div></div></div>`;
+  const masthead = `<div class="q-masthead"><div><div class="q-label q-eyebrow">Proposal · ${esc(view.vendor.label)}${view.delivery_partner && view.show_delivery_partner ? ` with ${esc(view.delivery_partner.label)}` : ''}</div><h1 class="q-h1">${esc(view.title)}</h1>${view.lede_md ? `<div class="q-lede">${renderMarkdown(view.lede_md, { proseOnly: true })}</div>` : ''}</div><div class="q-masthead-side">${stamp(view)}<div class="q-prepared">Prepared for<strong>${esc(view.customer.org_name ?? view.customer.display_name)}</strong>${view.customer.attention ? `${esc(view.customer.attention)}` : ''}</div></div></div>`;
 
   const sections = view.sections.map((s) => section(view, s, opts.studio, disabledOptions)).join('');
   const terms = view.terms_md ? `<section class="q-section"><div class="q-section-no" aria-hidden="true">§</div><div class="q-section-main"><div class="q-section-head"><span class="q-label">Terms</span><h2 class="q-h2">Terms</h2></div><div class="q-body-md q-prose">${renderMarkdown(view.terms_md)}</div></div></section>` : '';

@@ -44,12 +44,13 @@ import {
 } from '@/lib/quotes/draft';
 import {
   formatMoney,
+  paymentParts,
   type LineKind,
   type QuoteLine,
   type QuoteSection,
 } from '@/lib/quotes/quotes-render/quote-model';
 
-import { Field, MoneyInput, RowButton, Segmented, Select, TextArea, TextInput } from './parts';
+import { Field, MoneyInput, RowButton, Select, TextArea, TextInput } from './parts';
 
 const LINE_KINDS: ReadonlyArray<{ value: LineKind; label: string }> = [
   { value: 'one_time', label: 'One-time' },
@@ -183,7 +184,7 @@ function LineEditor({ draft, line }: { draft: QuoteDraft; line: QuoteLine }) {
               <Field label="Weeks">
                 <TextInput mono value={String(line.milestone?.weeks ?? '')} onChange={(v) => set({ milestone: { ...line.milestone, weeks: Number(v) || null } })} inputMode="numeric" />
               </Field>
-              <Field label="Payment split" hint="percent on start / on acceptance">
+              <Field label="Payment split" hint="whole percents, summing to 100">
                 <TextInput
                   mono
                   value={(line.milestone?.payment_split ?? [50, 50]).join(' / ')}
@@ -192,6 +193,13 @@ function LineEditor({ draft, line }: { draft: QuoteDraft; line: QuoteLine }) {
                     set({ milestone: { ...line.milestone, payment_split: parts.length ? parts : [50, 50] } });
                   }}
                 />
+                <span className="mt-1 block font-mono text-[11.5px] tabular-nums text-muted">
+                  {/* computeQuote's exact cents, not a re-derivation: the last part
+                      absorbs the rounding so the schedule sums to the line. */}
+                  {paymentParts(line.amount_cents, line.milestone?.payment_split)
+                    .map((c) => formatMoney(c, record.quote.currency, { alwaysCents: true }))
+                    .join('  +  ')}
+                </span>
               </Field>
               <Field label="Acceptance criteria" className="sm:col-span-2">
                 <TextArea
@@ -541,6 +549,23 @@ export function QuoteComposer({ draft }: { draft: QuoteDraft }) {
               placeholder="none"
             />
           </Field>
+          <label className="flex items-start gap-2 text-[13px] text-secondary sm:col-span-2">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4 accent-[rgb(var(--co-accent))]"
+              checked={q.show_delivery_partner !== false}
+              disabled={!q.delivery_partner}
+              onChange={(e) => apply((r) => patchQuote(r, { show_delivery_partner: e.target.checked }))}
+            />
+            <span>
+              Name the partner on the client&rsquo;s document
+              <span className="mt-0.5 block text-[12px] text-muted">
+                Adds &ldquo;with {q.delivery_partner?.label ?? 'the partner'}&rdquo; to the proposal line above the title. Off keeps the
+                paper in the vendor of record&rsquo;s name only &mdash; the split and the partner bill are unaffected either way,
+                because neither ever leaves the workspace.
+              </span>
+            </span>
+          </label>
           <Field label="Rule">
             <Select
               value={q.split_rule.kind}
@@ -581,5 +606,3 @@ export function QuoteComposer({ draft }: { draft: QuoteDraft }) {
     </div>
   );
 }
-
-export { Segmented };

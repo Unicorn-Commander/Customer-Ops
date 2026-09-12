@@ -10,6 +10,10 @@
  * budget (QUOTES_PDF_FONT_WAIT_MS) — never for the network to go idle, so an
  * unreachable font CDN degrades the typeface instead of killing the PDF.
  *
+ * Renders are capped (QUOTES_PDF_CONCURRENCY, queue QUOTES_PDF_QUEUE_MAX): the
+ * route is public and each render is a live browser page, so an uncapped burst
+ * takes the whole API down rather than just the PDFs.
+ *
  * The browser is launched lazily and reused; each render gets its own page.
  * Running header (quote number · page x of y) and footer come from Puppeteer's
  * header/footer templates, which only see inline styles.
@@ -63,6 +67,8 @@ export class QuotePdfService implements OnModuleDestroy {
   private readonly logger = new Logger(QuotePdfService.name);
   private browser: Browser | null = null;
   private launching: Promise<Browser> | null = null;
+  private active = 0;
+  private readonly waiting: Array<() => void> = [];
 
   constructor(private readonly config: ConfigService) {}
 
@@ -105,7 +111,43 @@ export class QuotePdfService implements OnModuleDestroy {
     }
   }
 
+  /**
+   * Concurrency gate. Each render is a live browser page holding real memory,
+   * and the PDF route is PUBLIC — without a cap, a handful of concurrent
+   * requests for a long quote is an out-of-memory kill on the whole API, not
+   * just on the PDFs. Over the cap requests queue; past the queue budget they
+   * are refused with a 503 that says to try again, which is an answer, unlike a
+   * dead process.
+   */
+  private async acquireSlot(): Promise<() => void> {
+    const limit = Math.max(1, Number(this.config.get('QUOTES_PDF_CONCURRENCY') ?? 2));
+    const queueMax = Math.max(1, Number(this.config.get('QUOTES_PDF_QUEUE_MAX') ?? 8));
+    if (this.active >= limit && this.waiting.length >= queueMax) {
+      throw new PdfUnavailableError('The PDF renderer is busy. Try again in a moment.');
+    }
+    if (this.active >= limit) {
+      await new Promise<void>((resolve) => this.waiting.push(resolve));
+    }
+    this.active += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.active -= 1;
+      this.waiting.shift()?.();
+    };
+  }
+
   async render(job: PdfJob): Promise<Buffer> {
+    const release = await this.acquireSlot();
+    try {
+      return await this.renderOne(job);
+    } finally {
+      release();
+    }
+  }
+
+  private async renderOne(job: PdfJob): Promise<Buffer> {
     const browser = await this.launch();
     const page = await browser.newPage();
     try {
