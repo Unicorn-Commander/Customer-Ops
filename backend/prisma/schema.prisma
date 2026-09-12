@@ -952,6 +952,10 @@ model Quote {
   workspace           Workspace         @relation(fields: [workspaceId], references: [id])
   customer            Customer          @relation(fields: [workspaceId, customerId], references: [workspaceId, id])
   parent              Quote?            @relation("changeOrders", fields: [workspaceId, parentQuoteId], references: [workspaceId, id])
+  versions            QuoteVersion[]
+  shareTokens         QuoteShareToken[]
+  pendingAcceptances  QuotePendingAcceptance[]
+  events              QuoteEvent[]
   changes             Quote[]           @relation("changeOrders")
   sections            QuoteSection[]
   lines               QuoteLine[]
@@ -1078,4 +1082,96 @@ model QuoteAttachment {
 
   @@index([workspaceId, quoteId])
   @@map("quote_attachments")
+}
+
+
+// M2 persistence. Snapshots exclude studio-only fields at the query boundary.
+model QuoteVersion {
+  id               String @id @default(uuid())
+  workspaceId      String @map("workspace_id")
+  quoteId          String @map("quote_id")
+  versionNo        Int @map("version_no")
+  disposition      String @default("current")
+  snapshot         Json
+  renderHash       String @map("render_hash")
+  pdfAssetRef      String? @map("pdf_asset_ref")
+  acceptedSnapshot Json? @map("accepted_snapshot")
+  acceptedAt       DateTime? @map("accepted_at")
+  acceptedBy       Json? @map("accepted_by")
+  createdAt        DateTime @default(now()) @map("created_at")
+  quote            Quote @relation(fields: [workspaceId, quoteId], references: [workspaceId, id], onDelete: Cascade)
+  tokens           QuoteShareToken[]
+  events           QuoteEvent[]
+
+  @@unique([workspaceId, quoteId, id])
+  @@unique([workspaceId, quoteId, versionNo])
+  @@map("quote_versions")
+}
+
+model QuoteShareToken {
+  id          String @id @default(uuid())
+  workspaceId String @map("workspace_id")
+  quoteId     String @map("quote_id")
+  versionId   String @map("version_id")
+  tokenHash   String @unique @map("token_hash")
+  expiresAt   DateTime @map("expires_at")
+  revokedAt   DateTime? @map("revoked_at")
+  viewCount   Int @default(0) @map("view_count")
+  lastViewedAt DateTime? @map("last_viewed_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+  quote       Quote @relation(fields: [workspaceId, quoteId], references: [workspaceId, id], onDelete: Cascade)
+  version     QuoteVersion @relation(fields: [workspaceId, quoteId, versionId], references: [workspaceId, quoteId, id], onDelete: Cascade)
+  pending     QuotePendingAcceptance[]
+
+  @@unique([workspaceId, quoteId, versionId, id])
+  @@index([workspaceId, expiresAt])
+  @@map("quote_share_tokens")
+}
+
+model QuotePendingAcceptance {
+  id               String @id @default(uuid())
+  workspaceId      String @map("workspace_id")
+  quoteId          String @map("quote_id")
+  versionId        String @map("version_id")
+  tokenId          String @map("token_id")
+  name             String
+  email            String
+  title            String?
+  selectedLineIds  Json @map("selected_line_ids")
+  codeHash         String @map("code_hash")
+  attempts         Int @default(0)
+  deliveryState    String @default("pending") @map("delivery_state")
+  beginKeyHash     String @map("begin_key_hash")
+  requestHash      String @map("request_hash")
+  confirmKeyHash   String? @map("confirm_key_hash")
+  confirmedAt      DateTime? @map("confirmed_at")
+  voidedAt         DateTime? @map("voided_at")
+  expiresAt        DateTime @map("expires_at")
+  createdAt        DateTime @default(now()) @map("created_at")
+  ip               String?
+  ua               String?
+  quote            Quote @relation(fields: [workspaceId, quoteId], references: [workspaceId, id], onDelete: Cascade)
+  token            QuoteShareToken @relation(fields: [workspaceId, quoteId, versionId, tokenId], references: [workspaceId, quoteId, versionId, id], onDelete: Cascade)
+
+  @@unique([workspaceId, tokenId, beginKeyHash])
+  @@index([workspaceId, expiresAt])
+  @@map("quote_pending_acceptances")
+}
+
+model QuoteEvent {
+  id          String @id @default(uuid())
+  workspaceId String @map("workspace_id")
+  quoteId     String @map("quote_id")
+  versionId   String? @map("version_id")
+  kind        String
+  actor       String
+  data        Json?
+  ip          String?
+  ua          String?
+  at          DateTime @default(now())
+  quote       Quote @relation(fields: [workspaceId, quoteId], references: [workspaceId, id], onDelete: Cascade)
+  version     QuoteVersion? @relation(fields: [workspaceId, quoteId, versionId], references: [workspaceId, quoteId, id])
+
+  @@index([workspaceId, quoteId, at])
+  @@map("quote_events")
 }
