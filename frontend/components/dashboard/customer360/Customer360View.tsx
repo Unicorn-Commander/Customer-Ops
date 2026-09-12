@@ -9,6 +9,7 @@ import { Timeline } from './Timeline';
 import { ContactCard } from './ContactCard';
 import { AgentsPanel } from './AgentsPanel';
 import { InvoicesPanel } from './InvoicesPanel';
+import { QuotesPanel } from '@/components/quotes/QuotesPanel';
 import { EmailPanel } from './EmailPanel';
 import { ConversationsPanel } from './ConversationsPanel';
 import { OutreachPanel } from './OutreachPanel';
@@ -58,6 +59,10 @@ export function Customer360View({
     <div className="space-y-4">
       <ContactCard contact={contact} federation={contactFederation} contactId={rel.contactId} />
       <AgentsPanel workspaceId={workspaceId} customerId={customerId} onChanged={handlers.onChanged} />
+      {/* Commercial paper about the relationship: Customer-Ops owns the quote,
+          Accounting-Ops owns the money that follows it, so it sits directly
+          above the invoices. */}
+      <QuotesPanel workspaceId={workspaceId} customerId={customerId} />
       <InvoicesPanel
         workspaceId={workspaceId}
         customerId={customerId}
