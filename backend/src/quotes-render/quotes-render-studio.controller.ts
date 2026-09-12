@@ -14,6 +14,8 @@
 import { Controller, Get, Post, Req, Res, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiExcludeController, ApiTags } from '@nestjs/swagger';
 import type { Request, Response } from 'express';
+import { RequireScopes } from '../auth/decorators/require-scopes.decorator';
+import { WorkspaceMembershipGuard } from '../common/workspace/workspace-membership.guard';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { BrandOpsPort } from '../brand-ops/brand-ops.port';
 import { PdfUnavailableError } from './quote-pdf.service';
@@ -84,7 +86,8 @@ export class QuotesRenderStudioHandlers {
 
 @ApiTags('quotes')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, WorkspaceMembershipGuard)
+@RequireScopes('read:quotes')
 @Controller('quotes-render')
 export class QuotesRenderStudioController extends QuotesRenderStudioHandlers {
   @Post('preview')

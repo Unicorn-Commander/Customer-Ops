@@ -16,6 +16,7 @@ import { tenancyEnabled } from '../common/workspace/feature-flags';
 import { ucUidOf } from '../common/workspace/workspace.util';
 import { computeStoredQuote, validateCurrency, QuoteComputationError } from './compute-quote';
 import * as S from './quote.schemas';
+import { quotesEnabled } from './quotes-enabled';
 const include = {
   sections: { orderBy: { position: 'asc' as const } },
   lines: { orderBy: { position: 'asc' as const } },
@@ -44,7 +45,7 @@ export class QuotesService {
     private readonly membership: MembershipService,
   ) {}
   private enabled() {
-    if (!['1', 'true'].includes(this.config.get<string>('QUOTES_ENABLED') || ''))
+    if (!quotesEnabled(this.config.get<string>('QUOTES_ENABLED')))
       throw new ServiceUnavailableException('Quotes are not enabled (QUOTES_ENABLED)');
   }
   private view(q: any, validateEdit = false) {

@@ -131,10 +131,11 @@ export class QuotesRenderPublicController {
     const fromProxy = req.headers['x-quote-document-url'];
     const docUrl = typeof fromProxy === 'string' && /^\/[A-Za-z0-9/_-]{1,300}$/.test(fromProxy) ? fromProxy : req.originalUrl.split('?')[0].replace(/\/$/, '');
     if (typeof fromProxy === 'string') return { accept: `${docUrl}/accept`, confirm: `${docUrl}/accept/confirm`, pdf: `${docUrl}/pdf` };
-    return { accept: `${docUrl}/accept`, confirm: `${docUrl}/accept/confirm`, pdf: `${docUrl}.pdf` };
+    const base = docUrl.replace(/\/document$/, '');
+    return { accept: `${base}/accept`, confirm: `${base}/accept/confirm`, pdf: `${base}/pdf` };
   }
 
-  @Get('document')
+  @Get(['', 'document'])
   async document(@Param('token') token: string, @Req() req: Request, @Res() res: Response): Promise<void> {
     res.setHeader('Cache-Control', 'private, no-store');
     res.setHeader('X-Robots-Tag', 'noindex, nofollow');
@@ -197,7 +198,7 @@ export class QuotesRenderPublicController {
     res.status(200).json({ found: true, view: out.view, theme: out.theme });
   }
 
-  @Get('document.pdf')
+  @Get(['pdf', 'document.pdf'])
   async pdf(@Param('token') token: string, @Query('size') size: string | undefined, @Req() req: Request, @Res() res: Response): Promise<void> {
     res.setHeader('Cache-Control', 'private, no-store');
     if (!TOKEN_RE.test(token)) {
@@ -225,7 +226,7 @@ export class QuotesRenderPublicController {
     }
   }
 
-  @Post('document/accept')
+  @Post(['accept', 'document/accept'])
   @Throttle({ short: { limit: 6, ttl: 60_000 }, long: { limit: 40, ttl: 3_600_000 } })
   async accept(@Param('token') token: string, @Req() req: Request, @Res() res: Response, @Headers('content-type') contentType?: string): Promise<void> {
     res.setHeader('Cache-Control', 'no-store');
@@ -267,7 +268,7 @@ export class QuotesRenderPublicController {
     problem(res, outcome.status, outcome.code, outcome.detail);
   }
 
-  @Post('document/accept/confirm')
+  @Post(['accept/confirm', 'document/accept/confirm'])
   @Throttle({ short: { limit: 10, ttl: 60_000 }, long: { limit: 60, ttl: 3_600_000 } })
   async confirm(@Param('token') token: string, @Req() req: Request, @Res() res: Response): Promise<void> {
     res.setHeader('Cache-Control', 'no-store');
