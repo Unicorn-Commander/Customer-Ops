@@ -118,4 +118,20 @@ describe('BrigadeTokenSource — scope-keyed subject cache (R1)', () => {
     // Second call fully cached: no new mint, no new exchange.
     expect(calls).toHaveLength(2); // 1 mint + 1 exchange, total, for both calls
   });
+  it.each([
+    ['invoices:read', 'invoices:read invoices:write'],
+    ['invoices:read invoices:write', 'invoices:read'],
+  ])('keeps exchanged scopes separate: %s then %s', async (first, second) => {
+    const { fn, calls } = makeFetch();
+    global.fetch = fn as any;
+    const src = new BrigadeTokenSource(makeConfig(ENV));
+    const ctx = { audience: 'accounting-ops', workspaceId: 'ws' };
+    const a = await src.exchangedToken({ ...ctx, scope: first });
+    const b = await src.exchangedToken({ ...ctx, scope: second });
+    expect(a).not.toBe(b);
+    expect(calls.filter(c => c.audience === 'accounting-ops').map(c => c.scope)).toEqual([first, second]);
+    expect(await src.exchangedToken({ ...ctx, scope: first })).toBe(a);
+    expect(calls).toHaveLength(4);
+  });
+
 });

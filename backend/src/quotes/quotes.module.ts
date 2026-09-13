@@ -1,4 +1,5 @@
 import { DynamicModule, Module } from '@nestjs/common';
+import { AccountingOpsModule } from '../accounting-ops/accounting-ops.module';
 import { AuthModule } from '../auth/auth.module';
 import { WorkspaceModule } from '../common/workspace/workspace.module';
 import { PrismaModule } from '../prisma/prisma.module';
@@ -23,6 +24,7 @@ const enabledModule = {
     AuditModule,
     EmailOpsModule,
     ContactOpsModule,
+    AccountingOpsModule,
     BrandOpsModule,
   ],
   providers: [

@@ -39,7 +39,7 @@ export interface ExchangeRequest {
 @Injectable()
 export class BrigadeTokenSource {
   private readonly logger = new Logger(BrigadeTokenSource.name);
-  /** `cc:subject` = the shared client-credentials subject; `<aud>:<ws>` = an
+  /** `cc:subject` = the shared client-credentials subject; `<aud>:<ws>:<scope>` = an
    *  exchanged per-target token. All refreshed ~30s before exp. */
   private readonly cache = new Map<string, CachedToken>();
 
@@ -51,7 +51,7 @@ export class BrigadeTokenSource {
    * throws.
    */
   async exchangedToken(req: ExchangeRequest): Promise<string | null> {
-    const key = `${req.audience}:${req.workspaceId}`;
+    const key = JSON.stringify([req.audience, req.workspaceId, req.scope]);
     const hit = this.cache.get(key);
     if (hit && hit.expMs - 30_000 > Date.now()) return hit.token;
 

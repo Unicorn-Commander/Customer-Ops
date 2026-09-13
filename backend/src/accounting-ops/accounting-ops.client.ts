@@ -153,7 +153,7 @@ export class AccountingOpsClient extends AccountingOpsPort {
    * X-Workspace-Id rides along for AO's per-request addressing; AO re-gates
    * membership server-side, so the header is a hint, never the authz boundary.
    */
-  private async authHeaders(ctx: FederationContext): Promise<Record<string, string>> {
+  private async authHeaders(ctx: FederationContext, scope = 'invoices:read invoices:write'): Promise<Record<string, string>> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       // AO's MCP is Streamable HTTP — it 406s unless the client accepts BOTH.
@@ -164,7 +164,7 @@ export class AccountingOpsClient extends AccountingOpsPort {
     // (until the suite shares one uc-registry id — SUITE-IDENTITY §0.1). Both the
     // bearer claim and the X-Workspace-Id hint use it; AO re-gates membership.
     const ws = this.effectiveWorkspaceId(ctx);
-    const bearer = await this.bearerFor(ws);
+    const bearer = await this.bearerFor(ws, scope);
     if (bearer) headers['Authorization'] = `Bearer ${bearer}`;
     headers['X-Workspace-Id'] = ws;
     if (ctx.ucUid) headers['X-Uc-Uid'] = ctx.ucUid;
@@ -202,14 +202,14 @@ export class AccountingOpsClient extends AccountingOpsPort {
    *  forwards AO_SERVICE_TOKEN; `brigade-sts` delegates to the shared
    *  BrigadeTokenSource (mint customer-ops CC → exchange for aud=accounting-ops).
    *  Degrade-clean: a failed exchange returns null and the caller sends no bearer. */
-  private async bearerFor(workspaceId: string): Promise<string | null> {
+  private async bearerFor(workspaceId: string, scope = 'invoices:read invoices:write'): Promise<string | null> {
     if (this.authMode === 'static') {
       const t = this.config.get<string>('AO_SERVICE_TOKEN');
       return t && t.trim() ? t.trim() : null;
     }
     return this.brigade.exchangedToken({
       audience: this.config.get<string>('AO_AUDIENCE')?.trim() || 'accounting-ops',
-      scope: 'invoices:read invoices:write',
+      scope,
       workspaceId,
     });
   }
@@ -483,6 +483,28 @@ export class AccountingOpsClient extends AccountingOpsPort {
   }
 
   // --- AccountingOpsPort implementation ----------------------------------
+
+  async getEntity(workspaceId: string, entityId: string) {
+    if (!this.baseUrl) return null;
+    try {
+      const ctx = { workspaceId, ucUid: null, entitlements: [] };
+      const ws = this.effectiveWorkspaceId(ctx);
+      const headers = await this.authHeaders(ctx, 'invoices:read');
+      if (!headers.Authorization) return null;
+      const response = await this.fetchWithTimeout(
+        `${this.baseUrl}/api/workspaces/${encodeURIComponent(ws)}/entities`,
+        { headers, redirect: 'error' },
+      );
+      if (!response.ok) return null;
+      const entities: unknown = await response.json();
+      if (!Array.isArray(entities)) return null;
+      const entity = entities.find((e) => e && e.id === entityId && e.status === 'active');
+      if (!entity || typeof entity.legal_name !== 'string' || !entity.legal_name.trim()) return null;
+      return { id: entity.id as string, legal_name: entity.legal_name as string, status: entity.status as string };
+    } catch {
+      return null;
+    }
+  }
 
   async createInvoice(
     ctx: FederationContext,
