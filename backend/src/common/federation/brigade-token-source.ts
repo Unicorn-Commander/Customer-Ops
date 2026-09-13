@@ -45,6 +45,11 @@ export class BrigadeTokenSource {
 
   constructor(private readonly config: ConfigService) {}
 
+  /** Plain service-account token for receivers requiring Keycloak machine proof. */
+  async clientCredentialsToken(scope: string): Promise<string | null> {
+    return this.clientCredentialsSubject(scope);
+  }
+
   /**
    * A Brigade-minted, audience-bound bearer for the request, or null if the
    * chain can't complete (Keycloak/Brigade unreachable, secret unset). Never

@@ -134,4 +134,23 @@ describe('BrigadeTokenSource — scope-keyed subject cache (R1)', () => {
     expect(calls).toHaveLength(4);
   });
 
+  it('returns and caches direct service-account tokens without a Brigade exchange', async () => {
+    const { fn, calls } = makeFetch(); global.fetch = fn as any;
+    const src = new BrigadeTokenSource(makeConfig(ENV));
+    expect(await src.clientCredentialsToken('invoices:write')).toBe('subjtok|scope=invoices:write');
+    await src.clientCredentialsToken('invoices:write');
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toContain('/realms/uchub/protocol/openid-connect/token');
+    const body = new URLSearchParams(fn.mock.calls[0][1].body);
+    expect(body.get('grant_type')).toBe('client_credentials');
+    expect(body.get('client_id')).toBe('customer-ops');
+    expect(body.has('subject_token')).toBe(false);
+  });
+  it('direct token failure is null, without falling back to an exchange', async () => {
+    global.fetch = jest.fn().mockResolvedValue({ ok: false, status: 401 }) as any;
+    const src = new BrigadeTokenSource(makeConfig(ENV));
+    expect(await src.clientCredentialsToken('invoices:write')).toBeNull();
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
 });
