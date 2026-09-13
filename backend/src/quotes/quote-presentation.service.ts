@@ -32,7 +32,7 @@ export class QuotePresentationService {
         this.config.get('ACCOUNTING_OPS_AUTH_MODE') === 'brigade-sts'
           ? await this.brigade.exchangedToken({
               audience: 'accounting-ops-app',
-              scope: 'accounting:read',
+              scope: this.config.get<string>('ACCOUNTING_OPS_SCOPE')?.trim() || 'invoices:read',
               workspaceId: ws,
             })
           : this.config.get<string>('ACCOUNTING_OPS_SERVICE_TOKEN');

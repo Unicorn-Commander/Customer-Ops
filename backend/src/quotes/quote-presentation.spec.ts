@@ -3,7 +3,7 @@ import { QuotePresentationService } from './quote-presentation.service';
 describe('Federated letterhead (no legal cache)', () => {
   const original = global.fetch;
   afterEach(() => (global.fetch = original));
-  function service(setting: any) {
+  function service(setting: any, config: Record<string, string> = {}, brigade: any = {}) {
     return new QuotePresentationService(
       {
         withWorkspace: async (_w: any, _u: any, fn: any) =>
@@ -15,10 +15,11 @@ describe('Federated letterhead (no legal cache)', () => {
             ({
               ACCOUNTING_OPS_BASE_URL: 'https://accounting.example.invalid',
               ACCOUNTING_OPS_SERVICE_TOKEN: 'fixture-only',
+              ...config,
             }) as any
           )[k],
       } as any,
-      {} as any,
+      brigade,
       { resolveSync: () => null } as any,
       {
         getContact: async () => ({ displayName: 'Synthetic recipient', currentOrgName: null }),
@@ -58,4 +59,21 @@ describe('Federated letterhead (no legal cache)', () => {
       address_lines: [],
     });
   });
+  it.each([
+    [undefined, 'invoices:read'],
+    ['  invoices:read custom:read  ', 'invoices:read custom:read'],
+    ['   ', 'invoices:read'],
+  ])('uses the configured Accounting-Ops scope (%s)', async (scope, expected) => {
+    const exchangedToken = jest.fn().mockResolvedValue('fixture-only');
+    global.fetch = jest.fn().mockResolvedValue(new Response('[]'));
+    await service(
+      { accountingEntityId: 'entity' },
+      { ACCOUNTING_OPS_AUTH_MODE: 'brigade-sts', ...(scope === undefined ? {} : { ACCOUNTING_OPS_SCOPE: scope }) },
+      { exchangedToken },
+    ).letterhead('ws');
+    expect(exchangedToken).toHaveBeenCalledWith({
+      audience: 'accounting-ops-app', scope: expected, workspaceId: 'ws',
+    });
+  });
+
 });
