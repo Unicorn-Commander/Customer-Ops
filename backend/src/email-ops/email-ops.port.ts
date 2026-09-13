@@ -54,7 +54,29 @@ export interface FederationContext {
   entitlements: string[];
 }
 
+export interface AgentInboxObservation {
+  id: string;
+  messageId: string;
+  status: 'pending' | 'approved' | 'rejected' | 'sent';
+  sentAt?: string | null;
+}
+
 export abstract class EmailOpsPort {
+  /** Exact workspace-scoped item read; null means unknown/unreachable, never approved. */
+  async getAgentInboxItem(
+    _ctx: FederationContext,
+    _id: string,
+  ): Promise<AgentInboxObservation | null> {
+    return null;
+  }
+  /** compose_email returns a message id today; resolve its inbox id without guessing. */
+  async findAgentInboxItem(
+    _ctx: FederationContext,
+    _messageId: string,
+  ): Promise<AgentInboxObservation | null> {
+    return null;
+  }
+
   /**
    * Probe this seam's transport + auth with a lightweight, side-effect-free MCP
    * `tools/list` and report a SeamHealth (so a silent 401/403 becomes visible via

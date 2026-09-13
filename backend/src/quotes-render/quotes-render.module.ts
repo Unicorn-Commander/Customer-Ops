@@ -1,25 +1,30 @@
-import { Module } from '@nestjs/common';
+import { DynamicModule, Module } from '@nestjs/common';
+import { AuthModule } from '../auth/auth.module';
+import { WorkspaceModule } from '../common/workspace/workspace.module';
 import { BrandOpsModule } from '../brand-ops/brand-ops.module';
-import { FixtureQuoteSource } from './fixtures/fixture-source';
+import { PersistedQuotePublicSource } from '../quotes/quote-public.source';
+import { QuotesModule } from '../quotes/quotes.module';
 import { QuotePdfService } from './quote-pdf.service';
 import { QuotesRenderPublicController } from './quotes-render.controller';
 import { QuotesRenderStudioController } from './quotes-render-studio.controller';
 import { QuotesRenderService } from './quotes-render.service';
 import { QuotePublicSource } from './quotes-render.port';
 
-/**
- * Quotes & Proposals — the RENDER module (lane L2, "the look").
- *
- * Server-renders the client document (HTML) and the PDF from a typed QuoteView,
- * with Brand-Ops tokens applied as CSS variables. The data layer is reached
- * ONLY through `QuotePublicSource`; this module binds the fixture source so it
- * runs against the Order Pad proposal. L1 wires the real repository by
- * swapping that one provider and adds this module to AppModule's imports.
- */
-@Module({
-  imports: [BrandOpsModule],
-  controllers: [QuotesRenderPublicController, QuotesRenderStudioController],
-  providers: [QuotesRenderService, QuotePdfService, { provide: QuotePublicSource, useClass: FixtureQuoteSource }],
-  exports: [QuotesRenderService, QuotePublicSource],
-})
-export class QuotesRenderModule {}
+/** Production registration never binds FixtureQuoteSource; dev-main owns it. */
+@Module({})
+export class QuotesRenderModule {
+  static register(enabled: boolean): DynamicModule {
+    if (!enabled) return { module: QuotesRenderModule };
+    return {
+      module: QuotesRenderModule,
+      imports: [AuthModule, WorkspaceModule, BrandOpsModule, QuotesModule.register(true)],
+      controllers: [QuotesRenderPublicController, QuotesRenderStudioController],
+      providers: [
+        QuotesRenderService,
+        QuotePdfService,
+        { provide: QuotePublicSource, useClass: PersistedQuotePublicSource },
+      ],
+      exports: [QuotesRenderService, QuotePublicSource],
+    };
+  }
+}

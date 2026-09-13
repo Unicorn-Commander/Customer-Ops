@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { AuditLog, Prisma, User } from '@prisma/client';
 import { WorkspaceContextService } from '../common/workspace/workspace-context.service';
 import { WithWorkspaceClaim } from '../common/workspace/workspace.util';
+import { WorkspaceTxClient } from '../prisma/prisma.service';
 import { CreateAuditLogDto } from './dto/create-audit-log.dto';
 
 type AuthedUser = User & Partial<WithWorkspaceClaim>;
@@ -26,6 +27,23 @@ export class AuditService {
   private readonly logger = new Logger(AuditService.name);
 
   constructor(private readonly workspaces: WorkspaceContextService) {}
+
+  /** Atomic audit for callers whose transaction must not commit without evidence. */
+  logInTransaction(tx: WorkspaceTxClient, dto: CreateAuditLogDto) {
+    if (!dto.workspaceId) throw new Error('Audit workspace required');
+    return tx.auditLog.create({
+      data: {
+        workspaceId: dto.workspaceId,
+        userId: dto.userId,
+        action: dto.action,
+        resource: dto.resource,
+        resourceId: dto.resourceId,
+        details: dto.details as Prisma.InputJsonValue,
+        ipAddress: dto.ipAddress,
+        userAgent: dto.userAgent,
+      },
+    });
+  }
 
   /** Record one audit event. Never throws; returns null on any failure/skip. */
   async log(dto: CreateAuditLogDto): Promise<AuditLog | null> {

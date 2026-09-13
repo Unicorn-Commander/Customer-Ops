@@ -27,6 +27,8 @@ export const PAT_BCRYPT_COST = 10;
  * workspace RBAC, scopes never apply.
  */
 export const PAT_AVAILABLE_SCOPES = [
+  'read:quotes',
+  'write:quotes',
   'read:customers',
   'write:customers',
   'read:activity',
@@ -48,6 +50,7 @@ export type PatScope = (typeof PAT_AVAILABLE_SCOPES)[number];
  * `run:agents` stand alone.
  */
 export const SCOPE_IMPLICATIONS: Record<string, PatScope[]> = {
+  'write:quotes': ['read:quotes'],
   'write:customers': ['read:customers'],
   'write:activity': ['read:activity'],
   'write:leads': ['read:leads'],
@@ -74,6 +77,27 @@ export function expandScopes(granted: readonly string[]): Set<string> {
  * Project-Ops MCP_TOOL_SCOPE_MAP convention.
  */
 export const MCP_TOOL_SCOPE_MAP: Record<string, PatScope> = {
+  render_quote: 'read:quotes',
+  send_quote: 'write:quotes',
+  supersede_quote: 'write:quotes',
+  revoke_share_link: 'write:quotes',
+  record_quote_acceptance: 'write:quotes',
+  list_quote_versions: 'read:quotes',
+  list_quote_events: 'read:quotes',
+  create_quote: 'write:quotes',
+  update_quote: 'write:quotes',
+  add_quote_section: 'write:quotes',
+  add_quote_line: 'write:quotes',
+  update_quote_line: 'write:quotes',
+  remove_quote_line: 'write:quotes',
+  set_quote_options: 'write:quotes',
+  set_quote_recipients: 'write:quotes',
+  add_quote_cost: 'write:quotes',
+  add_quote_attachment: 'write:quotes',
+  list_quotes: 'read:quotes',
+  get_quote: 'read:quotes',
+  list_price_book: 'read:quotes',
+
   // read:customers — the relationship cockpit reads (+ federated sub-resources)
   list_customers: 'read:customers',
   get_customer_360: 'read:customers',

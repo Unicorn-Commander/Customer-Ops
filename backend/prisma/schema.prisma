@@ -228,6 +228,9 @@ model Workspace {
   syncedAt              DateTime               @default(now())
   createdAt             DateTime               @default(now())
   updatedAt             DateTime               @updatedAt
+  quotes                Quote[]
+  priceBookItems        PriceBookItem[]
+  quoteCounters         QuoteCounter[]
   memberships           Membership[]
   customers             Customer[]
   customerActivities    CustomerActivity[]
@@ -385,6 +388,7 @@ model Customer {
   updatedAt DateTime @updatedAt
 
   workspace     Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  quotes        Quote[]
   activities    CustomerActivity[]
   invoiceLinks  CustomerInvoiceLink[]
   outreachLinks CustomerOutreachLink[]
@@ -392,6 +396,7 @@ model Customer {
   intakes       LeadIntake[]
 
   // A contact holds exactly one lifecycle position per workspace.
+  @@unique([workspaceId, id])
   @@unique([workspaceId, contactId])
   @@index([workspaceId])
   @@index([workspaceId, stage])
@@ -913,4 +918,280 @@ model FederationWorkspaceMap {
 
   @@unique([localWorkspaceId, targetApp])
   @@map("federation_workspace_map")
+}
+
+// Quotes M1. Internal fields stay workspace-only; public/version reads arrive in M2.
+model Quote {
+  id                  String            @id @default(uuid())
+  workspaceId         String            @map("workspace_id")
+  customerId          String            @map("customer_id")
+  number              String
+  title               String
+  status              String            @default("draft")
+  currency            String            @default("USD")
+  validUntil          DateTime          @map("valid_until")
+  brandSlug           String?           @map("brand_slug")
+  vendorOfRecord      String            @map("vendor_of_record")
+  deliveryPartner     String?           @map("delivery_partner")
+  showDeliveryPartner Boolean           @default(true) @map("show_delivery_partner")
+  splitRule           Json              @default("{\"kind\":\"none\"}") @map("split_rule")
+  termsMd             String            @default("") @map("terms_md")
+  internalNotesMd     String            @default("") @map("internal_notes_md")
+  createdBy           String            @map("created_by")
+  sentAt              DateTime?         @map("sent_at")
+  acceptedAt          DateTime?         @map("accepted_at")
+  acceptedBy          Json?             @map("accepted_by")
+  declineReason       String?           @map("decline_reason")
+  lockedForSend       Boolean           @default(false) @map("locked_for_send")
+  parentQuoteId       String?           @map("parent_quote_id")
+  taxEstimateCents    Int?              @map("tax_estimate_cents")
+  currentVersionNo    Int               @default(0) @map("current_version_no")
+  federated           Json              @default("{\"status\":\"pending\"}")
+  createdAt           DateTime          @default(now()) @map("created_at")
+  updatedAt           DateTime          @updatedAt @map("updated_at")
+  workspace           Workspace         @relation(fields: [workspaceId], references: [id])
+  customer            Customer          @relation(fields: [workspaceId, customerId], references: [workspaceId, id])
+  parent              Quote?            @relation("changeOrders", fields: [workspaceId, parentQuoteId], references: [workspaceId, id])
+  sendPendingApproval Boolean @default(false) @map("send_pending_approval")
+  versions            QuoteVersion[]
+  shareTokens         QuoteShareToken[]
+  pendingAcceptances  QuotePendingAcceptance[]
+  events              QuoteEvent[]
+  changes             Quote[]           @relation("changeOrders")
+  sections            QuoteSection[]
+  lines               QuoteLine[]
+  costs               QuoteCost[]
+  recipients          QuoteRecipient[]
+  attachments         QuoteAttachment[]
+
+  @@unique([workspaceId, id])
+  @@unique([workspaceId, number])
+  @@index([workspaceId, customerId, status])
+  @@map("quotes")
+}
+
+model QuoteCounter {
+  workspaceId String    @map("workspace_id")
+  year        Int
+  lastNumber  Int       @map("last_number")
+  workspace   Workspace @relation(fields: [workspaceId], references: [id])
+
+  @@id([workspaceId, year])
+  @@map("quote_counters")
+}
+
+model QuoteSection {
+  id              String      @id @default(uuid())
+  workspaceId     String      @map("workspace_id")
+  quoteId         String      @map("quote_id")
+  position        Int         @default(0)
+  kind            String
+  heading         String
+  bodyMd          String      @default("") @map("body_md")
+  internalBasisMd String      @default("") @map("internal_basis_md")
+  quote           Quote       @relation(fields: [workspaceId, quoteId], references: [workspaceId, id], onDelete: Cascade)
+  lines           QuoteLine[]
+
+  @@unique([workspaceId, quoteId, id])
+  @@index([workspaceId, quoteId, position])
+  @@map("quote_sections")
+}
+
+model QuoteLine {
+  id              String         @id @default(uuid())
+  workspaceId     String         @map("workspace_id")
+  quoteId         String         @map("quote_id")
+  sectionId       String?        @map("section_id")
+  position        Int            @default(0)
+  kind            String
+  label           String
+  descriptionMd   String         @default("") @map("description_md")
+  qty             Decimal        @default(1) @db.Decimal(16, 4)
+  unit            String         @default("item")
+  unitPriceCents  Int            @map("unit_price_cents")
+  discountBps     Int?           @map("discount_bps")
+  discountCents   Int?           @map("discount_cents")
+  statusTag       String         @default("proposed") @map("status_tag")
+  recurring       Json?
+  hourly          Json?
+  milestone       Json?
+  paymentSplit    Json           @default("[50,50]") @map("payment_split")
+  optionGroup     Json?          @map("option_group")
+  selected        Boolean        @default(false)
+  priceBookItemId String?        @map("price_book_item_id")
+  quote           Quote          @relation(fields: [workspaceId, quoteId], references: [workspaceId, id], onDelete: Cascade)
+  section         QuoteSection?  @relation(fields: [workspaceId, quoteId, sectionId], references: [workspaceId, quoteId, id])
+  priceBookItem   PriceBookItem? @relation(fields: [workspaceId, priceBookItemId], references: [workspaceId, id])
+
+  @@index([workspaceId, quoteId, position])
+  @@map("quote_lines")
+}
+
+model PriceBookItem {
+  id                String      @id @default(uuid())
+  workspaceId       String      @map("workspace_id")
+  sku               String
+  label             String
+  kind              String
+  unit              String
+  defaultPriceCents Int         @map("default_price_cents")
+  descriptionMd     String      @default("") @map("description_md")
+  active            Boolean     @default(true)
+  workspace         Workspace   @relation(fields: [workspaceId], references: [id])
+  lines             QuoteLine[]
+
+  @@unique([workspaceId, id])
+  @@unique([workspaceId, sku])
+  @@map("price_book_items")
+}
+
+model QuoteCost {
+  id          String @id @default(uuid())
+  workspaceId String @map("workspace_id")
+  quoteId     String @map("quote_id")
+  label       String
+  amountCents Int    @map("amount_cents")
+  kind        String
+  notes       String @default("")
+  quote       Quote  @relation(fields: [workspaceId, quoteId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@index([workspaceId, quoteId])
+  @@map("quote_costs")
+}
+
+model QuoteRecipient {
+  id          String @id @default(uuid())
+  workspaceId String @map("workspace_id")
+  quoteId     String @map("quote_id")
+  name        String
+  email       String
+  role        String
+  addedBy     String @map("added_by")
+  quote       Quote  @relation(fields: [workspaceId, quoteId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@unique([workspaceId, quoteId, email])
+  @@map("quote_recipients")
+}
+
+model QuoteAttachment {
+  id          String @id @default(uuid())
+  workspaceId String @map("workspace_id")
+  quoteId     String @map("quote_id")
+  assetId     String @map("asset_id")
+  label       String
+  quote       Quote  @relation(fields: [workspaceId, quoteId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@index([workspaceId, quoteId])
+  @@map("quote_attachments")
+}
+
+
+// M2 persistence. Snapshots exclude studio-only fields at the query boundary.
+model QuoteVersion {
+  id               String @id @default(uuid())
+  workspaceId      String @map("workspace_id")
+  quoteId          String @map("quote_id")
+  versionNo        Int @map("version_no")
+  disposition      String @default("current")
+  approvalState String @default("pending") @map("approval_state")
+  emailOpsItemId String? @map("email_ops_item_id")
+  emailOpsMessageId String? @map("email_ops_message_id")
+  sendKeyHash String? @map("send_key_hash")
+  snapshot         Json
+  renderHash       String @map("render_hash")
+  pdfAssetRef      String? @map("pdf_asset_ref")
+  acceptedSnapshot Json? @map("accepted_snapshot")
+  acceptedAt       DateTime? @map("accepted_at")
+  acceptedBy       Json? @map("accepted_by")
+  createdAt        DateTime @default(now()) @map("created_at")
+  quote            Quote @relation(fields: [workspaceId, quoteId], references: [workspaceId, id], onDelete: Cascade)
+  tokens           QuoteShareToken[]
+  events           QuoteEvent[]
+
+  @@unique([workspaceId, quoteId, id])
+  @@unique([workspaceId, quoteId, versionNo])
+  @@unique([workspaceId, quoteId, sendKeyHash])
+  @@map("quote_versions")
+}
+
+model QuoteShareToken {
+  id          String @id @default(uuid())
+  workspaceId String @map("workspace_id")
+  quoteId     String @map("quote_id")
+  versionId   String @map("version_id")
+  tokenHash   String @unique @map("token_hash")
+  expiresAt   DateTime @map("expires_at")
+  activatedAt DateTime? @map("activated_at")
+  revokedAt   DateTime? @map("revoked_at")
+  viewCount   Int @default(0) @map("view_count")
+  lastViewedAt DateTime? @map("last_viewed_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+  quote       Quote @relation(fields: [workspaceId, quoteId], references: [workspaceId, id], onDelete: Cascade)
+  version     QuoteVersion @relation(fields: [workspaceId, quoteId, versionId], references: [workspaceId, quoteId, id], onDelete: Cascade)
+  pending     QuotePendingAcceptance[]
+
+  @@unique([workspaceId, quoteId, versionId, id])
+  @@index([workspaceId, expiresAt])
+  @@map("quote_share_tokens")
+}
+
+model QuotePendingAcceptance {
+  id               String @id @default(uuid())
+  workspaceId      String @map("workspace_id")
+  quoteId          String @map("quote_id")
+  versionId        String @map("version_id")
+  tokenId          String @map("token_id")
+  name             String
+  email            String
+  title            String?
+  selectedLineIds  Json @map("selected_line_ids")
+  codeHash         String @map("code_hash")
+  attempts         Int @default(0)
+  deliveryState    String @default("pending") @map("delivery_state")
+  beginKeyHash     String @map("begin_key_hash")
+  requestHash      String @map("request_hash")
+  confirmReceipts Json @default("[]") @map("confirm_receipts")
+  confirmKeyHash   String? @map("confirm_key_hash")
+  confirmedAt      DateTime? @map("confirmed_at")
+  voidedAt         DateTime? @map("voided_at")
+  expiresAt        DateTime @map("expires_at")
+  createdAt        DateTime @default(now()) @map("created_at")
+  ip               String?
+  ua               String?
+  quote            Quote @relation(fields: [workspaceId, quoteId], references: [workspaceId, id], onDelete: Cascade)
+  token            QuoteShareToken @relation(fields: [workspaceId, quoteId, versionId, tokenId], references: [workspaceId, quoteId, versionId, id], onDelete: Cascade)
+
+  @@unique([workspaceId, tokenId, beginKeyHash])
+  @@index([workspaceId, expiresAt])
+  @@map("quote_pending_acceptances")
+}
+
+model QuoteEvent {
+  id          String @id @default(uuid())
+  workspaceId String @map("workspace_id")
+  quoteId     String @map("quote_id")
+  versionId   String? @map("version_id")
+  kind        String
+  actor       String
+  data        Json?
+  ip          String?
+  ua          String?
+  at          DateTime @default(now())
+  quote       Quote @relation(fields: [workspaceId, quoteId], references: [workspaceId, id], onDelete: Cascade)
+  version     QuoteVersion? @relation(fields: [workspaceId, quoteId, versionId], references: [workspaceId, quoteId, id])
+
+  @@index([workspaceId, quoteId, at])
+  @@map("quote_events")
+}
+
+
+model WorkspaceLetterhead {
+  workspaceId String @id @map("workspace_id")
+  accountingEntityId String @map("accounting_entity_id")
+  brandId String? @map("brand_id")
+  contactOrgId String? @map("contact_org_id")
+  quoteEmail String? @map("quote_email")
+  website String?
+  partnerDisplay String @default("trading_name") @map("partner_display")
+  @@map("workspace_letterheads")
 }

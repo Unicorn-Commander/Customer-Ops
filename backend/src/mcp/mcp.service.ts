@@ -1,3 +1,7 @@
+import { QuoteDocumentService } from '../quotes/quote-document.service';
+import { QuotesLifecycleService } from '../quotes/quotes-lifecycle.service';
+import { QuotesService } from '../quotes/quotes.service';
+import { registerQuoteTools, registerQuoteLifecycleTools } from './quotes.tools';
 /**
  * Builds a per-request MCP server scoped to one authenticated user.
  *
@@ -8,7 +12,7 @@
  * identity / membership and inside the RLS transaction (via CustomersService).
  */
 
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { User, AuditAction, WorkspaceRole } from '@prisma/client';
 import { z } from 'zod';
 import { MembershipService } from '../common/workspace/membership.service';
@@ -47,6 +51,9 @@ export class McpService {
     private readonly leads: LeadIntakeService,
     private readonly workspaces: WorkspaceContextService,
     private readonly audit: AuditService,
+    @Optional() private readonly quotes?: QuotesService,
+    @Optional() private readonly quotesLifecycle?: QuotesLifecycleService,
+    @Optional() private readonly quoteDocuments?: QuoteDocumentService,
   ) {}
 
   /**
@@ -62,7 +69,10 @@ export class McpService {
     result: { customerId: string; agent: string; tierUsed?: string | null },
   ): Promise<void> {
     try {
-      const workspaceId = await this.workspaces.resolveAuthorized(user, requestedWorkspaceId ?? null);
+      const workspaceId = await this.workspaces.resolveAuthorized(
+        user,
+        requestedWorkspaceId ?? null,
+      );
       await this.audit.log({
         workspaceId,
         userId: ucUidOf(user),
@@ -719,6 +729,10 @@ export class McpService {
       async (args: any) => wrap(await tools.discardLeadIntake(user, args)),
     );
 
+    if (this.quotes) {
+      registerQuoteTools(server, user, this.quotes);
+      registerQuoteLifecycleTools(server, user, this.quotesLifecycle, this.quoteDocuments);
+    }
     return server;
   }
 }
