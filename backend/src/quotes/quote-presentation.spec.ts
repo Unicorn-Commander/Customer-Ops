@@ -1,3 +1,4 @@
+import { AccountingOpsClient } from '../accounting-ops/accounting-ops.client';
 import { QuotePresentationService } from './quote-presentation.service';
 
 describe('Federated letterhead (no legal cache)', () => {
@@ -9,18 +10,18 @@ describe('Federated letterhead (no legal cache)', () => {
         withWorkspace: async (_w: any, _u: any, fn: any) =>
           fn({ workspaceLetterhead: { findUnique: async () => setting } }),
       } as any,
-      {
+      new AccountingOpsClient({
         get: (k: string) =>
           (
             ({
-              ACCOUNTING_OPS_BASE_URL: 'https://accounting.example.invalid',
-              ACCOUNTING_OPS_SERVICE_TOKEN: 'fixture-only',
+              AO_BASE_URL: 'https://accounting.example.invalid',
+              AO_SERVICE_TOKEN: 'fixture-only',
               ...config,
             }) as any
           )[k],
       } as any,
       brigade,
-      { resolveSync: () => null } as any,
+      { resolveSync: () => 'ao-ws' } as any),
       {
         getContact: async () => ({ displayName: 'Synthetic recipient', currentOrgName: null }),
       } as any,
@@ -59,21 +60,22 @@ describe('Federated letterhead (no legal cache)', () => {
       address_lines: [],
     });
   });
-  it.each([
-    [undefined, 'invoices:read'],
-    ['  invoices:read custom:read  ', 'invoices:read custom:read'],
-    ['   ', 'invoices:read'],
-  ])('uses the configured Accounting-Ops scope (%s)', async (scope, expected) => {
+  it('uses the shared client with read-only STS and the mapped workspace', async () => {
     const exchangedToken = jest.fn().mockResolvedValue('fixture-only');
     global.fetch = jest.fn().mockResolvedValue(new Response('[]'));
-    await service(
-      { accountingEntityId: 'entity' },
-      { ACCOUNTING_OPS_AUTH_MODE: 'brigade-sts', ...(scope === undefined ? {} : { ACCOUNTING_OPS_SCOPE: scope }) },
-      { exchangedToken },
-    ).letterhead('ws');
-    expect(exchangedToken).toHaveBeenCalledWith({
-      audience: 'accounting-ops-app', scope: expected, workspaceId: 'ws',
-    });
+    await service({ accountingEntityId: 'entity' }, { AO_AUTH_MODE: 'brigade-sts' }, { exchangedToken }).letterhead('ws');
+    expect(exchangedToken).toHaveBeenCalledWith({ audience: 'accounting-ops', scope: 'invoices:read', workspaceId: 'ao-ws' });
+    expect(global.fetch).toHaveBeenCalledWith('https://accounting.example.invalid/api/workspaces/ao-ws/entities', expect.objectContaining({ headers: expect.objectContaining({ 'X-Workspace-Id': 'ao-ws' }), redirect: 'error' }));
   });
-
+  it('does not fetch when the shared client is unconfigured', async () => {
+    global.fetch = jest.fn();
+    await service({ accountingEntityId: 'entity' }, { AO_BASE_URL: '' }).letterhead('ws');
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+  it('fails closed before fetching when the shared exchange fails', async () => {
+    global.fetch = jest.fn();
+    const result = await service({ accountingEntityId: 'entity' }, { AO_AUTH_MODE: 'brigade-sts' }, { exchangedToken: jest.fn().mockResolvedValue(null) }).letterhead('ws');
+    expect(result.degradations).toContain('vendor_details_unavailable');
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
 });

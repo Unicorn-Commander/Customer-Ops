@@ -50,6 +50,8 @@ export abstract class AccountingOpsPort {
    * `GET /health/integrations` rather than hiding behind a degrade-clean panel).
    * Never throws — every failure is folded into the returned SeamHealth.
    */
+  abstract getEntity(workspaceId: string, entityId: string): Promise<{ id: string; legal_name: string; status: string } | null>;
+
   abstract ping(): Promise<SeamHealth>;
 
   /**
