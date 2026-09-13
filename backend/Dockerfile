@@ -21,8 +21,8 @@ RUN npm prune --omit=dev
 FROM node:20-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
-# The Prisma migration/query engine needs libssl at runtime too.
-RUN apk add --no-cache openssl libc6-compat
+# Prisma needs libssl; quote PDFs use puppeteer-core with system Chromium.
+RUN apk add --no-cache openssl libc6-compat chromium font-noto
 
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
