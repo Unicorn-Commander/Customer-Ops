@@ -419,4 +419,55 @@ describe('AccountingOpsClient (Accounting-Ops MOCKED)', () => {
       expect(fetchSpy.mock.calls[0][1].headers['X-Workspace-Id']).toBe('ws-aaaa');
     });
   });
+  describe('A51 direct client credentials', () => {
+    function setup(token: string | null = 'direct-fixture') {
+      const brigade = {
+        exchangedToken: jest.fn().mockResolvedValue('read-fixture'),
+        clientCredentialsToken: jest.fn().mockResolvedValue(token),
+      };
+      const client = new AccountingOpsClient(
+        makeConfig({ ...CONFIGURED_ENFORCE, AO_AUTH_MODE: 'client-credentials' }),
+        brigade as any, makeFedMap('mapped-ws'),
+      );
+      global.fetch = jest.fn().mockResolvedValue(jsonResponse(rpcOk(aoInvoiceView())));
+      return { client, brigade };
+    }
+    it('writes with the direct token and mapped workspace, without exchange', async () => {
+      const { client, brigade } = setup();
+      await client.createInvoice(ENTITLED, DRAFT);
+      expect(brigade.clientCredentialsToken).toHaveBeenCalledWith('invoices:write');
+      expect(brigade.exchangedToken).not.toHaveBeenCalled();
+      const init = (global.fetch as jest.Mock).mock.calls[0][1];
+      expect(init.headers.Authorization).toBe('Bearer direct-fixture');
+      expect(init.headers['X-Workspace-Id']).toBe('mapped-ws');
+      expect(JSON.parse(init.body).params.arguments.workspace_id).toBe('mapped-ws');
+    });
+    it('does not fall back to static or exchanged tokens after mint failure', async () => {
+      const { client, brigade } = setup(null);
+      expect(await client.createInvoice(ENTITLED, DRAFT)).toBeNull();
+      expect(global.fetch).not.toHaveBeenCalled();
+      expect(brigade.exchangedToken).not.toHaveBeenCalled();
+    });
+    it('keeps the entitlement check ahead of token minting', async () => {
+      const { client, brigade } = setup();
+      expect(await client.createInvoice(NOT_ENTITLED, DRAFT)).toBeNull();
+      expect(brigade.clientCredentialsToken).not.toHaveBeenCalled();
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+    it('keeps entity reads on the Brigade read rail', async () => {
+      const { client, brigade } = setup();
+      global.fetch = jest.fn().mockResolvedValue(new Response('[]'));
+      await client.getEntity('local-ws', 'entity');
+      expect(brigade.exchangedToken).toHaveBeenCalledWith({ audience: 'accounting-ops', scope: 'invoices:read', workspaceId: 'mapped-ws' });
+      expect(brigade.clientCredentialsToken).not.toHaveBeenCalled();
+      expect((global.fetch as jest.Mock).mock.calls[0][1].headers.Authorization).toBe('Bearer read-fixture');
+    });
+    it('polls with only the exchanged read scope', async () => {
+      const { client, brigade } = setup();
+      await client.getInvoiceById(ENTITLED, 'invoice');
+      expect(brigade.exchangedToken).toHaveBeenCalledWith({ audience: 'accounting-ops', scope: 'invoices:read', workspaceId: 'mapped-ws' });
+      expect(brigade.clientCredentialsToken).not.toHaveBeenCalled();
+    });
+  });
+
 });

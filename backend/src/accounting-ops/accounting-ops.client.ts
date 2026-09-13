@@ -26,6 +26,8 @@
  *   - `static` (default): forward a configured service token (AO_SERVICE_TOKEN);
  *   - `brigade-sts`: mint a customer-ops client-credentials token and exchange it
  *     at Brigade (RFC-8693) for an `aud=accounting-ops`, workspace-bound token.
+ *   - `client-credentials`: writes use the plain Keycloak service-account token
+ *     (invoices:write); reads keep the Brigade read rail (Amendment 12 A51).
  * The workspace is addressed via the documented precedence (X-Workspace-Id header,
  * which AO re-gates against membership). The mint seam is isolated in
  * `authHeaders()` / `bearerFor()` so the mode is a one-knob change — exactly like
@@ -192,10 +194,10 @@ export class AccountingOpsClient extends AccountingOpsPort {
    *  mints a customer-ops client-credentials token and exchanges it at Brigade
    *  (RFC-8693) for an accounting-ops-audience, workspace-bound token. DEFAULT
    *  `static` so behavior is unchanged when AO_AUTH_MODE is unset. */
-  private get authMode(): 'static' | 'brigade-sts' {
-    return this.config.get<string>('AO_AUTH_MODE')?.trim() === 'brigade-sts'
-      ? 'brigade-sts'
-      : 'static';
+  private get authMode(): 'static' | 'brigade-sts' | 'client-credentials' {
+    const mode = this.config.get<string>('AO_AUTH_MODE')?.trim();
+    if (mode === 'client-credentials') return mode;
+    return mode === 'brigade-sts' ? mode : 'static';
   }
 
   /** Resolve the bearer for a federation call (per the auth mode). `static`
@@ -206,6 +208,9 @@ export class AccountingOpsClient extends AccountingOpsPort {
     if (this.authMode === 'static') {
       const t = this.config.get<string>('AO_SERVICE_TOKEN');
       return t && t.trim() ? t.trim() : null;
+    }
+    if (this.authMode === 'client-credentials' && scope.includes('invoices:write')) {
+      return this.brigade.clientCredentialsToken('invoices:write');
     }
     return this.brigade.exchangedToken({
       audience: this.config.get<string>('AO_AUDIENCE')?.trim() || 'accounting-ops',
@@ -277,11 +282,17 @@ export class AccountingOpsClient extends AccountingOpsPort {
       params: { name, arguments: args },
     };
 
+    const scope = this.authMode === 'client-credentials'
+      ? (name === 'create_invoice_from_draft' ? 'invoices:write' : 'invoices:read')
+      : 'invoices:read invoices:write';
+    const headers = await this.authHeaders(ctx, scope);
+    if (this.authMode === 'client-credentials' && !headers.Authorization) return null;
+
     let res: Response;
     try {
       res = await this.fetchWithTimeout(`${base}/mcp/`, {
         method: 'POST',
-        headers: await this.authHeaders(ctx),
+        headers,
         body: JSON.stringify(body),
       });
     } catch (err) {
@@ -378,7 +389,7 @@ export class AccountingOpsClient extends AccountingOpsPort {
     try {
       res = await this.fetchWithTimeout(`${base}/mcp/`, {
         method: 'POST',
-        headers: await this.authHeaders(ctx),
+        headers: await this.authHeaders(ctx, this.authMode === 'client-credentials' ? 'invoices:read' : 'invoices:read invoices:write'),
         body: JSON.stringify(body),
       });
     } catch (err) {
