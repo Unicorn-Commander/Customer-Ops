@@ -84,6 +84,10 @@ export interface MintWorkspaceRequest {
    * — the registry has no scalar owner field; ownership is coarse membership.
    */
   ownerUcUid?: string | null;
+  /** Preserve an existing suite default when creating an additional workspace. */
+  ownerIsDefault?: boolean;
+  /** Optional bounded deadline for callers holding a reservation lock. */
+  timeoutMs?: number;
 }
 
 @Injectable()
@@ -166,11 +170,15 @@ export class UcRegistryClient {
   ): Promise<string | null> {
     let res: Response;
     try {
-      res = await this.fetchWithTimeout(`${base}/workspaces`, {
-        method: 'POST',
-        headers: this.authHeaders(),
-        body: JSON.stringify(this.createBody(workspaceId, req)),
-      });
+      res = await this.fetchWithTimeout(
+        `${base}/workspaces`,
+        {
+          method: 'POST',
+          headers: this.authHeaders(),
+          body: JSON.stringify(this.createBody(workspaceId, req)),
+        },
+        req.timeoutMs,
+      );
     } catch (err) {
       this.logger.warn(`uc-registry register transport error: ${(err as Error).message}`);
       return null;
@@ -218,7 +226,9 @@ export class UcRegistryClient {
     };
     const owner = req.ownerUcUid?.trim();
     if (owner) {
-      body['members'] = [{ user_key: owner, role: 'owner', is_default: true }];
+      body['members'] = [
+        { user_key: owner, role: 'owner', is_default: req.ownerIsDefault ?? true },
+      ];
     }
     return body;
   }
@@ -230,13 +240,13 @@ export class UcRegistryClient {
     return headers;
   }
 
-  private async fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-    try {
-      return await fetch(url, { ...init, signal: controller.signal });
-    } finally {
-      clearTimeout(timer);
-    }
+  private async fetchWithTimeout(
+    url: string,
+    init: RequestInit,
+    limitMs?: number,
+  ): Promise<Response> {
+    const timeout = limitMs && limitMs > 0 ? Math.min(limitMs, this.timeoutMs) : this.timeoutMs;
+    // Keep the deadline active through response-body consumption, not only headers.
+    return fetch(url, { ...init, signal: AbortSignal.timeout(Math.ceil(timeout)) });
   }
 }

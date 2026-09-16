@@ -72,6 +72,20 @@ describe('UcRegistryClient', () => {
     expect(body).not.toHaveProperty('owner_uc_uid');
   });
 
+  it('preserves the suite default for an additional workspace in the actual request body', async () => {
+    const fetchFn = jest.fn(async () => ({
+      ok: true,
+      status: 201,
+      json: async () => ({ workspace_id: SUPPLIED_ID }),
+    })) as any;
+    global.fetch = fetchFn;
+    const client = new UcRegistryClient(makeConfig({ UC_REGISTRY_URL: 'https://registry.test' }));
+    await client.mintWorkspaceId({ ...REQ, ownerIsDefault: false });
+    expect(JSON.parse(fetchFn.mock.calls[0][1].body).members).toEqual([
+      { user_key: 'kc-dana', role: 'owner', is_default: false },
+    ]);
+  });
+
   it('mints its own v7 when no workspaceId is supplied, and registers THAT', async () => {
     let sent: string | undefined;
     const fetchFn = jest.fn(async (_url: string, init: any) => {
@@ -145,9 +159,9 @@ describe('UcRegistryClient', () => {
     expect(res.source).toBe('local-fallback');
     expect(res.workspaceId).toBe(SUPPLIED_ID);
     // The degrade is loud: a transport WARN + a "using local id" WARN.
-    expect(
-      warnSpy.mock.calls.some((c) => String(c[0]).includes('register transport error')),
-    ).toBe(true);
+    expect(warnSpy.mock.calls.some((c) => String(c[0]).includes('register transport error'))).toBe(
+      true,
+    );
     expect(
       warnSpy.mock.calls.some((c) => String(c[0]).includes('locally-minted workspace id')),
     ).toBe(true);

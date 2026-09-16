@@ -1,3 +1,4 @@
+import { WorkspaceInvitationsService } from '../common/workspace/workspace-invitations.service';
 import { ConflictException, Injectable, UnauthorizedException, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma/prisma.service';
@@ -20,6 +21,7 @@ export interface JwtPayload {
    * Absent/empty ⇒ enforce denies (degrade-clean) — see docs/runbooks/entitlement-enforce.md.
    */
   entitlements?: string[];
+  email_verified?: boolean;
 }
 
 /**
@@ -49,6 +51,7 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly provisioning: WorkspaceProvisioningService,
     private readonly membership: MembershipService,
+    private readonly invitations: WorkspaceInvitationsService,
   ) {
     const meta = describeAccessList();
     this.logger.log(
@@ -69,12 +72,32 @@ export class AuthService {
     // 1. keycloakId / sub first.
     let user = await this.prisma.user.findUnique({ where: { keycloakId } });
 
-    // 2. email linking fallback.
+    // 2. Exact normalized email fallback. A verified email is required to
+    // link an unbound legacy row; an already-linked identity is never rebound.
     if (!user && email) {
-      user = await this.prisma.user.findUnique({ where: { email } });
+      const matches = await this.prisma.user.findMany({
+        where: { email: { equals: email.trim(), mode: 'insensitive' } },
+        take: 2,
+      });
+      if (matches.length > 1) throw new UnauthorizedException('Ambiguous identity email.');
+      user = matches[0] ?? null;
       if (user) {
-        user = await this.prisma.user.update({ where: { id: user.id }, data: { keycloakId } });
-        this.logger.log(`Linked existing user ${email} to Keycloak sub ${keycloakId}`);
+        if (
+          profile?.email_verified !== true ||
+          (user.keycloakId && user.keycloakId !== keycloakId)
+        ) {
+          throw new UnauthorizedException('Verified identity does not match the existing account.');
+        }
+        if (!user.keycloakId) {
+          const linked = await this.prisma.user.updateMany({
+            where: { id: user.id, keycloakId: null },
+            data: { keycloakId },
+          });
+          user = await this.prisma.user.findUnique({ where: { id: user.id } });
+          if (!user || user.keycloakId !== keycloakId || linked.count > 1) {
+            throw new UnauthorizedException('Identity linking conflict.');
+          }
+        }
       }
     }
 
@@ -102,6 +125,31 @@ export class AuthService {
         this.logger.log(
           `Created user from Keycloak SSO: ${email} (role-on-seed ${access.role}; ${access.reason})`,
         );
+      } else if (
+        email &&
+        profile?.email_verified === true &&
+        !profile?.client_id &&
+        !profile?.clientId &&
+        !profile?.act &&
+        !profile?.__federationActor &&
+        (await this.invitations.permitsIdentity(email))
+      ) {
+        // Admission creates only identity. The exact one-time token must still
+        // be accepted by this verified email to create a scoped membership.
+        try {
+          user = await this.prisma.user.create({
+            data: {
+              email: email.trim().toLowerCase(),
+              keycloakId,
+              username: profile?.preferred_username || email.trim().toLowerCase(),
+              firstName: profile?.given_name || '',
+              lastName: profile?.family_name || '',
+            },
+          });
+        } catch (error) {
+          user = await this.prisma.user.findUnique({ where: { keycloakId } });
+          if (!user || user.email.trim().toLowerCase() !== email.trim().toLowerCase()) throw error;
+        }
       } else if (signupMode() === 'open' && email) {
         // Self-serve (open mode): not on the allow-list → auto-provision the
         // user their OWN workspace + OWNER membership in one transaction.
@@ -139,11 +187,17 @@ export class AuthService {
     (user as User & { __entitlements?: string[] }).__entitlements = Array.isArray(
       (profile as { entitlements?: unknown })?.entitlements,
     )
-      ? ((profile as { entitlements: unknown[] }).entitlements.map((s) => String(s).trim()).filter(
-          Boolean,
-        ) as string[])
+      ? ((profile as { entitlements: unknown[] }).entitlements
+          .map((s) => String(s).trim())
+          .filter(Boolean) as string[])
       : [];
 
+    (user as User & { __verifiedEmail?: string | null }).__verifiedEmail =
+      profile?.email_verified === true &&
+      typeof email === 'string' &&
+      email.trim().toLowerCase() === user.email.trim().toLowerCase()
+        ? user.email.trim().toLowerCase()
+        : null;
     return user;
   }
 
@@ -179,6 +233,9 @@ export class AuthService {
       email: user.email,
       role: 'MEMBER',
       username: user.username,
+      email_verified:
+        (user as User & { __verifiedEmail?: string | null }).__verifiedEmail ===
+        user.email.trim().toLowerCase(),
       // Verified entitlement SKUs (stamped by validateKeycloakUser off the KC
       // access token). Baked into the session token so enforce works on the
       // browser path; [] when the bearer carries none.
@@ -223,6 +280,11 @@ export class AuthService {
         preferred_username: payload.preferred_username,
         given_name: payload.given_name,
         family_name: payload.family_name,
+        email_verified: payload.email_verified === true,
+        client_id: payload.client_id,
+        clientId: payload.clientId,
+        act: payload.act,
+        __federationActor: isBrigadeFederationToken,
       };
       return this.validateKeycloakUser(payload.sub, profile);
     }

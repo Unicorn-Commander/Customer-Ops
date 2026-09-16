@@ -231,6 +231,7 @@ model Workspace {
   quotes                Quote[]
   priceBookItems        PriceBookItem[]
   quoteCounters         QuoteCounter[]
+  invitations           WorkspaceInvitation[]
   memberships           Membership[]
   customers             Customer[]
   customerActivities    CustomerActivity[]
@@ -284,6 +285,41 @@ model WorkspaceEntitlement {
 
   @@index([expiresAt])
   @@map("workspace_entitlements")
+}
+
+/// Durable reservation before registry I/O: repeated owner/request keys reuse one server-minted ID.
+model WorkspaceProvisionRequest {
+  ownerKey          String
+  requestKey        String
+  sourceWorkspaceId String
+  displayName       String
+  workspaceId       String @unique
+  completed         Boolean @default(false)
+  registrySource    String?
+  createdAt         DateTime @default(now())
+
+  @@id([ownerKey, requestKey])
+  @@map("workspace_provision_requests")
+}
+
+/// Manual copy-token invitations. Identity admission is not membership acceptance.
+model WorkspaceInvitation {
+  id          String @id @default(uuid())
+  workspaceId String
+  email       String
+  role        WorkspaceRole @default(MEMBER)
+  tokenHash   String @unique
+  status      String @default("PENDING")
+  invitedBy   String
+  expiresAt   DateTime
+  acceptedBy  String?
+  acceptedAt  DateTime?
+  createdAt   DateTime @default(now())
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([email, status, expiresAt])
+  @@index([workspaceId])
+  @@map("workspace_invitations")
 }
 
 model Membership {

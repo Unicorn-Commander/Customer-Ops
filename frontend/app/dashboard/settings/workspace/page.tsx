@@ -10,15 +10,14 @@
    optimistically but always defers to the server — a 400/403 surfaces inline and
    the optimistic role change rolls back.
 
-   There is NO invite API: new members join through suite SSO / the workspace
-   access list. We say so honestly (an info note, not a fake button) — the same
-   plain, sovereign voice the rest of Settings uses.
+   Owners can create manual invitations and isolated additional workspaces.
    ========================================================================== */
 
+import { OnboardingPanel } from './onboarding-panel';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import Link from 'next/link';
 import {
-  Building2, ArrowLeft, AlertCircle, RefreshCw, UserPlus, Trash2,
+  Building2, ArrowLeft, AlertCircle, RefreshCw, Trash2,
   Loader2, ShieldAlert, Bot,
 } from 'lucide-react';
 import { Badge, Button, cn } from '@/components/ui';
@@ -348,20 +347,9 @@ export default function WorkspacePage() {
                 </div>
               )}
 
-              {/* Honest invite note — there is no invite API. */}
-              <div className="flex items-start gap-2.5 rounded-token border border-dashed border-subtle bg-surface-overlay/40 px-3.5 py-3">
-                <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-token bg-info-subtle text-info">
-                  <UserPlus className="h-[15px] w-[15px]" strokeWidth={2.25} />
-                </span>
-                <div className="min-w-0">
-                  <p className="text-[13px] font-medium text-secondary">Adding a member</p>
-                  <p className="mt-0.5 text-xs leading-relaxed text-tertiary">
-                    New members join through Unicorn Commander SSO and the workspace access list — there&rsquo;s
-                    no invite to send from here. Once someone has access, they appear in this roster and an
-                    owner can set their role. Self-serve invites are coming.
-                  </p>
-                </div>
-              </div>
+              {canManage && workspaceId ? <OnboardingPanel workspaceId={workspaceId} /> : (
+                <p className="text-sm text-secondary">Ask a workspace owner for an invitation. <Link className="text-accent underline" href="/invitations">Accept an invitation</Link></p>
+              )}
             </div>
           </section>
         </>
