@@ -84,10 +84,10 @@ suite('scoped onboarding real PostgreSQL and HTTP guards', () => {
     })
       .overrideProvider(UcRegistryClient)
       .useValue({
-        mintWorkspaceId: async (input: any) => ({
+        mintWorkspaceId: jest.fn(async (input: any) => ({
           workspaceId: input.workspaceId,
           source: 'local-fallback',
-        }),
+        })),
       })
       .compile();
     app = module.createNestApplication();
@@ -432,6 +432,11 @@ suite('scoped onboarding real PostgreSQL and HTTP guards', () => {
     const results: any[] = await Promise.all(responses.map((r) => r.json()));
     expect(results[0].workspace_id).toBe(results[1].workspace_id);
     expect(results.filter((r) => r.replayed)).toHaveLength(1);
+    const registry = app.get(UcRegistryClient).mintWorkspaceId as jest.Mock;
+    const calls = registry.mock.calls.filter(([input]) => input.workspaceId === results[0].workspace_id);
+    expect(calls).toHaveLength(1);
+    expect(calls[0][0]).toMatchObject({ ownerIsDefault: false, timeoutMs: 3000 });
+
     const replay = await request('workspaces', 'POST', ownerToken, body);
     expect(replay.status).toBe(201);
     expect(((await replay.json()) as any).workspace_id).toBe(results[0].workspace_id);

@@ -97,59 +97,67 @@ export class WorkspaceInvitationsService {
       return row;
     });
     const slug = `workspace-${reservation.workspaceId.replace(/-/g, '')}`;
-    // Supplying the reserved UUID makes the existing registry call idempotent,
-    // even across a process crash. The caller cannot choose or claim a registry ID.
-    const minted = reservation.completed
-      ? { workspaceId: reservation.workspaceId, source: reservation.registrySource }
-      : await this.registry.mintWorkspaceId({
-          workspaceId: reservation.workspaceId,
+    return this.prisma.withWorkspace(
+      reservation.workspaceId,
+      ownerKey,
+      async (tx) => {
+        await tx.$queryRaw`SELECT "requestKey" FROM workspace_provision_requests WHERE "ownerKey"=${ownerKey} AND "requestKey"=${requestKey} FOR UPDATE`;
+        const current = await tx.workspaceProvisionRequest.findUniqueOrThrow({
+          where: { ownerKey_requestKey: { ownerKey, requestKey } },
+        });
+        if (current.completed) {
+          await this.owner(tx, current.workspaceId, user);
+          return {
+            workspace_id: current.workspaceId,
+            display_name: current.displayName,
+            your_role: 'owner',
+            workspace_id_source: current.registrySource,
+            replayed: true,
+          };
+        }
+        // Separate short authorization transaction: do not pin source membership
+        // locks during network I/O. Recheck under locks before local commit below.
+        await this.prisma.withWorkspace(sourceWorkspaceId, ownerKey, (authTx) =>
+          this.owner(authTx, sourceWorkspaceId, user),
+        );
+        const minted = await this.registry.mintWorkspaceId({
+          workspaceId: current.workspaceId,
           displayName,
           slug,
           ownerUcUid: ownerKey,
+          ownerIsDefault: false,
+          timeoutMs: 3000,
         });
-    if (minted.workspaceId !== reservation.workspaceId)
-      throw new ConflictException('Registry did not confirm the reserved workspace identity.');
-    return this.prisma.withWorkspace(reservation.workspaceId, ownerKey, async (tx) => {
-      await tx.$queryRaw`SELECT "requestKey" FROM workspace_provision_requests WHERE "ownerKey"=${ownerKey} AND "requestKey"=${requestKey} FOR UPDATE`;
-      await this.owner(tx, sourceWorkspaceId, user);
-      const current = await tx.workspaceProvisionRequest.findUniqueOrThrow({
-        where: { ownerKey_requestKey: { ownerKey, requestKey } },
-      });
-      if (current.completed) {
-        await this.owner(tx, current.workspaceId, user);
+        if (minted.workspaceId !== current.workspaceId)
+          throw new ConflictException('Registry did not confirm the reserved workspace identity.');
+        await this.owner(tx, sourceWorkspaceId, user);
+        const workspace = await tx.workspace.create({
+          data: { id: current.workspaceId, slug, displayName },
+        });
+        await tx.membership.create({
+          data: {
+            workspaceId: workspace.id,
+            userKey: ownerKey,
+            role: WorkspaceRole.OWNER,
+            status: MembershipStatus.ACTIVE,
+            isDefault: false,
+          },
+        });
+        await this.audit(tx, workspace.id, user, AuditAction.CREATE, 'workspace', workspace.id);
+        await tx.workspaceProvisionRequest.update({
+          where: { ownerKey_requestKey: { ownerKey, requestKey } },
+          data: { completed: true, registrySource: minted.source },
+        });
         return {
-          workspace_id: current.workspaceId,
-          display_name: current.displayName,
+          workspace_id: workspace.id,
+          display_name: workspace.displayName,
           your_role: 'owner',
-          workspace_id_source: current.registrySource,
-          replayed: true,
+          workspace_id_source: minted.source,
+          replayed: false,
         };
-      }
-      const workspace = await tx.workspace.create({
-        data: { id: current.workspaceId, slug, displayName },
-      });
-      await tx.membership.create({
-        data: {
-          workspaceId: workspace.id,
-          userKey: ownerKey,
-          role: WorkspaceRole.OWNER,
-          status: MembershipStatus.ACTIVE,
-          isDefault: false,
-        },
-      });
-      await this.audit(tx, workspace.id, user, AuditAction.CREATE, 'workspace', workspace.id);
-      await tx.workspaceProvisionRequest.update({
-        where: { ownerKey_requestKey: { ownerKey, requestKey } },
-        data: { completed: true, registrySource: minted.source },
-      });
-      return {
-        workspace_id: workspace.id,
-        display_name: workspace.displayName,
-        your_role: 'owner',
-        workspace_id_source: minted.source,
-        replayed: false,
-      };
-    });
+      },
+      { timeout: 15000, maxWait: 5000 },
+    );
   }
 
   async create(
