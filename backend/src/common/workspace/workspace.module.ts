@@ -1,3 +1,4 @@
+import { WorkspaceInvitationsService } from './workspace-invitations.service';
 import { Module } from '@nestjs/common';
 import { MembershipService } from './membership.service';
 import { WorkspaceContextService } from './workspace-context.service';
@@ -25,6 +26,7 @@ import { EntitlementsModule } from '../../entitlements/entitlements.module';
     WorkspaceMembershipGuard,
     WorkspaceRoleGuard,
     WorkspaceProvisioningService,
+    WorkspaceInvitationsService,
   ],
   exports: [
     MembershipService,
@@ -33,6 +35,7 @@ import { EntitlementsModule } from '../../entitlements/entitlements.module';
     WorkspaceMembershipGuard,
     WorkspaceRoleGuard,
     WorkspaceProvisioningService,
+    WorkspaceInvitationsService,
   ],
 })
 export class WorkspaceModule {}

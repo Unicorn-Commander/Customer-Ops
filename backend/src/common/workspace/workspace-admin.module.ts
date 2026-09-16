@@ -1,3 +1,4 @@
+import { WorkspaceOnboardingController, OnboardingSessionGuard } from './workspace-onboarding.controller';
 import { Module } from '@nestjs/common';
 import { WorkspaceModule } from './workspace.module';
 import { AuditModule } from '../../audit/audit.module';
@@ -13,6 +14,7 @@ import { WorkspaceController } from './workspace.controller';
  */
 @Module({
   imports: [WorkspaceModule, AuditModule],
-  controllers: [WorkspaceController],
+  controllers: [WorkspaceController, WorkspaceOnboardingController],
+  providers: [OnboardingSessionGuard],
 })
 export class WorkspaceAdminModule {}

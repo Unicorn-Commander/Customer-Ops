@@ -279,6 +279,8 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         __workspaceClaim?: string | null;
         __ucUid?: string | null;
         __entitlements?: string[] | null;
+        __verifiedEmail?: string | null;
+        __humanSession?: boolean;
       };
       augmented.__workspaceClaim = payload?.workspace_id ?? payload?.tenant_id ?? null;
       augmented.__ucUid = typeof payload?.sub === 'string' ? payload.sub : null;
@@ -288,6 +290,11 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       // subscription.products) and normalized to a string[]; never an HTTP
       // header — this rides only on the cryptographically-verified token.
       augmented.__entitlements = JwtStrategy.readEntitlements(payload);
+      // Onboarding management accepts only this app's local human SSO session.
+      augmented.__humanSession = !payload?.iss && !payload?.act && !payload?.client_id && !payload?.clientId;
+      augmented.__verifiedEmail = payload?.email_verified === true && typeof payload?.email === 'string' &&
+        payload.email.trim().toLowerCase() === user.email.trim().toLowerCase()
+          ? user.email.trim().toLowerCase() : null;
       return user;
     } catch (error) {
       this.logger.warn(`JWT validation failed: ${(error as Error).message ?? 'unknown'}`);

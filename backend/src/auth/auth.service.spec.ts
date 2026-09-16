@@ -41,6 +41,7 @@ describe('AuthService.validateKeycloakUser — signup modes', () => {
     const prisma = {
       user: {
         findUnique: jest.fn(async () => opts?.findUniqueResult ?? null),
+        findMany: jest.fn(async () => []),
         create: jest.fn(async ({ data }: any) => userRow(data)),
         update: jest.fn(async ({ data }: any) => ({ ...data })),
       },
@@ -65,7 +66,7 @@ describe('AuthService.validateKeycloakUser — signup modes', () => {
       ensureSeededMembership: jest.fn(async () => undefined),
     } as unknown as MembershipService;
     const jwt = { sign: jest.fn(() => 'tok') } as unknown as JwtService;
-    const svc = new AuthService(jwt, prisma, provisioning, membership);
+    const svc = new AuthService(jwt, prisma, provisioning, membership, { permitsIdentity: jest.fn().mockResolvedValue(false) } as any);
     return { svc, prisma, provisioning, membership };
   }
 
