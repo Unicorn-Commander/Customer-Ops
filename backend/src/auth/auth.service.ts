@@ -76,17 +76,22 @@ export class AuthService {
     // link an unbound legacy row; an already-linked identity is never rebound.
     if (!user && email) {
       const matches = await this.prisma.user.findMany({
-        where: { email: { equals: email.trim(), mode: 'insensitive' } }, take: 2,
+        where: { email: { equals: email.trim(), mode: 'insensitive' } },
+        take: 2,
       });
       if (matches.length > 1) throw new UnauthorizedException('Ambiguous identity email.');
       user = matches[0] ?? null;
       if (user) {
-        if (profile?.email_verified !== true || (user.keycloakId && user.keycloakId !== keycloakId)) {
+        if (
+          profile?.email_verified !== true ||
+          (user.keycloakId && user.keycloakId !== keycloakId)
+        ) {
           throw new UnauthorizedException('Verified identity does not match the existing account.');
         }
         if (!user.keycloakId) {
           const linked = await this.prisma.user.updateMany({
-            where: { id: user.id, keycloakId: null }, data: { keycloakId },
+            where: { id: user.id, keycloakId: null },
+            data: { keycloakId },
           });
           user = await this.prisma.user.findUnique({ where: { id: user.id } });
           if (!user || user.keycloakId !== keycloakId || linked.count > 1) {
@@ -120,17 +125,27 @@ export class AuthService {
         this.logger.log(
           `Created user from Keycloak SSO: ${email} (role-on-seed ${access.role}; ${access.reason})`,
         );
-      } else if (email && profile?.email_verified === true && !profile?.client_id &&
-        !profile?.clientId && !profile?.act && !profile?.__federationActor &&
-        await this.invitations.permitsIdentity(email)) {
+      } else if (
+        email &&
+        profile?.email_verified === true &&
+        !profile?.client_id &&
+        !profile?.clientId &&
+        !profile?.act &&
+        !profile?.__federationActor &&
+        (await this.invitations.permitsIdentity(email))
+      ) {
         // Admission creates only identity. The exact one-time token must still
         // be accepted by this verified email to create a scoped membership.
         try {
-          user = await this.prisma.user.create({ data: {
-            email: email.trim().toLowerCase(), keycloakId,
-            username: profile?.preferred_username || email.trim().toLowerCase(),
-            firstName: profile?.given_name || '', lastName: profile?.family_name || '',
-          } });
+          user = await this.prisma.user.create({
+            data: {
+              email: email.trim().toLowerCase(),
+              keycloakId,
+              username: profile?.preferred_username || email.trim().toLowerCase(),
+              firstName: profile?.given_name || '',
+              lastName: profile?.family_name || '',
+            },
+          });
         } catch (error) {
           user = await this.prisma.user.findUnique({ where: { keycloakId } });
           if (!user || user.email.trim().toLowerCase() !== email.trim().toLowerCase()) throw error;
@@ -172,15 +187,17 @@ export class AuthService {
     (user as User & { __entitlements?: string[] }).__entitlements = Array.isArray(
       (profile as { entitlements?: unknown })?.entitlements,
     )
-      ? ((profile as { entitlements: unknown[] }).entitlements.map((s) => String(s).trim()).filter(
-          Boolean,
-        ) as string[])
+      ? ((profile as { entitlements: unknown[] }).entitlements
+          .map((s) => String(s).trim())
+          .filter(Boolean) as string[])
       : [];
 
     (user as User & { __verifiedEmail?: string | null }).__verifiedEmail =
-      profile?.email_verified === true && typeof email === 'string' &&
+      profile?.email_verified === true &&
+      typeof email === 'string' &&
       email.trim().toLowerCase() === user.email.trim().toLowerCase()
-        ? user.email.trim().toLowerCase() : null;
+        ? user.email.trim().toLowerCase()
+        : null;
     return user;
   }
 
@@ -216,7 +233,9 @@ export class AuthService {
       email: user.email,
       role: 'MEMBER',
       username: user.username,
-      email_verified: (user as User & { __verifiedEmail?: string | null }).__verifiedEmail === user.email.trim().toLowerCase(),
+      email_verified:
+        (user as User & { __verifiedEmail?: string | null }).__verifiedEmail ===
+        user.email.trim().toLowerCase(),
       // Verified entitlement SKUs (stamped by validateKeycloakUser off the KC
       // access token). Baked into the session token so enforce works on the
       // browser path; [] when the bearer carries none.
