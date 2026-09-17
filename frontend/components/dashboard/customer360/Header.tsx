@@ -17,9 +17,9 @@ import { PriorityPill } from './shared';
 /** A compact key/value chip in the header's facts strip. */
 function FactChip({ icon: Icon, children }: { icon: LucideIcon; children: React.ReactNode }) {
   return (
-    <span className="inline-flex items-center gap-1.5 text-[13px] text-secondary">
+    <span className="inline-flex min-w-0 max-w-full items-center gap-1.5 text-[13px] text-secondary">
       <Icon className="h-3.5 w-3.5 shrink-0 text-tertiary" strokeWidth={2.25} />
-      <span className="min-w-0 truncate">{children}</span>
+      <span className="min-w-0 break-all">{children}</span>
     </span>
   );
 }
@@ -69,7 +69,7 @@ export function Customer360Header({
 
         <div className="mt-3 flex flex-wrap items-start justify-between gap-5">
           {/* identity */}
-          <div className="flex min-w-0 items-start gap-4">
+          <div className="flex min-w-0 max-w-full items-start gap-4">
             <span
               className={cn(
                 'relative grid h-14 w-14 shrink-0 place-items-center rounded-token-lg bg-gradient-to-br text-lg font-bold text-white shadow-[inset_0_1px_0_0_rgba(255,255,255,0.25),0_8px_20px_-6px_rgba(0,0,0,0.5)]',
@@ -92,12 +92,12 @@ export function Customer360Header({
               <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1.5">
                 {contact?.currentOrgName && <FactChip icon={Building2}>{contact.currentOrgName}</FactChip>}
                 {primaryEmail && (
-                  <a href={`mailto:${primaryEmail}`} className="inline-flex">
+                  <a href={`mailto:${primaryEmail}`} className="inline-flex min-w-0 max-w-full">
                     <FactChip icon={Mail}>{primaryEmail}</FactChip>
                   </a>
                 )}
                 {primaryPhone && (
-                  <a href={`tel:${primaryPhone}`} className="inline-flex">
+                  <a href={`tel:${primaryPhone}`} className="inline-flex min-w-0 max-w-full">
                     <FactChip icon={Phone}>{primaryPhone}</FactChip>
                   </a>
                 )}

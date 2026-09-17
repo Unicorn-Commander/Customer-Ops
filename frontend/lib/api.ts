@@ -112,10 +112,10 @@ export async function exchangeSsoCode(code: string): Promise<{ access_token: str
 }
 
 /** Authenticated GET against the backend. Throws on non-2xx. */
-export async function apiGet<T = unknown>(path: string, token?: string): Promise<T> {
+export async function apiGet<T = unknown>(path: string, token?: string, headers?: Record<string, string>): Promise<T> {
   const bearer = token ?? getToken();
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: bearer ? { Authorization: `Bearer ${bearer}` } : {},
+    headers: { ...headers, ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}) },
   });
   if (!res.ok) {
     if (res.status === 401) handleAuthFailure();
