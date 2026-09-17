@@ -139,6 +139,11 @@ export class AddNoteDto {
 /** Filter/paginate the customers list. */
 export class ListCustomersQueryDto {
   @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  search?: string;
+
+  @IsOptional()
   @IsEnum(RelationshipStage)
   stage?: RelationshipStage;
 

@@ -258,10 +258,11 @@ export class McpService {
         title: 'List relationships',
         description:
           'List the workspace’s customer relationships, optionally filtered by ' +
-          'funnel stage, owner, or lost-status. Each row carries the FEDERATED ' +
+          'funnel stage, owner, lost-status, or search (contact name/email/organization and notes). Each row carries the FEDERATED ' +
           'contact summary (resolved from Contact-Ops, never copied).',
         inputSchema: {
           workspace_id: z.string().optional(),
+          search: z.string().max(200).optional(),
           stage: STAGE.optional(),
           owner_user_key: z.string().optional(),
           include_lost: z.boolean().optional(),

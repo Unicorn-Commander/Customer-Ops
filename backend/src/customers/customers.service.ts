@@ -229,6 +229,35 @@ export class CustomersService {
     requestedWorkspaceId?: string | null,
   ) {
     const fedCtx = await this.federationContext(user, requestedWorkspaceId);
+    const search = query.search?.trim().toLocaleLowerCase();
+    if (search) {
+      // Identity remains federated. Scan scoped batches before applying result
+      // pagination, so a match beyond the first page is never reported absent.
+      const matches: CustomerWithContact[] = [];
+      const limit = query.limit ?? 50;
+      const offset = query.offset ?? 0;
+      for (let scanOffset = 0; matches.length < offset + limit; scanOffset += 200) {
+        const rows = await this.workspaces.runForUser(
+          user,
+          (tx) => this.listInTx(tx, { ...query, offset: scanOffset, limit: 200 }),
+          requestedWorkspaceId,
+        );
+        const joined = await this.joinContacts(user, fedCtx, rows, true, requestedWorkspaceId);
+        // A missing phonebook result cannot establish that an identity does not
+        // match. Surface the unavailable search rather than a false negative.
+        if (joined.some((row) => !row.contact)) {
+          throw new ServiceUnavailableException('Customer search requires resolved contact summaries; Contact-Ops could not resolve all relationships');
+        }
+        matches.push(...joined.filter((row) => [
+          row.contact?.displayName, row.contact?.primaryEmail,
+          row.contact?.currentOrgName, row.notes,
+        ].some((value) => value?.toLocaleLowerCase().includes(search))));
+        if (rows.length < 200) break;
+      }
+      const items = matches.slice(offset, offset + limit).map((row) =>
+        query.withContacts === false ? { ...row, contact: null } : row);
+      return { items, count: items.length };
+    }
     const rows = await this.workspaces.runForUser(
       user,
       (tx) => this.listInTx(tx, query),
@@ -2209,7 +2238,7 @@ export class CustomersService {
 
     return tx.customer.findMany({
       where,
-      orderBy: [{ priority: 'desc' }, { lastStageChangeAt: 'asc' }],
+      orderBy: [{ priority: 'desc' }, { lastStageChangeAt: 'asc' }, { id: 'asc' }],
       take: query.limit ?? 50,
       skip: query.offset ?? 0,
     });

@@ -84,6 +84,7 @@ export class CustomerOpsTools {
     user: User,
     args: {
       workspace_id?: string;
+      search?: string;
       stage?: RelationshipStage;
       owner_user_key?: string;
       include_lost?: boolean;
@@ -94,6 +95,7 @@ export class CustomerOpsTools {
     return this.customers.listForUser(
       user,
       {
+        search: args.search,
         stage: args.stage,
         ownerUserKey: args.owner_user_key,
         includeLost: args.include_lost,

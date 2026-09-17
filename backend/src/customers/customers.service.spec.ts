@@ -537,6 +537,53 @@ describe('CustomersService — Contact-Ops federation (CO mocked)', () => {
     expect(c2?.contact).toBeNull();
   });
 
+  describe('customer search', () => {
+    const rows = Array.from({ length: 205 }, (_, i) => makeRow({
+      id: `c${i}`, contactId: `p${i}`, notes: i === 204 ? 'Quote candidate' : null,
+    }));
+    function setup() {
+      const summaries = new Map(rows.map((row, i) => [row.contactId, {
+        displayName: i === 201 ? 'Yogesh Dodani' : `Person ${i}`,
+        primaryEmail: i === 202 ? 'sales@contosochem.test' : null,
+        currentOrgName: i === 203 ? 'Contosochem' : null, tags: [],
+      }]));
+      const getContactSummaries = jest.fn(async (_ctx, ids) => new Map(
+        ids.map((id: string) => [id, summaries.get(id)]),
+      ));
+      const service = makeService({ contact: { getContactSummaries: getContactSummaries as any } });
+      const findMany = jest.fn(async ({ take, skip }) => rows.slice(skip, skip + take));
+      service.lastTx.current = { customer: { findMany } };
+      return { ...service, findMany, getContactSummaries };
+    }
+    it.each([
+      ['dodani', ['c201']], [' contoso chem ', ['c202', 'c203']],
+      ['quote candidate', ['c204']], ['does-not-exist', []],
+    ])('matches %s beyond the first page', async (search, ids) => {
+      const { svc, findMany, getContactSummaries } = setup();
+      const result = await svc.listForUser(aaron, { search }, WS);
+      expect(result.items.map((row) => row.id)).toEqual(ids);
+      expect(result.count).toBe(ids.length);
+      expect(findMany).toHaveBeenCalledTimes(2);
+      expect(getContactSummaries.mock.calls[0][0]).toEqual({ workspaceId: WS, ucUid: UC_UID });
+    });
+    it('paginates matches and supports suppressing returned contacts', async () => {
+      const { svc, findMany } = setup();
+      const result = await svc.listForUser(aaron, {
+        search: 'contosochem', limit: 1, offset: 1, withContacts: false,
+        stage: RelationshipStage.PROSPECT, ownerUserKey: 'rep', includeLost: true,
+      }, WS);
+      expect(result.items.map((row) => row.id)).toEqual(['c203']);
+      expect(result.items[0].contact).toBeNull();
+      expect(findMany.mock.calls[0][0].where).toEqual({ stage: 'PROSPECT', ownerUserKey: 'rep' });
+    });
+    it('surfaces unavailable identity instead of claiming no matches', async () => {
+      const { svc, lastTx } = makeService({ contact: { getContactSummaries: async () => new Map() } });
+      lastTx.current = { customer: { findMany: async () => [rows[0]] } };
+      await expect(svc.listForUser(aaron, { search: 'contosochem' }, WS))
+        .rejects.toThrow('Customer search requires resolved contact summaries');
+    });
+  });
+
   it('pipeline_board buckets non-lost relationships by stage with summed value', async () => {
     const rows = [
       makeRow({ id: 'l1', stage: RelationshipStage.LEAD, expectedValue: { toString: () => '100' } }),
