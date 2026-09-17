@@ -26,7 +26,7 @@ import {
  */
 export default function PipelinePage() {
   const router = useRouter();
-  const { workspaceId, loading: wsLoading, error: wsError } = useWorkspace();
+  const { workspaceId, canWrite, loading: wsLoading, error: wsError } = useWorkspace();
   const [board, setBoard] = useState<Board | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -99,8 +99,7 @@ export default function PipelinePage() {
               </p>
               <h1 className="text-xl font-semibold tracking-tight text-primary">Pipeline</h1>
               <p className="mt-0.5 text-xs leading-relaxed text-tertiary">
-                Drag a card to move a relationship through the funnel — forward one step at a time
-                (qualification can&rsquo;t be skipped; enforced server-side).
+                {canWrite ? "Drag a card to move a relationship forward one step at a time." : "View relationships by stage. Your workspace access is read-only."}
               </p>
             </div>
           </div>
@@ -152,6 +151,7 @@ export default function PipelinePage() {
       ) : (
         <PipelineBoard
           board={board}
+          readOnly={!canWrite}
           pendingId={pendingId}
           onTransition={onTransition}
           onOpen={(id) => router.push(`/dashboard/customers/${id}`)}

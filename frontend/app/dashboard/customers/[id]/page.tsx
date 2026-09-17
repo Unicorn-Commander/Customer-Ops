@@ -36,7 +36,7 @@ import {
 export default function Customer360Page() {
   const params = useParams<{ id: string }>();
   const id = params.id;
-  const { workspaceId, loading: wsLoading, error: wsError } = useWorkspace();
+  const { workspaceId, canWrite, loading: wsLoading, error: wsError } = useWorkspace();
 
   const [data, setData] = useState<Customer360 | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -102,6 +102,7 @@ export default function Customer360Page() {
       )}
       <Customer360View
         data={data}
+        canWrite={canWrite}
         workspaceId={workspaceId}
         customerId={id}
         busy={busy}

@@ -7,6 +7,7 @@ import {
   Search, Plus, LogOut, PanelLeftClose, PanelLeftOpen, Menu,
 } from 'lucide-react';
 import { getToken, getStoredUser, clearSession, type CustomerOpsUser } from '@/lib/api';
+import { useWorkspace } from '@/lib/useWorkspace';
 import { NAV, isNavActive } from '@/lib/nav';
 import { ThemeToggle } from './ThemeToggle';
 import { CommandPalette } from './CommandPalette';
@@ -33,6 +34,7 @@ function titleFor(pathname: string): { title: string; sub: string } {
 
 export function AppShell({ children, demo = false }: { children: React.ReactNode; demo?: boolean }) {
   const router = useRouter();
+  const { canWrite } = useWorkspace(!demo);
   const pathname = usePathname() || '/dashboard';
   const [ready, setReady] = useState(demo);
   const [user, setUser] = useState<CustomerOpsUser | null>(demo ? DEMO_USER : null);
@@ -215,13 +217,13 @@ export function AppShell({ children, demo = false }: { children: React.ReactNode
             </button>
             <HelpCenter pathname={pathname} disableFirstRun={demo} />
             <ThemeToggle />
-            <Link
+            {(demo || canWrite) && <Link
               href="/dashboard/customers"
               aria-label="New relationship"
               className="inline-flex items-center gap-1.5 rounded-token bg-accent px-2.5 py-2 text-xs font-semibold text-accent-contrast shadow-glow transition-colors hover:bg-accent-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 sm:px-3"
             >
               <Plus className="h-4 w-4" strokeWidth={2.5} /> <span className="hidden sm:inline">New</span>
-            </Link>
+            </Link>}
           </div>
         </header>
 

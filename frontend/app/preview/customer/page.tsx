@@ -21,7 +21,7 @@ const noopHandlers: Customer360Handlers = {
 export default function PreviewCustomerPage() {
   return (
     <AppShell demo>
-      <Customer360View
+      <Customer360View canWrite={true}
         data={SAMPLE_360}
         workspaceId="preview"
         customerId={SAMPLE_360.relationship.id}

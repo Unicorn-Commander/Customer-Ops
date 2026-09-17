@@ -32,6 +32,7 @@ interface Dragging {
 
 export interface PipelineBoardProps {
   board: Board;
+  readOnly?: boolean;
   /** Move a card to a new stage. The parent does the optimistic update + API call. */
   onTransition: (id: string, from: Stage, to: Stage) => void;
   /** Open the customer-360 for a card (double-click / the card's open affordance). */
@@ -60,7 +61,7 @@ const PRIORITY_META: Record<Priority, { label: string; icon: LucideIcon; cls: st
   LOW: { label: 'Low', icon: Minus, cls: 'bg-surface-overlay text-tertiary' },
 };
 
-export function PipelineBoard({ board, onTransition, onOpen, pendingId }: PipelineBoardProps) {
+export function PipelineBoard({ board, onTransition, onOpen, pendingId, readOnly = true }: PipelineBoardProps) {
   const [dragging, setDragging] = useState<Dragging | null>(null);
   const [overStage, setOverStage] = useState<Stage | null>(null);
 
@@ -71,10 +72,10 @@ export function PipelineBoard({ board, onTransition, onOpen, pendingId }: Pipeli
       const d = dragging;
       setDragging(null);
       setOverStage(null);
-      if (!d || d.from === to) return; // dropped in its own lane → no-op
+      if (readOnly || !d || d.from === to) return; // dropped in its own lane → no-op
       onTransition(d.id, d.from, to);
     },
-    [dragging, onTransition],
+    [dragging, onTransition, readOnly],
   );
 
   return (
@@ -160,6 +161,7 @@ export function PipelineBoard({ board, onTransition, onOpen, pendingId }: Pipeli
                     key={row.id}
                     row={row}
                     pending={pendingId === row.id}
+                    readOnly={readOnly}
                     dragging={dragging?.id === row.id}
                     onDragStart={(e) => {
                       setDragging({ id: row.id, from: stage });
@@ -200,10 +202,11 @@ export function PipelineBoard({ board, onTransition, onOpen, pendingId }: Pipeli
 
 /** A single relationship card — draggable, hover-lifts, opens the 360. */
 function PipelineCard({
-  row, pending, dragging, onDragStart, onDragEnd, onOpen,
+  row, pending, readOnly, dragging, onDragStart, onDragEnd, onOpen,
 }: {
   row: CustomerRow;
   pending: boolean;
+  readOnly: boolean;
   dragging: boolean;
   onDragStart: (e: React.DragEvent<HTMLElement>) => void;
   onDragEnd: () => void;
@@ -218,7 +221,7 @@ function PipelineCard({
 
   return (
     <article
-      draggable={!pending}
+      draggable={!readOnly && !pending}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
       onDoubleClick={onOpen}
@@ -229,11 +232,11 @@ function PipelineCard({
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(); }
       }}
       aria-label={`${contactLabel(row)} — ${meta.label}, ${prio.label} priority`}
-      title="Drag to move stage · double-click to open the 360"
+      title={readOnly ? 'Double-click to open the 360' : 'Drag to move stage · double-click to open the 360'}
       className={cn(
         'co-lift group relative overflow-hidden rounded-token-lg border border-subtle bg-surface-raised',
         'p-3 shadow-token outline-none',
-        !pending && 'cursor-grab active:cursor-grabbing',
+        !readOnly && !pending && 'cursor-grab active:cursor-grabbing',
         'focus-visible:ring-2 focus-visible:ring-accent/50',
         dragging && 'opacity-40',
         pending && 'pointer-events-none animate-pulse',

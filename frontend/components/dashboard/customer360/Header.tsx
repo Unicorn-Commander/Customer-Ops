@@ -26,12 +26,14 @@ function FactChip({ icon: Icon, children }: { icon: LucideIcon; children: React.
 
 export function Customer360Header({
   data,
+  canWrite = false,
   busy,
   onTransition,
   onMarkLost,
   onReopen,
 }: {
   data: Customer360;
+  canWrite?: boolean;
   busy: boolean;
   onTransition: (to: Stage) => void;
   onMarkLost: () => void;
@@ -118,7 +120,7 @@ export function Customer360Header({
 
           {/* lifecycle actions */}
           <div className="flex shrink-0 flex-col items-end gap-2">
-            <div className="flex flex-wrap items-center justify-end gap-2">
+            {canWrite && <div className="flex flex-wrap items-center justify-end gap-2">
               {rel.isLost ? (
                 <Button
                   size="sm"
@@ -160,7 +162,7 @@ export function Customer360Header({
                   </Button>
                 </>
               )}
-            </div>
+            </div>}
             {/* stepper — the full funnel, current highlighted */}
             <div className="flex items-center gap-1">
               {STAGES.map((s, i) => {

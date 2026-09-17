@@ -86,15 +86,17 @@ function TimelineItem({ entry, last }: { entry: TimelineEntry; last: boolean }) 
 /* ── the panel ────────────────────────────────────────────────────────────── */
 export function Timeline({
   entries,
+  canWrite = false,
   onAddNote,
   busy,
 }: {
   entries: TimelineEntry[];
+  canWrite?: boolean;
   onAddNote: (body: string) => void | Promise<void>;
   busy: boolean;
 }) {
   const [note, setNote] = useState('');
-  const canAdd = note.trim().length > 0 && !busy;
+  const canAdd = canWrite && note.trim().length > 0 && !busy;
 
   const submit = async () => {
     if (!canAdd) return;
@@ -117,7 +119,7 @@ export function Timeline({
       </div>
 
       {/* composer */}
-      <div className="border-b border-subtle p-4">
+      {canWrite && <div className="border-b border-subtle p-4">
         <textarea
           className={cn(
             'w-full resize-none rounded-token border border-subtle bg-surface-overlay px-3 py-2 text-[13px] text-primary',
@@ -137,7 +139,7 @@ export function Timeline({
             {busy ? 'Posting…' : 'Add note'}
           </Button>
         </div>
-      </div>
+      </div>}
 
       {/* feed */}
       <div className="p-4">
