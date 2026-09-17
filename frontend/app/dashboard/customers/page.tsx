@@ -20,7 +20,7 @@ import { createCustomer, listCustomers, type CustomerRow } from '@/lib/customers
  * never a copy. Creating one binds an existing Contact-Ops contact id as a Lead.
  */
 export default function CustomersPage() {
-  const { workspaceId, loading: wsLoading, error: wsError } = useWorkspace();
+  const { workspaceId, canWrite, loading: wsLoading, error: wsError } = useWorkspace();
   const [rows, setRows] = useState<CustomerRow[] | null>(null);
   const [includeLost, setIncludeLost] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -97,19 +97,19 @@ export default function CustomersPage() {
             />
             Show lost
           </label>
-          <Button
+          {canWrite && <Button
             glow={!creating}
             variant={creating ? 'secondary' : 'primary'}
             leading={creating ? <X className="h-4 w-4" strokeWidth={2.5} /> : <Plus className="h-4 w-4" strokeWidth={2.5} />}
             onClick={() => (creating ? setCreating(false) : openCreate())}
           >
             {creating ? 'Cancel' : 'New relationship'}
-          </Button>
+          </Button>}
         </div>
       </header>
 
       {/* ── Inline create ── */}
-      {creating && (
+      {canWrite && creating && (
         <div className="rounded-token-lg border border-subtle bg-surface-raised p-4 shadow-token">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
             <div className="flex-1">
@@ -163,7 +163,7 @@ export default function CustomersPage() {
 
       {/* ── Table (renders its own skeleton via `loading`) ── */}
       {!fatalError && (
-        <RelationshipsTable rows={rows ?? []} loading={loading} onNew={openCreate} />
+        <RelationshipsTable rows={rows ?? []} loading={loading} onNew={canWrite ? openCreate : undefined} />
       )}
     </div>
   );

@@ -12,7 +12,7 @@ import { SAMPLE_PIPELINE } from '@/lib/sample-screens';
 export default function PreviewPipelinePage() {
   return (
     <AppShell demo>
-      <PipelineBoard board={SAMPLE_PIPELINE} onTransition={() => {}} onOpen={() => {}} />
+      <PipelineBoard readOnly={false} board={SAMPLE_PIPELINE} onTransition={() => {}} onOpen={() => {}} />
     </AppShell>
   );
 }

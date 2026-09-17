@@ -1,3 +1,6 @@
+import { FederationAuthModule } from '../federation/federation-auth.module';
+import { FederationWorkspaceMapModule } from '../federation/federation-workspace-map.module';
+import { ContactLinkController } from './contact-link.controller';
 import {
   WorkspaceOnboardingController,
   OnboardingSessionGuard,
@@ -16,8 +19,8 @@ import { WorkspaceController } from './workspace.controller';
  * depends on WorkspaceContextService).
  */
 @Module({
-  imports: [WorkspaceModule, AuditModule],
-  controllers: [WorkspaceController, WorkspaceOnboardingController],
+  imports: [WorkspaceModule, AuditModule, FederationAuthModule, FederationWorkspaceMapModule],
+  controllers: [WorkspaceController, WorkspaceOnboardingController, ContactLinkController],
   providers: [OnboardingSessionGuard],
 })
 export class WorkspaceAdminModule {}

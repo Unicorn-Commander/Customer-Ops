@@ -34,12 +34,14 @@ export interface Customer360Handlers {
 
 export function Customer360View({
   data,
+  canWrite = false,
   workspaceId,
   customerId,
   busy,
   handlers,
 }: {
   data: Customer360;
+  canWrite?: boolean;
   workspaceId: string | null;
   customerId: string;
   busy: boolean;
@@ -52,13 +54,13 @@ export function Customer360View({
   const primaryEmail = contact?.emails?.find((e) => e.is_primary)?.address ?? contact?.primaryEmail ?? undefined;
 
   const timelineCol = (
-    <Timeline entries={timeline} onAddNote={handlers.onAddNote} busy={busy} />
+    <Timeline canWrite={canWrite} entries={timeline} onAddNote={handlers.onAddNote} busy={busy} />
   );
 
   const panelsCol = (
     <div className="space-y-4">
       <ContactCard contact={contact} federation={contactFederation} contactId={rel.contactId} />
-      <AgentsPanel workspaceId={workspaceId} customerId={customerId} onChanged={handlers.onChanged} />
+      {canWrite && <AgentsPanel workspaceId={workspaceId} customerId={customerId} onChanged={handlers.onChanged} /> }
       {/* Commercial paper about the relationship: Customer-Ops owns the quote,
           Accounting-Ops owns the money that follows it, so it sits directly
           above the invoices. */}
@@ -95,6 +97,7 @@ export function Customer360View({
     <div className="mx-auto max-w-[1200px] animate-fade-up space-y-5">
       <Customer360Header
         data={data}
+        canWrite={canWrite}
         busy={busy}
         onTransition={handlers.onTransition}
         onMarkLost={handlers.onMarkLost}

@@ -1,113 +1,49 @@
-/**
- * The Quotes panel on the relationship page — the doorway to the composer.
- *
- * A quote is commercial paper about a relationship, so it lives here next to
- * the invoices and the projects: the number, what it is worth, which version
- * is current, where it stands, and the timeline of what the client did with
- * it. Opening it goes to the composer; the share link goes to `/q/:token`.
- *
- * Driven by the mock store while L1 builds the data layer (see lib/quotes/draft).
- */
-
 'use client';
 
-import Link from 'next/link';
-import { useMemo } from 'react';
-import { ArrowUpRight, FileSignature, Link2 } from 'lucide-react';
-
-import { Badge, Button, cn } from '@/components/ui';
+import { useEffect, useState } from 'react';
+import { FileSignature } from 'lucide-react';
+import { Badge } from '@/components/ui';
 import { PanelSection } from '@/components/dashboard/customer360/shared';
-import { seedRecord } from '@/lib/quotes/draft';
-import { FIXTURE_TOKEN_CURRENT } from '@/lib/quotes/quotes-render/fixtures/orderpad.fixture';
-import { computeQuote, formatMoney, withDerivedAmounts, type QuoteStatus } from '@/lib/quotes/quotes-render/quote-model';
+import { apiGet } from '@/lib/api';
 
-import { QuoteTimeline } from './QuoteTimeline';
+type QuoteSummary = { id: string; number: string; title: string; status: string };
 
-const STATUS_TONE: Record<QuoteStatus, 'neutral' | 'accent' | 'success' | 'warning' | 'danger'> = {
-  draft: 'neutral',
-  sent: 'accent',
-  viewed: 'accent',
-  accepted: 'success',
-  declined: 'danger',
-  expired: 'warning',
-  voided: 'danger',
-};
-
-export function QuotesPanel({ customerId }: { workspaceId?: string | null; customerId: string }) {
-  // The mock: one quote on this relationship. L1 swaps this for the list call.
-  const record = useMemo(() => seedRecord(), []);
-  const totals = useMemo(
-    () =>
-      computeQuote({
-        currency: record.quote.currency,
-        lines: withDerivedAmounts(record.lines),
-        option_groups: record.quote.option_groups,
-        tax_estimate_cents: record.quote.tax_estimate_cents,
-      }),
-    [record],
-  );
-  const q = record.quote;
-  const composerHref = `/dashboard/customers/${customerId}/quotes/${q.id}`;
-  const shareHref = `/q/${FIXTURE_TOKEN_CURRENT}`;
-
+/** Read only the current relationship's quotes in its explicit workspace. */
+export function QuotesPanel({ workspaceId, customerId }: { workspaceId?: string | null; customerId: string }) {
+  const [state, setState] = useState<{ key: string; quotes?: QuoteSummary[]; error?: boolean }>({ key: '' });
+  const key = `${workspaceId ?? ''}:${customerId}`;
+  useEffect(() => {
+    let active = true;
+    if (!workspaceId) return;
+    apiGet<QuoteSummary[]>(`/quotes?customerId=${encodeURIComponent(customerId)}`, undefined, {
+      'X-Workspace-Id': workspaceId,
+    }).then((quotes) => {
+      if (!Array.isArray(quotes)) throw new Error('Invalid quote response');
+      if (active) setState({ key, quotes });
+    }).catch(() => { if (active) setState({ key, error: true }); });
+    return () => { active = false; };
+  }, [workspaceId, customerId, key]);
+  const current = state.key === key ? state : undefined;
   return (
-    <PanelSection
-      icon={FileSignature}
-      gradient="from-amber-500 to-rose-500"
-      title="Quotes & proposals"
-      subtitle="Customer-Ops is the system of record"
-      tag={<Badge variant="neutral">mock · lane L2</Badge>}
-    >
-      <article className="rounded-token border border-subtle bg-surface-overlay/50 p-3">
-        <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
-          <div className="min-w-0 flex-1">
+    <PanelSection icon={FileSignature} gradient="from-amber-500 to-rose-500"
+      title="Quotes & proposals" subtitle="Customer-Ops is the system of record">
+      {!workspaceId || current?.error ? (
+        <p className="text-sm text-secondary">Quotes are unavailable right now.</p>
+      ) : !current?.quotes ? (
+        <p className="text-sm text-secondary" role="status">Loading quotes…</p>
+      ) : current.quotes.length === 0 ? (
+        <p className="text-sm text-secondary">No quotes for this relationship yet.</p>
+      ) : (
+        <ul className="space-y-2">{current.quotes.map((quote) => (
+          <li key={quote.id} className="rounded-token border border-subtle p-3">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="font-mono text-[12px] tabular-nums text-tertiary">{q.number}</span>
-              <Badge variant={STATUS_TONE[q.status]} dot>
-                {q.status}
-              </Badge>
-              <span className="font-mono text-[11px] text-muted">v{q.current_version_no}</span>
+              <span className="font-mono text-xs text-tertiary">{quote.number}</span>
+              <Badge variant="neutral">{quote.status}</Badge>
             </div>
-            <h4 className="mt-1 text-[14px] font-semibold leading-snug text-primary">{q.title}</h4>
-            <p className="mt-1 text-[12.5px] text-secondary">
-              Valid until {q.valid_until} · {record.recipients.length} recipient{record.recipients.length === 1 ? '' : 's'}
-              {q.delivery_partner ? ` · with ${q.delivery_partner.label}` : ''}
-            </p>
-          </div>
-          <dl className="grid shrink-0 grid-cols-2 gap-x-5 gap-y-1 text-right sm:grid-cols-3">
-            {[
-              { label: 'One-time', value: totals.one_time_cents },
-              { label: 'Milestones', value: totals.milestone_cents },
-              { label: 'Year one', value: totals.year_one_cents },
-            ].map((f) => (
-              <div key={f.label}>
-                <dt className="text-[9.5px] font-medium uppercase tracking-[0.14em] text-muted">{f.label}</dt>
-                <dd className={cn('font-mono text-[13px] tabular-nums', f.label === 'Year one' ? 'text-primary' : 'text-secondary')}>
-                  {formatMoney(f.value, q.currency)}
-                </dd>
-              </div>
-            ))}
-          </dl>
-        </div>
-
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          <Link href={composerHref}>
-            <Button size="sm" variant="secondary" leading={<ArrowUpRight className="h-4 w-4" strokeWidth={2.4} />}>
-              Open the composer
-            </Button>
-          </Link>
-          <a href={shareHref} target="_blank" rel="noreferrer">
-            <Button size="sm" variant="ghost" leading={<Link2 className="h-4 w-4" strokeWidth={2.4} />}>
-              Client view
-            </Button>
-          </a>
-        </div>
-      </article>
-
-      <div className="mt-3 border-t border-subtle pt-3">
-        <span className="mb-2 block text-[10px] font-medium uppercase tracking-[0.16em] text-muted">Quote timeline</span>
-        <QuoteTimeline events={record.events} limit={4} />
-      </div>
+            <h4 className="mt-1 break-words text-sm font-semibold text-primary">{quote.title}</h4>
+          </li>
+        ))}</ul>
+      )}
     </PanelSection>
   );
 }

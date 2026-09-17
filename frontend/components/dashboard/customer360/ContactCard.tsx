@@ -60,7 +60,7 @@ export function ContactCard({
               <ul className="space-y-1">
                 {contact.emails.map((e, i) => (
                   <li key={`${e.address}-${i}`} className="flex items-center gap-2">
-                    <a href={`mailto:${e.address}`} className="truncate text-secondary transition-colors hover:text-accent">
+                    <a href={`mailto:${e.address}`} className="min-w-0 break-all text-secondary transition-colors hover:text-accent">
                       {e.address}
                     </a>
                     {e.is_primary && <Badge variant="accent">primary</Badge>}
@@ -69,7 +69,7 @@ export function ContactCard({
                 ))}
               </ul>
             ) : contact.primaryEmail ? (
-              <a href={`mailto:${contact.primaryEmail}`} className="text-secondary transition-colors hover:text-accent">
+              <a href={`mailto:${contact.primaryEmail}`} className="break-all text-secondary transition-colors hover:text-accent">
                 {contact.primaryEmail}
               </a>
             ) : (
@@ -81,7 +81,7 @@ export function ContactCard({
               <ul className="space-y-1">
                 {contact.phones.map((p, i) => (
                   <li key={`${p.e164}-${i}`} className="flex items-center gap-2">
-                    <a href={`tel:${p.e164}`} className="truncate text-secondary transition-colors hover:text-accent">
+                    <a href={`tel:${p.e164}`} className="min-w-0 break-all text-secondary transition-colors hover:text-accent">
                       {p.e164}
                     </a>
                     {p.is_primary && <Badge variant="accent">primary</Badge>}
