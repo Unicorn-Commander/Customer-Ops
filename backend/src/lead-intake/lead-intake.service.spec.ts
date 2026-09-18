@@ -486,3 +486,21 @@ describe('LeadIntakeService — resolvePending pass B (provisional → canonical
     ]);
   });
 });
+
+
+describe('structured names through intake staging', () => {
+  it('preserves explicit names for Contact-Ops resolution', async () => {
+    const { tx, store } = makeTx();
+    const { svc, contact } = makeService({ tx });
+    await svc.ingestForUser(aaron, {
+      source: 'synthetic', sourceDedupKey: 'names', displayName: 'Synthetic Contact',
+      givenName: 'Synthetic', familyName: 'Contact', nicknames: ['Example'],
+    }, WS);
+    expect(store.intake.rawPayload).toMatchObject({
+      given_name: 'Synthetic', family_name: 'Contact', nicknames: ['Example'],
+    });
+    expect(contact.upsertContact).toHaveBeenCalledWith({ ucUid: UC_UID, workspaceId: WS }, expect.objectContaining({
+      givenName: 'Synthetic', familyName: 'Contact', nicknames: ['Example'],
+    }));
+  });
+});

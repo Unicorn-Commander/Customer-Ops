@@ -399,6 +399,9 @@ export class CustomerOpsTools {
       source_dedup_key: string;
       contact_id?: string;
       display_name?: string;
+      given_name?: string;
+      family_name?: string;
+      nicknames?: string[];
       email?: string;
       phone?: string;
       org_name?: string;
@@ -419,6 +422,9 @@ export class CustomerOpsTools {
         sourceDedupKey: args.source_dedup_key,
         contactId: args.contact_id,
         displayName: args.display_name,
+        givenName: args.given_name,
+        familyName: args.family_name,
+        nicknames: args.nicknames,
         email: args.email,
         phone: args.phone,
         orgName: args.org_name,

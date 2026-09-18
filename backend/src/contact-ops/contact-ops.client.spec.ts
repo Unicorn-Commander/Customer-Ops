@@ -150,6 +150,34 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
       expect(contact?.phones[0].e164).toBe('+15551234567');
     });
 
+    it('upsertContact: passes given_name/family_name/nicknames through to upsert_person', async () => {
+      const fetchSpy = jest.fn().mockResolvedValue(
+        jsonResponse(rpcOk({ person_id: 'p3', created: true, etag: 'W/"4"' })),
+      );
+      global.fetch = fetchSpy as any;
+      const client = new ContactOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
+
+      const result = await client.upsertContact(CTX, {
+        source: 'northwind',
+        sourceDedupKey: 'lead-1',
+        displayName: 'Diesel Dude',
+        givenName: 'Diesel',
+        familyName: 'Dude',
+        nicknames: ['Diesel'],
+        email: 'diesel@x.com',
+      });
+
+      expect(result?.contactId).toBe('p3');
+      const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+      expect(body.params.arguments).toMatchObject({
+        display_name: 'Diesel Dude',
+        given_name: 'Diesel',
+        family_name: 'Dude',
+        nicknames: ['Diesel'],
+        emails: [{ address: 'diesel@x.com', is_primary: true }],
+      });
+    });
+
     it('get_person: derives primary_email from emails[] when CO omits the flat field', async () => {
       global.fetch = jest.fn().mockResolvedValue(
         jsonResponse(
