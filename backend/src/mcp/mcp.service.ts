@@ -480,11 +480,14 @@ export class McpService {
           '(the owner-gated, runtime agents-paused flag). ' +
           'Idempotent on a deterministic external_ref. Requires BOTH customer-ops ' +
           'and email-ops entitlements. The Email-Ops app owns the mailbox + message ' +
-          '— Customer-Ops stores no message body.',
+          '— Customer-Ops stores no message body. ' +
+          'Optionally pass from_address to send as a mailbox registered in this workspace. ' +
+          'Omit from_address to use the workspace default mailbox.',
         inputSchema: {
           customer_id: z.string(),
           workspace_id: z.string().optional(),
           to_address: z.string().max(320).optional(),
+          from_address: z.string().max(320).optional(),
           subject: z.string().min(1).max(500),
           body: z.string().min(1).max(50000),
           in_reply_to_thread_id: z.string().max(200).optional(),

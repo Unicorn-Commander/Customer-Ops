@@ -404,6 +404,12 @@ export class SendEmailDto {
   @MaxLength(320)
   toAddress?: string;
 
+  /** Send as this mailbox in the workspace. Omit to use the default mailbox. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(320)
+  fromAddress?: string;
+
   @IsString()
   @IsNotEmpty()
   @MaxLength(500)

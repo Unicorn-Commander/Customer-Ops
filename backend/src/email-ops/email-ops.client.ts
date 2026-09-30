@@ -626,6 +626,9 @@ export class EmailOpsClient extends EmailOpsPort {
     if (request.inReplyToThreadId != null) {
       args['in_reply_to_thread_id'] = request.inReplyToThreadId;
     }
+    if (request.fromAddress != null && request.fromAddress !== '') {
+      args['from_address'] = request.fromAddress;
+    }
 
     const raw = await this.callTool(ctx, 'compose_email', args);
     if (!raw) return null;

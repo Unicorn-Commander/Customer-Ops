@@ -109,6 +109,8 @@ export interface FederatedInvoice {
   dueDate: string | null;
   externalSource: string | null;
   externalRef: string | null;
+  /** AO billing entity, when the list row carries one. */
+  entityId?: string | null;
   /** AO-relative URLs (server-rendered PDF / hosted pay link); may be null. */
   pdfUrl: string | null;
   hostedPayUrl: string | null;

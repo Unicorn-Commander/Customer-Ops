@@ -73,4 +73,14 @@ export abstract class ProjectOpsPort {
     ctx: FederationContext,
     lookup: ProjectLookup,
   ): Promise<FederatedProject[]>;
+
+  /**
+   * POST the accepted quote to Project-Ops federation. Uses the same Brigade
+   * exchange as a project read. skipped when Project-Ops is not configured.
+   * Never throws.
+   */
+  abstract acceptQuote(
+    ctx: FederationContext,
+    payload: Record<string, unknown>,
+  ): Promise<'ok' | 'failed' | 'skipped'>;
 }

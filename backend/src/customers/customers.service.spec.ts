@@ -99,6 +99,19 @@ function makeTx(customerRow: any) {
         if (idx >= 0) invoiceLinks[idx] = merged;
         return merged;
       }),
+      upsert: jest.fn(async ({ where, create, update }: any) => {
+        const key = where.workspaceId_externalSource_externalRef;
+        const idx = invoiceLinks.findIndex(
+          (l) => l.externalSource === key.externalSource && l.externalRef === key.externalRef,
+        );
+        if (idx >= 0) {
+          invoiceLinks[idx] = { ...invoiceLinks[idx], ...update };
+          return invoiceLinks[idx];
+        }
+        const row = { id: `link-${invoiceLinks.length + 1}`, createdAt: new Date(), updatedAt: new Date(), ...create };
+        invoiceLinks.push(row);
+        return row;
+      }),
     },
     customerOutreachLink: {
       findMany: jest.fn().mockResolvedValue(outreachLinks),
@@ -646,6 +659,8 @@ describe('CustomersService — Accounting-Ops invoicing (Phase 3; AO mocked)', (
       createInvoice: jest.fn().mockResolvedValue(FED_INVOICE),
       getInvoiceByRef: jest.fn().mockResolvedValue(FED_INVOICE),
       getInvoiceById: jest.fn().mockResolvedValue(FED_INVOICE),
+      listInvoicesForCustomer: jest.fn().mockResolvedValue([]),
+      acceptQuote: jest.fn().mockResolvedValue('skipped'),
       ...over,
     };
   }
@@ -845,7 +860,7 @@ describe('CustomersService — Accounting-Ops invoicing (Phase 3; AO mocked)', (
       expect(panel.items[0]).toMatchObject({ status: 'draft', total: '100.0000' });
     });
 
-    it('configured but NOT entitled: reads cached history, canCreate:false, still polls (viewer-level)', async () => {
+    it('configured but NOT entitled: reads cached history, canCreate:false, and does not fetch Accounting-Ops', async () => {
       const ao = entitledAo({
         checkEntitlement: jest
           .fn()
@@ -869,8 +884,9 @@ describe('CustomersService — Accounting-Ops invoicing (Phase 3; AO mocked)', (
 
       const panel = await svc.invoicesForUser(aaron, 'cust-1', WS);
       expect(panel).toMatchObject({ configured: true, entitled: false, canCreate: false });
-      // Reads are viewer-level on AO → still polled even though create is gated.
-      expect(accounting.getInvoiceById).toHaveBeenCalledTimes(1);
+      expect(accounting.getInvoiceById).not.toHaveBeenCalled();
+      expect(accounting.listInvoicesForCustomer).not.toHaveBeenCalled();
+      expect(panel.items).toHaveLength(1);
     });
   });
 });
