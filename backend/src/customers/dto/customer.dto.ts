@@ -139,6 +139,11 @@ export class AddNoteDto {
 /** Filter/paginate the customers list. */
 export class ListCustomersQueryDto {
   @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  search?: string;
+
+  @IsOptional()
   @IsEnum(RelationshipStage)
   stage?: RelationshipStage;
 
@@ -398,6 +403,12 @@ export class SendEmailDto {
   @IsString()
   @MaxLength(320)
   toAddress?: string;
+
+  /** Send as this mailbox in the workspace. Omit to use the default mailbox. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(320)
+  fromAddress?: string;
 
   @IsString()
   @IsNotEmpty()

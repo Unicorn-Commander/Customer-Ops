@@ -150,6 +150,7 @@ describe('CustomerOpsTools — MCP arg → DTO delegation mapping', () => {
       const { tools, customers } = makeTools();
       await tools.listCustomers(aaron, {
         workspace_id: WS,
+        search: 'Contosochem',
         stage: 'PROSPECT' as any,
         owner_user_key: 'rep-7',
         include_lost: true,
@@ -158,7 +159,7 @@ describe('CustomerOpsTools — MCP arg → DTO delegation mapping', () => {
       });
       expect(customers.listForUser).toHaveBeenCalledWith(
         aaron,
-        { stage: 'PROSPECT', ownerUserKey: 'rep-7', includeLost: true, withContacts: false, limit: 25 },
+        { search: 'Contosochem', stage: 'PROSPECT', ownerUserKey: 'rep-7', includeLost: true, withContacts: false, limit: 25 },
         WS,
       );
     });

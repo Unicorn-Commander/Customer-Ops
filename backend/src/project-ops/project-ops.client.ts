@@ -323,6 +323,26 @@ export class ProjectOpsClient extends ProjectOpsPort {
       .filter((p): p is FederatedProject => p !== null);
   }
 
+  async acceptQuote(
+    ctx: FederationContext,
+    payload: Record<string, unknown>,
+  ): Promise<'ok' | 'failed' | 'skipped'> {
+    if (!this.baseUrl) return 'skipped';
+    const headers = await this.authHeaders(ctx);
+    if (!headers.Authorization) return 'failed';
+    try {
+      const res = await this.fetchWithTimeout(`${this.baseUrl}/api/v1/federation/quotes/accepted`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(payload),
+      });
+      return res.ok ? 'ok' : 'failed';
+    } catch (err) {
+      this.logger.warn(`Project-Ops quote acceptance failed: ${(err as Error).message}`);
+      return 'failed';
+    }
+  }
+
   // --- mapping: Project-Ops wire shape -> Customer-Ops projection ---------
 
   private mapProject(p: Record<string, unknown>): FederatedProject | null {

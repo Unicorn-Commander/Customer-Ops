@@ -2,8 +2,10 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  Inject,
   Injectable,
   NotFoundException,
+  Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { AuditService } from '../audit/audit.service';
@@ -17,6 +19,8 @@ import { MembershipService } from '../common/workspace/membership.service';
 import { tenancyEnabled } from '../common/workspace/feature-flags';
 import { ucUidOf } from '../common/workspace/workspace.util';
 import { EmailOpsPort, FederationContext } from '../email-ops/email-ops.port';
+import { AccountingOpsPort } from '../accounting-ops/accounting-ops.port';
+import { ProjectOpsPort } from '../project-ops/project-ops.port';
 import { QuoteSnapshot, canonicalJson, computeQuote } from '../quotes-render/quote-model';
 import { toPublishedQuoteView } from './quote-published-view';
 import {
@@ -60,6 +64,8 @@ export class QuotesLifecycleService {
     private readonly email: EmailOpsPort,
     private readonly presentation: QuotePresentationService,
     private readonly audit: AuditService = new AuditService(workspaces),
+    @Optional() @Inject(AccountingOpsPort) private readonly accounting: AccountingOpsPort | null = null,
+    @Optional() @Inject(ProjectOpsPort) private readonly projects: ProjectOpsPort | null = null,
   ) {}
   private enabled() {
     if (!quotesEnabled(this.config.get<string>('QUOTES_ENABLED')))
@@ -213,9 +219,11 @@ export class QuotesLifecycleService {
     const ref = 'quote-send:' + prep.version.id;
     let result;
     try {
+      const fromAddress = this.config.get<string>('QUOTE_FROM_ADDRESS')?.trim();
       result = await this.email.composeEmail(ctx, {
         contactId: prep.contactId!,
         toAddress: prep.to!,
+        ...(fromAddress ? { fromAddress } : {}),
         subject: 'Your proposal',
         body: `Please review your proposal: ${base}/${capability.token}`,
         mode: 'draft',
@@ -808,7 +816,7 @@ export class QuotesLifecycleService {
       throw new BadRequestException('Idempotency-Key is required');
     const fingerprint = sha256(canonicalJson(parsed)),
       keyHash = sha256('record\0' + key);
-    return this.db.withWorkspace(workspace, ucUidOf(user), async (tx) => {
+    const recorded = await this.db.withWorkspace(workspace, ucUidOf(user), async (tx) => {
       const q = await this.lock(tx, workspace, quoteId);
       const prior = await tx.quoteEvent.findFirst({
         where: {
@@ -895,6 +903,146 @@ export class QuotesLifecycleService {
       );
       return { accepted_at: now.toISOString() };
     });
+    const federated = await this.federateAcceptedQuote(user, workspace, quoteId);
+    return { ...recorded, federated };
+  }
+  private async federateAcceptedQuote(user: User, workspace: string, quoteId: string) {
+    const federated: { accounting_ops: string; project_ops: string } = {
+      accounting_ops: 'skipped',
+      project_ops: 'skipped',
+    };
+    const attempted = { accounting_ops: false, project_ops: false };
+    try {
+      const bundle = await this.db.withWorkspace(workspace, ucUidOf(user), (tx) =>
+        tx.quote.findFirst({
+          where: { id: quoteId, workspaceId: workspace },
+          select: {
+            id: true,
+            number: true,
+            title: true,
+            currency: true,
+            customerId: true,
+            versions: {
+              where: { disposition: 'accepted' },
+              orderBy: { versionNo: 'desc' },
+              take: 1,
+              select: { versionNo: true, snapshot: true, acceptedSnapshot: true },
+            },
+          },
+        }),
+      );
+      const version = bundle?.versions?.[0];
+      const snap = (version?.acceptedSnapshot ?? version?.snapshot) as
+        | {
+            customer?: { display_name?: string; org_name?: string | null };
+            lines?: Array<Record<string, any>>;
+            totals?: Record<string, any>;
+          }
+        | null
+        | undefined;
+      const lines = (snap?.lines ?? []).filter((line) => line && line.selected !== false && line.label && line.kind);
+      if (bundle && version && this.accounting?.isConfigured()) {
+        const entityId = this.config.get<string>('ACCOUNTING_OPS_ENTITY_ID')?.trim();
+        const aoLines = lines
+          .filter((line) => typeof line.amount_cents === 'number')
+          .map((line, index) => ({
+            kind: line.kind,
+            label: String(line.label).slice(0, 512),
+            amount_cents: Math.round(line.amount_cents),
+            position: typeof line.position === 'number' ? line.position : index,
+            ...(line.id ? { line_id: String(line.id) } : {}),
+            ...(line.kind === 'recurring' && line.recurring?.interval
+              ? { recurring: { interval: line.recurring.interval } }
+              : {}),
+          }));
+        if (!entityId || aoLines.length === 0) {
+          federated.accounting_ops = 'skipped';
+        } else {
+          const ctx = await this.context(workspace, user);
+          if (!this.accounting.checkEntitlement(ctx).allowed) {
+            federated.accounting_ops = 'skipped';
+          } else {
+            const totals = snap?.totals;
+            attempted.accounting_ops = true;
+            federated.accounting_ops = await this.accounting.acceptQuote(ctx, {
+              entityId,
+              quoteRef: bundle.number,
+              version: version.versionNo,
+              currency: bundle.currency || 'USD',
+              customer: {
+                display_name: snap?.customer?.display_name || bundle.title,
+                ...(snap?.customer?.org_name ? { org: snap.customer.org_name } : {}),
+              },
+              lines: aoLines,
+              totals: totals
+                ? {
+                    one_time_total_cents: totals.one_time_cents ?? 0,
+                    milestone_total_cents: totals.milestone_cents ?? 0,
+                    deposit_cents: totals.deposit_cents ?? 0,
+                    recurring: {
+                      ...(totals.recurring?.month_cents ? { month: totals.recurring.month_cents } : {}),
+                      ...(totals.recurring?.quarter_cents ? { quarter: totals.recurring.quarter_cents } : {}),
+                      ...(totals.recurring?.year_cents ? { year: totals.recurring.year_cents } : {}),
+                    },
+                  }
+                : null,
+            });
+          }
+        }
+      }
+      const base = this.config.get<string>('QUOTES_PUBLIC_BASE_URL')?.replace(/\/$/, '');
+      if (bundle && version && this.projects?.isConfigured() && base && /^https:\/\//.test(base) && lines.length > 0) {
+        const totals = snap?.totals ?? {};
+        const recurring = [
+          totals.recurring?.month_cents ? { interval: 'month', amount_cents: totals.recurring.month_cents } : null,
+          totals.recurring?.quarter_cents ? { interval: 'quarter', amount_cents: totals.recurring.quarter_cents } : null,
+          totals.recurring?.year_cents ? { interval: 'year', amount_cents: totals.recurring.year_cents } : null,
+        ].filter((row) => row !== null);
+        const ctx = await this.context(workspace, user);
+        attempted.project_ops = true;
+        federated.project_ops = await this.projects.acceptQuote(ctx, {
+          customer_ops_quote_id: quoteId,
+          number: bundle.number,
+          version: version.versionNo,
+          title: bundle.title,
+          share_url: base,
+          client_name: snap?.customer?.display_name || bundle.title,
+          customer_ops_customer_id: bundle.customerId,
+          currency: (bundle.currency || 'USD').slice(0, 3),
+          billing: {
+            one_time_total_cents: totals.one_time_cents ?? 0,
+            milestone_total_cents: totals.milestone_cents ?? 0,
+            deposit_cents: totals.deposit_cents ?? 0,
+            schedule_text: `Accepted ${bundle.number}.`,
+            ...(recurring.length > 0 ? { recurring } : {}),
+          },
+          lines: lines.map((line, index) => ({
+            kind: line.kind,
+            label: String(line.label).slice(0, 500),
+            position: typeof line.position === 'number' ? line.position : index,
+            ...(typeof line.amount_cents === 'number' ? { amount_cents: Math.round(line.amount_cents) } : {}),
+            ...(line.id ? { customer_ops_line_id: String(line.id) } : {}),
+          })),
+        });
+      }
+      try {
+        await this.db.withWorkspace(workspace, ucUidOf(user), (tx) =>
+          tx.quote.update({ where: { id: quoteId }, data: { federated } }),
+        );
+      } catch {
+        // Acceptance is already committed. A failed status write does not undo it.
+      }
+    } catch {
+      // A side we never called stays skipped. A side that threw is failed.
+      // Acceptance is already committed; this status does not undo it.
+      if (attempted.accounting_ops && federated.accounting_ops !== 'ok') {
+        federated.accounting_ops = 'failed';
+      }
+      if (attempted.project_ops && federated.project_ops !== 'ok') {
+        federated.project_ops = 'failed';
+      }
+    }
+    return federated;
   }
   async supersede(user: User, ws: string | undefined, quoteId: string) {
     const workspace = await this.authorized(user, ws);

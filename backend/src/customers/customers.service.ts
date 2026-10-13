@@ -229,6 +229,35 @@ export class CustomersService {
     requestedWorkspaceId?: string | null,
   ) {
     const fedCtx = await this.federationContext(user, requestedWorkspaceId);
+    const search = query.search?.trim().toLocaleLowerCase();
+    if (search) {
+      // Identity remains federated. Scan scoped batches before applying result
+      // pagination, so a match beyond the first page is never reported absent.
+      const matches: CustomerWithContact[] = [];
+      const limit = query.limit ?? 50;
+      const offset = query.offset ?? 0;
+      for (let scanOffset = 0; matches.length < offset + limit; scanOffset += 200) {
+        const rows = await this.workspaces.runForUser(
+          user,
+          (tx) => this.listInTx(tx, { ...query, offset: scanOffset, limit: 200 }),
+          requestedWorkspaceId,
+        );
+        const joined = await this.joinContacts(user, fedCtx, rows, true, requestedWorkspaceId);
+        // A missing phonebook result cannot establish that an identity does not
+        // match. Surface the unavailable search rather than a false negative.
+        if (joined.some((row) => !row.contact)) {
+          throw new ServiceUnavailableException('Customer search requires resolved contact summaries; Contact-Ops could not resolve all relationships');
+        }
+        matches.push(...joined.filter((row) => [
+          row.contact?.displayName, row.contact?.primaryEmail,
+          row.contact?.currentOrgName, row.notes,
+        ].some((value) => value?.toLocaleLowerCase().includes(search))));
+        if (rows.length < 200) break;
+      }
+      const items = matches.slice(offset, offset + limit).map((row) =>
+        query.withContacts === false ? { ...row, contact: null } : row);
+      return { items, count: items.length };
+    }
     const rows = await this.workspaces.runForUser(
       user,
       (tx) => this.listInTx(tx, query),
@@ -589,7 +618,7 @@ export class CustomersService {
       },
       requestedWorkspaceId,
     );
-    return this.buildInvoicePanel(user, links, requestedWorkspaceId);
+    return this.buildInvoicePanel(user, links, requestedWorkspaceId, customerId);
   }
 
   /**
@@ -732,6 +761,7 @@ export class CustomersService {
     user: User & Partial<WithWorkspaceClaim>,
     links: Array<Record<string, any>>,
     requestedWorkspaceId?: string | null,
+    customerId?: string,
   ) {
     const configured = this.accountingOps.isConfigured();
     const fedCtx = configured
@@ -741,10 +771,19 @@ export class CustomersService {
 
     let items = links.map((l) => this.serializeInvoiceLink(l));
 
-    // Poll live status only when AO is configured (reads are viewer-level on AO,
-    // so a poll does NOT require the dual SKU — history stays visible). Refresh
-    // the cache best-effort; a failed poll leaves the last-cached status.
-    if (configured && fedCtx && links.length > 0) {
+    // A denied accounting-ops entitlement does not fetch Accounting-Ops.
+    // Cached links still render. When the caller is entitled, pull invoices
+    // that Project-Ops already created for this customer and refresh the cache.
+    if (configured && fedCtx && entitled && customerId) {
+      links = await this.cacheInvoicesForCustomer(
+        user,
+        fedCtx,
+        customerId,
+        links,
+        requestedWorkspaceId,
+      );
+    }
+    if (configured && fedCtx && entitled && links.length > 0) {
       // 1) Poll every link concurrently — pure federation, no DB tx held open.
       const polled = await Promise.all(
         links.map(async (l) => ({ link: l, invoice: await this.pollInvoice(fedCtx, l) })),
@@ -814,6 +853,76 @@ export class CustomersService {
     } catch (err) {
       this.logger.warn(`AO poll failed for link ${link.id}: ${(err as Error).message}`);
       return null;
+    }
+  }
+
+  /** Upsert Accounting-Ops invoices for this customer into the local link cache. */
+  private async cacheInvoicesForCustomer(
+    user: User & Partial<WithWorkspaceClaim>,
+    fedCtx: InvoiceFederationContext,
+    customerId: string,
+    links: Array<Record<string, any>>,
+    requestedWorkspaceId?: string | null,
+  ): Promise<Array<Record<string, any>>> {
+    const list = this.accountingOps.listInvoicesForCustomer;
+    if (!list) return links;
+    let found: FederatedInvoice[] = [];
+    try {
+      found = await list.call(this.accountingOps, fedCtx, customerId);
+    } catch (err) {
+      this.logger.warn(`AO invoice list failed: ${(err as Error).message}`);
+      return links;
+    }
+    const fresh = found.filter(
+      (invoice) => invoice.externalSource && invoice.externalRef && invoice.entityId,
+    );
+    if (fresh.length === 0) return links;
+    try {
+      const rows = await this.workspaces.runForUser(
+        user,
+        async (tx) => {
+          const workspaceId = await this.boundWorkspaceId(tx);
+          const written: Array<Record<string, any>> = [];
+          for (const invoice of fresh) {
+            const externalSource = invoice.externalSource ?? '';
+            const externalRef = invoice.externalRef ?? '';
+            const entityId = invoice.entityId ?? '';
+            const row = await tx.customerInvoiceLink.upsert({
+              where: {
+                workspaceId_externalSource_externalRef: {
+                  workspaceId,
+                  externalSource,
+                  externalRef,
+                },
+              },
+              create: {
+                workspaceId,
+                customerId,
+                externalSource,
+                externalRef,
+                entityId,
+                aoInvoiceId: invoice.id,
+                invoiceNumber: invoice.invoiceNumber,
+                lastStatus: invoice.status,
+                currency: invoice.currency || 'USD',
+                totalAmount: invoice.total != null ? new Prisma.Decimal(invoice.total) : null,
+                lastBalanceDue: invoice.balanceDue != null ? new Prisma.Decimal(invoice.balanceDue) : null,
+                lastPolledAt: new Date(),
+              },
+              update: this.invoiceCacheUpdate(invoice),
+            });
+            written.push(row as Record<string, any>);
+          }
+          return written;
+        },
+        requestedWorkspaceId,
+      );
+      const byKey = new Map(links.map((link) => [`${link.externalSource}:${link.externalRef}`, link]));
+      for (const row of rows) byKey.set(`${row.externalSource}:${row.externalRef}`, row);
+      return [...byKey.values()];
+    } catch (err) {
+      this.logger.warn(`AO invoice link cache failed: ${(err as Error).message}`);
+      return links;
     }
   }
 
@@ -1332,6 +1441,7 @@ export class CustomersService {
     const result = await this.emailOps.composeEmail(fedCtx, {
       contactId: resolvedContactId,
       toAddress,
+      fromAddress: dto.fromAddress?.trim() || null,
       subject: dto.subject,
       body: dto.body,
       inReplyToThreadId: dto.inReplyToThreadId ?? null,
@@ -2209,7 +2319,7 @@ export class CustomersService {
 
     return tx.customer.findMany({
       where,
-      orderBy: [{ priority: 'desc' }, { lastStageChangeAt: 'asc' }],
+      orderBy: [{ priority: 'desc' }, { lastStageChangeAt: 'asc' }, { id: 'asc' }],
       take: query.limit ?? 50,
       skip: query.offset ?? 0,
     });

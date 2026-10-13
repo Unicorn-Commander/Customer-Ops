@@ -99,6 +99,19 @@ function makeTx(customerRow: any) {
         if (idx >= 0) invoiceLinks[idx] = merged;
         return merged;
       }),
+      upsert: jest.fn(async ({ where, create, update }: any) => {
+        const key = where.workspaceId_externalSource_externalRef;
+        const idx = invoiceLinks.findIndex(
+          (l) => l.externalSource === key.externalSource && l.externalRef === key.externalRef,
+        );
+        if (idx >= 0) {
+          invoiceLinks[idx] = { ...invoiceLinks[idx], ...update };
+          return invoiceLinks[idx];
+        }
+        const row = { id: `link-${invoiceLinks.length + 1}`, createdAt: new Date(), updatedAt: new Date(), ...create };
+        invoiceLinks.push(row);
+        return row;
+      }),
     },
     customerOutreachLink: {
       findMany: jest.fn().mockResolvedValue(outreachLinks),
@@ -537,6 +550,53 @@ describe('CustomersService — Contact-Ops federation (CO mocked)', () => {
     expect(c2?.contact).toBeNull();
   });
 
+  describe('customer search', () => {
+    const rows = Array.from({ length: 205 }, (_, i) => makeRow({
+      id: `c${i}`, contactId: `p${i}`, notes: i === 204 ? 'Quote candidate' : null,
+    }));
+    function setup() {
+      const summaries = new Map(rows.map((row, i) => [row.contactId, {
+        displayName: i === 201 ? 'Yogesh Dodani' : `Person ${i}`,
+        primaryEmail: i === 202 ? 'sales@contosochem.test' : null,
+        currentOrgName: i === 203 ? 'Contosochem' : null, tags: [],
+      }]));
+      const getContactSummaries = jest.fn(async (_ctx, ids) => new Map(
+        ids.map((id: string) => [id, summaries.get(id)]),
+      ));
+      const service = makeService({ contact: { getContactSummaries: getContactSummaries as any } });
+      const findMany = jest.fn(async ({ take, skip }) => rows.slice(skip, skip + take));
+      service.lastTx.current = { customer: { findMany } };
+      return { ...service, findMany, getContactSummaries };
+    }
+    it.each([
+      ['dodani', ['c201']], [' contoso chem ', ['c202', 'c203']],
+      ['quote candidate', ['c204']], ['does-not-exist', []],
+    ])('matches %s beyond the first page', async (search, ids) => {
+      const { svc, findMany, getContactSummaries } = setup();
+      const result = await svc.listForUser(aaron, { search }, WS);
+      expect(result.items.map((row) => row.id)).toEqual(ids);
+      expect(result.count).toBe(ids.length);
+      expect(findMany).toHaveBeenCalledTimes(2);
+      expect(getContactSummaries.mock.calls[0][0]).toEqual({ workspaceId: WS, ucUid: UC_UID });
+    });
+    it('paginates matches and supports suppressing returned contacts', async () => {
+      const { svc, findMany } = setup();
+      const result = await svc.listForUser(aaron, {
+        search: 'contosochem', limit: 1, offset: 1, withContacts: false,
+        stage: RelationshipStage.PROSPECT, ownerUserKey: 'rep', includeLost: true,
+      }, WS);
+      expect(result.items.map((row) => row.id)).toEqual(['c203']);
+      expect(result.items[0].contact).toBeNull();
+      expect(findMany.mock.calls[0][0].where).toEqual({ stage: 'PROSPECT', ownerUserKey: 'rep' });
+    });
+    it('surfaces unavailable identity instead of claiming no matches', async () => {
+      const { svc, lastTx } = makeService({ contact: { getContactSummaries: async () => new Map() } });
+      lastTx.current = { customer: { findMany: async () => [rows[0]] } };
+      await expect(svc.listForUser(aaron, { search: 'contosochem' }, WS))
+        .rejects.toThrow('Customer search requires resolved contact summaries');
+    });
+  });
+
   it('pipeline_board buckets non-lost relationships by stage with summed value', async () => {
     const rows = [
       makeRow({ id: 'l1', stage: RelationshipStage.LEAD, expectedValue: { toString: () => '100' } }),
@@ -599,6 +659,8 @@ describe('CustomersService — Accounting-Ops invoicing (Phase 3; AO mocked)', (
       createInvoice: jest.fn().mockResolvedValue(FED_INVOICE),
       getInvoiceByRef: jest.fn().mockResolvedValue(FED_INVOICE),
       getInvoiceById: jest.fn().mockResolvedValue(FED_INVOICE),
+      listInvoicesForCustomer: jest.fn().mockResolvedValue([]),
+      acceptQuote: jest.fn().mockResolvedValue('skipped'),
       ...over,
     };
   }
@@ -798,7 +860,7 @@ describe('CustomersService — Accounting-Ops invoicing (Phase 3; AO mocked)', (
       expect(panel.items[0]).toMatchObject({ status: 'draft', total: '100.0000' });
     });
 
-    it('configured but NOT entitled: reads cached history, canCreate:false, still polls (viewer-level)', async () => {
+    it('configured but NOT entitled: reads cached history, canCreate:false, and does not fetch Accounting-Ops', async () => {
       const ao = entitledAo({
         checkEntitlement: jest
           .fn()
@@ -822,8 +884,9 @@ describe('CustomersService — Accounting-Ops invoicing (Phase 3; AO mocked)', (
 
       const panel = await svc.invoicesForUser(aaron, 'cust-1', WS);
       expect(panel).toMatchObject({ configured: true, entitled: false, canCreate: false });
-      // Reads are viewer-level on AO → still polled even though create is gated.
-      expect(accounting.getInvoiceById).toHaveBeenCalledTimes(1);
+      expect(accounting.getInvoiceById).not.toHaveBeenCalled();
+      expect(accounting.listInvoicesForCustomer).not.toHaveBeenCalled();
+      expect(panel.items).toHaveLength(1);
     });
   });
 });

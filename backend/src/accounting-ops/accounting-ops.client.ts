@@ -283,7 +283,9 @@ export class AccountingOpsClient extends AccountingOpsPort {
     };
 
     const scope = this.authMode === 'client-credentials'
-      ? (name === 'create_invoice_from_draft' ? 'invoices:write' : 'invoices:read')
+      ? (name === 'create_invoice_from_draft' || name === 'create_invoices_from_quote'
+          ? 'invoices:write'
+          : 'invoices:read')
       : 'invoices:read invoices:write';
     const headers = await this.authHeaders(ctx, scope);
     if (this.authMode === 'client-credentials' && !headers.Authorization) return null;
@@ -448,6 +450,7 @@ export class AccountingOpsClient extends AccountingOpsPort {
       dueDate: str('due_date'),
       externalSource: str('external_source'),
       externalRef: str('external_ref'),
+      entityId: str('entity_id'),
       pdfUrl: str('pdf_url'),
       hostedPayUrl: str('hosted_pay_url'),
     };
@@ -483,6 +486,7 @@ export class AccountingOpsClient extends AccountingOpsPort {
       line_items,
       currency: draft.currency ?? 'USD',
       auto_send: draft.autoSend ?? false,
+      post_journal: false,
     };
     if (draft.issueDate != null) args['issue_date'] = draft.issueDate;
     if (draft.dueDate != null) args['due_date'] = draft.dueDate;
@@ -566,5 +570,62 @@ export class AccountingOpsClient extends AccountingOpsPort {
     });
     if (!raw) return null;
     return this.toInvoice(raw);
+  }
+
+  async listInvoicesForCustomer(
+    ctx: FederationContext,
+    customerId: string,
+  ): Promise<FederatedInvoice[]> {
+    if (!this.baseUrl) return [];
+    const gate = this.checkEntitlement(ctx);
+    if (!gate.allowed) return [];
+    const ws = this.effectiveWorkspaceId(ctx);
+    const headers = await this.authHeaders(ctx, 'invoices:read');
+    if (this.authMode === 'client-credentials' && !headers.Authorization) return [];
+    const url =
+      `${this.baseUrl}/api/workspaces/${encodeURIComponent(ws)}/invoices` +
+      `?customer_ops_customer_id=${encodeURIComponent(customerId)}&limit=100`;
+    try {
+      const response = await this.fetchWithTimeout(url, { headers, redirect: 'error' });
+      if (!response.ok) return [];
+      const body: unknown = await response.json();
+      const rows = body && typeof body === 'object' && Array.isArray((body as { invoices?: unknown }).invoices)
+        ? (body as { invoices: unknown[] }).invoices
+        : [];
+      return rows
+        .map((row) => (row && typeof row === 'object' ? this.toInvoice(row as Record<string, unknown>) : null))
+        .filter((row): row is FederatedInvoice => row !== null);
+    } catch (err) {
+      this.logger.warn(`Accounting-Ops list invoices failed: ${(err as Error).message}`);
+      return [];
+    }
+  }
+
+  async acceptQuote(
+    ctx: FederationContext,
+    input: {
+      entityId: string;
+      quoteRef: string;
+      version: number;
+      currency: string;
+      customer: Record<string, unknown>;
+      lines: Record<string, unknown>[];
+      totals?: Record<string, unknown> | null;
+    },
+  ): Promise<'ok' | 'failed' | 'skipped'> {
+    if (!this.baseUrl) return 'skipped';
+    const gate = this.checkEntitlement(ctx);
+    if (!gate.allowed) return 'skipped';
+    const raw = await this.callTool(ctx, 'create_invoices_from_quote', {
+      workspace_id: this.effectiveWorkspaceId(ctx),
+      entity_id: input.entityId,
+      quote_ref: input.quoteRef,
+      version: input.version,
+      currency: input.currency,
+      customer: input.customer,
+      lines: input.lines,
+      ...(input.totals ? { totals: input.totals } : {}),
+    });
+    return raw ? 'ok' : 'failed';
   }
 }

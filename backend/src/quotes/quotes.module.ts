@@ -7,6 +7,7 @@ import { AuditModule } from '../audit/audit.module';
 import { QuotesService } from './quotes.service';
 import { QuotesController } from './quotes.controller';
 import { EmailOpsModule } from '../email-ops/email-ops.module';
+import { ProjectOpsModule } from '../project-ops/project-ops.module';
 import { ContactOpsModule } from '../contact-ops/contact-ops.module';
 import { QuotesLifecycleService } from './quotes-lifecycle.service';
 import { QuotePresentationService } from './quote-presentation.service';
@@ -25,6 +26,7 @@ const enabledModule = {
     EmailOpsModule,
     ContactOpsModule,
     AccountingOpsModule,
+    ProjectOpsModule,
     BrandOpsModule,
   ],
   providers: [

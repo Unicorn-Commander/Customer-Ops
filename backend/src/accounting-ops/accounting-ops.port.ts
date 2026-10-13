@@ -104,4 +104,30 @@ export abstract class AccountingOpsPort {
     ctx: FederationContext,
     invoiceId: string,
   ): Promise<FederatedInvoice | null>;
+
+  /**
+   * Invoices Accounting-Ops already holds for this Customer-Ops customer.
+   * Empty when not configured, not entitled, or the call fails. Never throws.
+   */
+  abstract listInvoicesForCustomer(
+    ctx: FederationContext,
+    customerId: string,
+  ): Promise<FederatedInvoice[]>;
+
+  /**
+   * Ask Accounting-Ops to create the DRAFT paper for an accepted quote.
+   * Never posts a journal. skipped when the seam is not configured.
+   */
+  abstract acceptQuote(
+    ctx: FederationContext,
+    input: {
+      entityId: string;
+      quoteRef: string;
+      version: number;
+      currency: string;
+      customer: Record<string, unknown>;
+      lines: Record<string, unknown>[];
+      totals?: Record<string, unknown> | null;
+    },
+  ): Promise<'ok' | 'failed' | 'skipped'>;
 }

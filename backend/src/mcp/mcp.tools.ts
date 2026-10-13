@@ -84,6 +84,7 @@ export class CustomerOpsTools {
     user: User,
     args: {
       workspace_id?: string;
+      search?: string;
       stage?: RelationshipStage;
       owner_user_key?: string;
       include_lost?: boolean;
@@ -94,6 +95,7 @@ export class CustomerOpsTools {
     return this.customers.listForUser(
       user,
       {
+        search: args.search,
         stage: args.stage,
         ownerUserKey: args.owner_user_key,
         includeLost: args.include_lost,
@@ -266,6 +268,7 @@ export class CustomerOpsTools {
       customer_id: string;
       workspace_id?: string;
       to_address?: string;
+      from_address?: string;
       subject: string;
       body: string;
       in_reply_to_thread_id?: string;
@@ -278,6 +281,7 @@ export class CustomerOpsTools {
       args.customer_id,
       {
         toAddress: args.to_address,
+        fromAddress: args.from_address,
         subject: args.subject,
         body: args.body,
         inReplyToThreadId: args.in_reply_to_thread_id,

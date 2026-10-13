@@ -93,6 +93,8 @@ export interface EmailComposeRequest {
   /** The recipient email address (passed for Email-Ops' addressing; Customer-Ops
    *  does NOT store it). */
   toAddress: string;
+  /** Mailbox to send as. Omitted means the workspace default mailbox. */
+  fromAddress?: string | null;
   subject: string;
   /** The plain-text body Customer-Ops composed (or an agent drafted). */
   body: string;

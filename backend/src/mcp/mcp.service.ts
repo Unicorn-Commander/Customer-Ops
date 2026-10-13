@@ -258,10 +258,11 @@ export class McpService {
         title: 'List relationships',
         description:
           'List the workspace’s customer relationships, optionally filtered by ' +
-          'funnel stage, owner, or lost-status. Each row carries the FEDERATED ' +
+          'funnel stage, owner, lost-status, or search (contact name/email/organization and notes). Each row carries the FEDERATED ' +
           'contact summary (resolved from Contact-Ops, never copied).',
         inputSchema: {
           workspace_id: z.string().optional(),
+          search: z.string().max(200).optional(),
           stage: STAGE.optional(),
           owner_user_key: z.string().optional(),
           include_lost: z.boolean().optional(),
@@ -479,11 +480,14 @@ export class McpService {
           '(the owner-gated, runtime agents-paused flag). ' +
           'Idempotent on a deterministic external_ref. Requires BOTH customer-ops ' +
           'and email-ops entitlements. The Email-Ops app owns the mailbox + message ' +
-          '— Customer-Ops stores no message body.',
+          '— Customer-Ops stores no message body. ' +
+          'Optionally pass from_address to send as a mailbox registered in this workspace. ' +
+          'Omit from_address to use the workspace default mailbox.',
         inputSchema: {
           customer_id: z.string(),
           workspace_id: z.string().optional(),
           to_address: z.string().max(320).optional(),
+          from_address: z.string().max(320).optional(),
           subject: z.string().min(1).max(500),
           body: z.string().min(1).max(50000),
           in_reply_to_thread_id: z.string().max(200).optional(),
