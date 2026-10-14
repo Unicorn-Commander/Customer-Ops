@@ -60,8 +60,9 @@ jobs:
           POSTGRES_USER: customer_ops_admin
           POSTGRES_PASSWORD: verify_admin
           POSTGRES_DB: customerops
-        ports:
-          - 5432:5432
+        # No host `ports:` mapping: jobs reach the service by hostname
+        # (postgres:5432), and a pinned host port collides when the runner
+        # runs several jobs at once.
         options: >-
           --health-cmd="pg_isready -U customer_ops_admin -d customerops"
           --health-interval=5s
