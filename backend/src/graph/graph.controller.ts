@@ -101,10 +101,7 @@ export class GraphController {
       'interactions/last-touch; hub: workspace rollup). 503 when dormant.',
   })
   @RequireScopes('read:customers')
-  async nodeDetail(
-    @Req() req: Request,
-    @Param('nodeKey') nodeKey: string,
-  ): Promise<NodeDetailDTO> {
+  async nodeDetail(@Req() req: Request, @Param('nodeKey') nodeKey: string): Promise<NodeDetailDTO> {
     return this.graph.getNodeDetail(graphKeyFor(workspaceIdOf(req)), nodeKey);
   }
 }

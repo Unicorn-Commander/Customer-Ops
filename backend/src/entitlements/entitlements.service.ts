@@ -168,9 +168,7 @@ export class EntitlementsService {
     const hit = this.fresh.get(key);
     if (hit && now - hit.at < this.ttlMs) return hit.data;
 
-    const url = orgId
-      ? `${this.endpoint}?org_id=${encodeURIComponent(orgId)}`
-      : this.endpoint;
+    const url = orgId ? `${this.endpoint}?org_id=${encodeURIComponent(orgId)}` : this.endpoint;
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);

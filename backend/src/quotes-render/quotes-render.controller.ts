@@ -144,7 +144,7 @@ export class QuotesRenderPublicController {
     return raw.split(';').some((c) => c.trim() === want);
   }
 
-  private links(req: Request, token: string): DocumentLinks {
+  private links(req: Request, _token: string): DocumentLinks {
     const fromProxy = req.headers['x-quote-document-url'];
     const docUrl =
       typeof fromProxy === 'string' && /^\/[A-Za-z0-9/_-]{1,300}$/.test(fromProxy)
@@ -343,13 +343,11 @@ export class QuotesRenderPublicController {
     );
     void contentType;
     if (outcome.ok) {
-      res
-        .status(202)
-        .json({
-          pending_id: outcome.pending_id,
-          expires_at: outcome.expires_at,
-          email_hint: outcome.email_hint,
-        });
+      res.status(202).json({
+        pending_id: outcome.pending_id,
+        expires_at: outcome.expires_at,
+        email_hint: outcome.email_hint,
+      });
       return;
     }
     problem(res, outcome.status, outcome.code, outcome.detail);

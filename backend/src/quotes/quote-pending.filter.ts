@@ -12,13 +12,11 @@ export class QuotePendingFilter implements ExceptionFilter {
     res.setHeader('X-Robots-Tag', 'noindex, nofollow');
     res.setHeader('Retry-After', '60');
     if (/\/(view|bind)$/.test(req.path))
-      return res
-        .status(503)
-        .json({
-          found: false,
-          code: 'QUOTE_NOT_AVAILABLE',
-          message: 'This quote is not available yet.',
-        });
+      return res.status(503).json({
+        found: false,
+        code: 'QUOTE_NOT_AVAILABLE',
+        message: 'This quote is not available yet.',
+      });
     return res
       .status(503)
       .type('html')

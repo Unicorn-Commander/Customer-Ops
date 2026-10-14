@@ -56,7 +56,9 @@ export class BrandOpsClient extends BrandOpsPort {
   ) {
     super();
     if (!this.baseUrl) {
-      this.logger.warn('BRAND_OPS_BASE_URL unset — Brand-Ops federation is DORMANT; quotes render with the default theme.');
+      this.logger.warn(
+        'BRAND_OPS_BASE_URL unset — Brand-Ops federation is DORMANT; quotes render with the default theme.',
+      );
     } else {
       this.logger.log(`Brand-Ops federation target: ${this.baseUrl} (auth=${this.authMode})`);
     }
@@ -80,7 +82,9 @@ export class BrandOpsClient extends BrandOpsPort {
   }
 
   private get authMode(): 'static' | 'brigade-sts' {
-    return this.config.get<string>('BRAND_OPS_AUTH_MODE')?.trim() === 'brigade-sts' ? 'brigade-sts' : 'static';
+    return this.config.get<string>('BRAND_OPS_AUTH_MODE')?.trim() === 'brigade-sts'
+      ? 'brigade-sts'
+      : 'static';
   }
 
   isConfigured(): boolean {
@@ -141,13 +145,25 @@ export class BrandOpsClient extends BrandOpsPort {
     return null;
   }
 
-  private async callTool(name: string, args: Record<string, unknown>): Promise<Record<string, unknown> | null> {
+  private async callTool(
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown> | null> {
     const base = this.baseUrl;
     if (!base) return null;
-    const body = { jsonrpc: '2.0', id: ++this.rpcId, method: 'tools/call', params: { name, arguments: args } };
+    const body = {
+      jsonrpc: '2.0',
+      id: ++this.rpcId,
+      method: 'tools/call',
+      params: { name, arguments: args },
+    };
     let res: Response;
     try {
-      res = await this.fetchWithTimeout(`${base}/mcp`, { method: 'POST', headers: await this.authHeaders(), body: JSON.stringify(body) });
+      res = await this.fetchWithTimeout(`${base}/mcp`, {
+        method: 'POST',
+        headers: await this.authHeaders(),
+        body: JSON.stringify(body),
+      });
     } catch (err) {
       this.logger.warn(`Brand-Ops MCP ${name} transport error: ${(err as Error).message}`);
       return null;
@@ -158,12 +174,16 @@ export class BrandOpsClient extends BrandOpsPort {
     }
     const payload = this.parseRpc(await res.text());
     if (!payload || payload.error) {
-      this.logger.warn(`Brand-Ops MCP ${name} ${payload?.error ? `JSON-RPC error: ${payload.error.message}` : 'unparseable response'}`);
+      this.logger.warn(
+        `Brand-Ops MCP ${name} ${payload?.error ? `JSON-RPC error: ${payload.error.message}` : 'unparseable response'}`,
+      );
       return null;
     }
     const result = payload.result;
     if (!result || result.isError) {
-      this.logger.warn(`Brand-Ops MCP ${name} tool error: ${result?.content?.[0]?.text ?? 'unknown'}`);
+      this.logger.warn(
+        `Brand-Ops MCP ${name} tool error: ${result?.content?.[0]?.text ?? 'unknown'}`,
+      );
       return null;
     }
     if (result.structuredContent) return result.structuredContent;
@@ -180,20 +200,55 @@ export class BrandOpsClient extends BrandOpsPort {
 
   async ping(): Promise<SeamHealth> {
     const base = this.baseUrl;
-    if (!base) return { seam: 'brand-ops', configured: false, ok: false, status: null, detail: 'not-configured', latencyMs: null };
+    if (!base)
+      return {
+        seam: 'brand-ops',
+        configured: false,
+        ok: false,
+        status: null,
+        detail: 'not-configured',
+        latencyMs: null,
+      };
     const started = Date.now();
     try {
       const res = await this.fetchWithTimeout(`${base}/mcp`, {
         method: 'POST',
         headers: await this.authHeaders(),
-        body: JSON.stringify({ jsonrpc: '2.0', id: ++this.rpcId, method: 'tools/list', params: {} }),
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: ++this.rpcId,
+          method: 'tools/list',
+          params: {},
+        }),
       });
       const latencyMs = Date.now() - started;
-      if (res.ok) return { seam: 'brand-ops', configured: true, ok: true, status: res.status, detail: 'ok', latencyMs };
+      if (res.ok)
+        return {
+          seam: 'brand-ops',
+          configured: true,
+          ok: true,
+          status: res.status,
+          detail: 'ok',
+          latencyMs,
+        };
       const kind = res.status === 401 || res.status === 403 ? 'auth-error' : 'http-error';
-      return { seam: 'brand-ops', configured: true, ok: false, status: res.status, detail: `${kind}: ${await shortBody(res)}`, latencyMs };
+      return {
+        seam: 'brand-ops',
+        configured: true,
+        ok: false,
+        status: res.status,
+        detail: `${kind}: ${await shortBody(res)}`,
+        latencyMs,
+      };
     } catch (err) {
-      return { seam: 'brand-ops', configured: true, ok: false, status: null, detail: `unreachable: ${(err as Error).message}`, latencyMs: Date.now() - started };
+      return {
+        seam: 'brand-ops',
+        configured: true,
+        ok: false,
+        status: null,
+        detail: `unreachable: ${(err as Error).message}`,
+        latencyMs: Date.now() - started,
+      };
     }
   }
 
@@ -205,7 +260,10 @@ export class BrandOpsClient extends BrandOpsPort {
     if (hit && hit.expiresAt > Date.now()) return hit.value;
     const raw = await this.callTool('get_brand_tokens', { slug: key });
     const tokens = normalizeTokens(raw, key);
-    this.cache.set(key, { value: tokens, expiresAt: Date.now() + (tokens ? this.cacheTtlMs : 60_000) });
+    this.cache.set(key, {
+      value: tokens,
+      expiresAt: Date.now() + (tokens ? this.cacheTtlMs : 60_000),
+    });
     return tokens;
   }
 
@@ -218,18 +276,38 @@ export class BrandOpsClient extends BrandOpsPort {
 }
 
 /** Shape-check the wire result; a brand with neither colours nor type is null. */
-export function normalizeTokens(raw: Record<string, unknown> | null, slug: string): BrandTokens | null {
+export function normalizeTokens(
+  raw: Record<string, unknown> | null,
+  slug: string,
+): BrandTokens | null {
   if (!raw) return null;
   const color = Array.isArray(raw.color)
     ? raw.color
-        .filter((c): c is { name: string; value: string } => !!c && typeof c === 'object' && typeof (c as { name?: unknown }).name === 'string' && typeof (c as { value?: unknown }).value === 'string')
+        .filter(
+          (c): c is { name: string; value: string } =>
+            !!c &&
+            typeof c === 'object' &&
+            typeof (c as { name?: unknown }).name === 'string' &&
+            typeof (c as { value?: unknown }).value === 'string',
+        )
         .map((c) => ({ name: c.name, value: c.value }))
     : [];
   const typography = Array.isArray(raw.typography)
     ? raw.typography
-        .filter((t): t is { name: string; value: string } => !!t && typeof t === 'object' && typeof (t as { name?: unknown }).name === 'string' && typeof (t as { value?: unknown }).value === 'string')
+        .filter(
+          (t): t is { name: string; value: string } =>
+            !!t &&
+            typeof t === 'object' &&
+            typeof (t as { name?: unknown }).name === 'string' &&
+            typeof (t as { value?: unknown }).value === 'string',
+        )
         .map((t) => ({ name: t.name, value: t.value }))
     : [];
   if (!color.length && !typography.length) return null;
-  return { brand: typeof raw.brand === 'string' ? raw.brand : slug, color, typography, css: typeof raw.css === 'string' ? raw.css : undefined };
+  return {
+    brand: typeof raw.brand === 'string' ? raw.brand : slug,
+    color,
+    typography,
+    css: typeof raw.css === 'string' ? raw.css : undefined,
+  };
 }

@@ -42,11 +42,7 @@ import { CustomersService } from '../customers/customers.service';
 import { AgentInferencePort, InferenceContext } from '../agents/inference/agent-inference.port';
 import { WorkspaceContextService } from '../common/workspace/workspace-context.service';
 import { PendingActionStore } from '../common/security/pending-action.store';
-import {
-  WithWorkspaceClaim,
-  entitlementsOf,
-  ucUidOf,
-} from '../common/workspace/workspace.util';
+import { WithWorkspaceClaim, ucUidOf } from '../common/workspace/workspace.util';
 import { safeJsonObject, strOrNull } from '../agents/agent-parse.util';
 import {
   PendingAction,
@@ -337,9 +333,7 @@ export class RelationsOfficerService {
         return this.condenseCustomer(c360);
       } catch (err) {
         this.logger.warn(
-          `Relations Officer grounding (customer ${customerId}) failed: ${
-            (err as Error).message
-          }`,
+          `Relations Officer grounding (customer ${customerId}) failed: ${(err as Error).message}`,
         );
         return `The selected customer (${customerId}) could not be loaded right now; answer generally and suggest re-opening it.`;
       }
@@ -354,13 +348,17 @@ export class RelationsOfficerService {
 
   /** Condense a customer-360 into a small grounding summary (stage, contact, value,
    *  panel counts, next action). Kept deliberately compact to bound the prompt. */
-  private condenseCustomer(c360: ReturnType<CustomersService['customer360ForUser']> extends Promise<infer R> ? R : never): string {
+  private condenseCustomer(
+    c360: ReturnType<CustomersService['customer360ForUser']> extends Promise<infer R> ? R : never,
+  ): string {
     const rel = c360.relationship;
     const contact = c360.contact;
     const name = contact?.displayName ?? '(unresolved contact)';
     const email = contact?.primaryEmail ?? 'no email on file';
     const value = rel.expectedValue != null ? rel.expectedValue : 'n/a';
-    const nextAction = rel.nextActionAt ? new Date(rel.nextActionAt).toISOString().slice(0, 10) : 'none set';
+    const nextAction = rel.nextActionAt
+      ? new Date(rel.nextActionAt).toISOString().slice(0, 10)
+      : 'none set';
 
     const invoices = c360.invoices?.items?.length ?? 0;
     const meetings = c360.meetings?.meetings?.length ?? 0;
@@ -498,7 +496,9 @@ export class RelationsOfficerService {
     const args = (rawArgs && typeof rawArgs === 'object' ? rawArgs : {}) as Record<string, unknown>;
 
     if (k === 'transition_stage') {
-      const toStage = String(args['toStage'] ?? '').trim().toUpperCase();
+      const toStage = String(args['toStage'] ?? '')
+        .trim()
+        .toUpperCase();
       const valid =
         toStage === RelationshipStage.LEAD ||
         toStage === RelationshipStage.PROSPECT ||
@@ -643,7 +643,9 @@ export class RelationsOfficerService {
     const a = rawAction as Record<string, unknown>;
     const kind = typeof a['kind'] === 'string' ? (a['kind'] as RelationsOfficerActionKind) : null;
     if (!kind) return { reply, action: null };
-    const args = (a['args'] && typeof a['args'] === 'object' ? a['args'] : {}) as RelationsOfficerActionArgs;
+    const args = (
+      a['args'] && typeof a['args'] === 'object' ? a['args'] : {}
+    ) as RelationsOfficerActionArgs;
     return { reply, action: { kind, args } };
   }
 

@@ -55,9 +55,7 @@ export class FederationOverrideGuardError extends Error {
  * trim). Scans by suffix so any seam — present or future — is caught, not just the
  * six known today. Returned sorted for a stable, deterministic error message.
  */
-export function collectActiveOverrideEnvs(
-  env: NodeJS.ProcessEnv = process.env,
-): string[] {
+export function collectActiveOverrideEnvs(env: NodeJS.ProcessEnv = process.env): string[] {
   return Object.keys(env)
     .filter((k) => k.endsWith(OVERRIDE_ENV_SUFFIX))
     .filter((k) => (env[k] ?? '').trim() !== '')
@@ -127,9 +125,7 @@ export function evaluateFederationOverrideGuard(
  * Assert the boot config is safe, or throw a fatal FederationOverrideGuardError.
  * Call this at bootstrap BEFORE the app begins listening.
  */
-export function assertFederationOverrideSafe(
-  input: FederationOverrideGuardInput,
-): void {
+export function assertFederationOverrideSafe(input: FederationOverrideGuardInput): void {
   const verdict = evaluateFederationOverrideGuard(input);
   if (!verdict.safe) {
     throw new FederationOverrideGuardError(

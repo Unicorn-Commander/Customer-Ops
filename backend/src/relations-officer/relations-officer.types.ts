@@ -30,11 +30,7 @@ export type RelationsOfficerMode = 'advisor' | 'operator';
 /** The 4 relationship writes the operator may propose — and ONLY these. Each maps
  *  1:1 to a CustomersService `*ForUser` write method that already audits via a
  *  customer activity. NO invoice/email/send/charge action is representable here. */
-export type RelationsOfficerActionKind =
-  | 'transition_stage'
-  | 'add_note'
-  | 'mark_lost'
-  | 'reopen';
+export type RelationsOfficerActionKind = 'transition_stage' | 'add_note' | 'mark_lost' | 'reopen';
 
 /** One chat turn in the conversation (the model's wire history). The system turn
  *  is assembled server-side (persona + grounding) and is NOT accepted from the

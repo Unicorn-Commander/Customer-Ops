@@ -100,7 +100,10 @@ export function entitlementsOf(user: Partial<WithWorkspaceClaim> | null | undefi
  * downstream (the clients keep normalizing the surviving value they act on).
  */
 export function entitlementKey(sku: string): string {
-  return (sku || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+  return (sku || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, '');
 }
 
 /**

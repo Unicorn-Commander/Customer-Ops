@@ -164,7 +164,10 @@ export class WorkspaceContextService {
     user: User & Partial<WithWorkspaceClaim>,
     workspaceId: string,
   ): Promise<string[]> {
-    return intersectEntitlements(entitlementsOf(user), await this.workspaceEntitlements(workspaceId));
+    return intersectEntitlements(
+      entitlementsOf(user),
+      await this.workspaceEntitlements(workspaceId),
+    );
   }
 
   /**

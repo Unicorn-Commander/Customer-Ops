@@ -35,7 +35,8 @@
 #   KEEP_DB=1 scripts/verify-tenancy.sh       # leave the container up for poking
 #   PG_PORT=55444 scripts/verify-tenancy.sh   # pin a port instead of auto-allocating
 #
-# Requires: docker, and a Prisma CLI resolvable from backend/ (the repo's
+# Requires: docker (a local daemon, or the host daemon from inside a CI job
+# container), and a Prisma CLI resolvable from backend/ (the repo's
 # node_modules, symlinked in the worktree). No host psql needed — every SQL call
 # runs via `docker exec ... psql` (the DEPLOY.md idiom), so the harness is
 # self-contained.
@@ -149,17 +150,41 @@ scalar_ws()  { docker exec -i -e PGPASSWORD="${APP_PW}" -e PGOPTIONS="-c app.cur
 step "1. Boot throwaway ${PG_IMAGE} as ${ADMIN_USER} on :${PG_PORT} (container ${CONTAINER})"
 # Mount the repo's init script so the role split is created EXACTLY as production
 # (the harness proves the real bring-up path, not a bespoke role setup).
-docker run -d --rm \
+# Network placement. On a workstation the container publishes 127.0.0.1:PG_PORT.
+# Inside a CI job container that drives the HOST's Docker daemon (Forgejo runner
+# with the socket mounted), a published port lands on the host, not in the job,
+# so the throwaway Postgres instead joins the job container's network namespace
+# and listens on PG_PORT there (PGPORT is honoured by the server and by psql).
+# Auto-detected; force with VERIFY_TENANCY_SHARE_NETNS=1 / 0.
+SELF_CONTAINER=""
+if [[ "${VERIFY_TENANCY_SHARE_NETNS:-auto}" != "0" ]] && [[ -f /.dockerenv || "${VERIFY_TENANCY_SHARE_NETNS:-auto}" == "1" ]]; then
+  _self="$(cat /etc/hostname 2>/dev/null || hostname)"
+  if docker inspect "${_self}" >/dev/null 2>&1; then SELF_CONTAINER="${_self}"; fi
+fi
+if [[ -n "${SELF_CONTAINER}" ]]; then
+  NET_ARGS=(--network "container:${SELF_CONTAINER}" -e PGPORT="${PG_PORT}")
+  info "inside container ${SELF_CONTAINER}: sharing its network namespace (port ${PG_PORT})"
+else
+  NET_ARGS=(-p "127.0.0.1:${PG_PORT}:5432")
+fi
+# The init script is COPIED in (docker cp streams from this client), not
+# bind-mounted: with a remote/host daemon a bind mount resolves on the daemon's
+# filesystem, where this checkout does not exist, and Postgres would silently
+# skip the role split.
+docker create --rm \
   --name "${CONTAINER}" \
   -e POSTGRES_USER="${ADMIN_USER}" \
   -e POSTGRES_PASSWORD="${ADMIN_PW}" \
   -e POSTGRES_DB="${PG_DB}" \
-  -p "127.0.0.1:${PG_PORT}:5432" \
-  -v "${INIT_SQL}:/docker-entrypoint-initdb.d/01-init.sql:ro" \
+  "${NET_ARGS[@]}" \
   "${PG_IMAGE}" >/dev/null
+docker cp "${INIT_SQL}" "${CONTAINER}:/docker-entrypoint-initdb.d/01-init.sql"
+docker start "${CONTAINER}" >/dev/null
 info "container started; waiting for readiness…"
 for i in $(seq 1 60); do
-  if docker exec "${CONTAINER}" pg_isready -U "${ADMIN_USER}" -d "${PG_DB}" >/dev/null 2>&1; then
+  # -h 127.0.0.1: the entrypoint's init phase runs a socket-only server, so a
+  # TCP check only passes once the real server (after 01-init.sql) is up.
+  if docker exec "${CONTAINER}" pg_isready -h 127.0.0.1 -U "${ADMIN_USER}" -d "${PG_DB}" >/dev/null 2>&1; then
     break
   fi
   sleep 1

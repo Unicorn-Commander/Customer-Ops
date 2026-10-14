@@ -13,7 +13,9 @@ export interface RequestMeta {
   idempotency_key?: string | null;
 }
 
-export type PublicLookup = { found: true; view: QuoteView; token_prefix: string } | { found: false };
+export type PublicLookup =
+  | { found: true; view: QuoteView; token_prefix: string }
+  | { found: false };
 
 export interface AcceptPayload {
   name: string;
@@ -40,7 +42,15 @@ export abstract class QuotePublicSource {
   /** Resolve a token → view. Records the view (first open flips `viewed`). */
   abstract lookup(token: string, meta: RequestMeta): Promise<PublicLookup>;
   /** Step one: store a pending acceptance and send the code (A1). */
-  abstract beginAcceptance(token: string, payload: AcceptPayload, meta: RequestMeta): Promise<AcceptOutcome>;
+  abstract beginAcceptance(
+    token: string,
+    payload: AcceptPayload,
+    meta: RequestMeta,
+  ): Promise<AcceptOutcome>;
   /** Step two: the code commits the acceptance (A1). */
-  abstract confirmAcceptance(token: string, payload: ConfirmPayload, meta: RequestMeta): Promise<ConfirmOutcome>;
+  abstract confirmAcceptance(
+    token: string,
+    payload: ConfirmPayload,
+    meta: RequestMeta,
+  ): Promise<ConfirmOutcome>;
 }

@@ -260,10 +260,23 @@ export class ContactOpsClient extends ContactOpsPort {
   async ping(): Promise<SeamHealth> {
     const seam = 'contact-ops';
     if (!this.baseUrl) {
-      return { seam, configured: false, ok: false, status: null, detail: 'not-configured', latencyMs: null };
+      return {
+        seam,
+        configured: false,
+        ok: false,
+        status: null,
+        detail: 'not-configured',
+        latencyMs: null,
+      };
     }
     const base = this.baseUrl;
-    const ws = this.federationMap.resolveSync(this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ?? '', 'contact-ops') ?? this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ?? '';
+    const ws =
+      this.federationMap.resolveSync(
+        this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ?? '',
+        'contact-ops',
+      ) ??
+      this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ??
+      '';
     // Contact-Ops' FederationContext is the read-only (no-entitlements) shape.
     const ctx: FederationContext = { workspaceId: ws, ucUid: null };
     const body = { jsonrpc: '2.0', id: ++this.rpcId, method: 'tools/list', params: {} };
@@ -494,8 +507,7 @@ export class ContactOpsClient extends ContactOpsPort {
       this.logger.debug?.('upsertContact: no email/phone to match on — skipping CO upsert');
       return null;
     }
-    const toolName =
-      this.config.get<string>('CONTACT_OPS_INGEST_TOOL')?.trim() || 'upsert_person';
+    const toolName = this.config.get<string>('CONTACT_OPS_INGEST_TOOL')?.trim() || 'upsert_person';
 
     const raw = await this.callTool(ctx, toolName, this.toIngestArgs(identity));
     if (!raw) return null;

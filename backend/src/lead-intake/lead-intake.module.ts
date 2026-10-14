@@ -23,10 +23,7 @@ import { LeadIntakeController } from './lead-intake.controller';
 @Module({
   imports: [WorkspaceModule, AuthModule, ContactOpsModule],
   controllers: [LeadIntakeController],
-  providers: [
-    LeadIntakeService,
-    { provide: LeadLabelResolver, useExisting: LeadIntakeService },
-  ],
+  providers: [LeadIntakeService, { provide: LeadLabelResolver, useExisting: LeadIntakeService }],
   exports: [LeadIntakeService, LeadLabelResolver],
 })
 export class LeadIntakeModule {}

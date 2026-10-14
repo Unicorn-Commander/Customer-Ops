@@ -17,7 +17,17 @@
  * AuditAction.EXPORT row through the append-only trail.
  */
 
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  Patch,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { User } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -47,7 +57,9 @@ export class GdprController {
   // ── right to portability ──────────────────────────────────────────────────
 
   @Get('export')
-  @ApiOperation({ summary: 'Export the whole workspace CRM as portable JSON (owner-only; audited EXPORT).' })
+  @ApiOperation({
+    summary: 'Export the whole workspace CRM as portable JSON (owner-only; audited EXPORT).',
+  })
   async exportWorkspace(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
@@ -56,7 +68,9 @@ export class GdprController {
   }
 
   @Get('customers/:id/export')
-  @ApiOperation({ summary: 'Export one data subject (customer) as portable JSON (owner-only; audited EXPORT).' })
+  @ApiOperation({
+    summary: 'Export one data subject (customer) as portable JSON (owner-only; audited EXPORT).',
+  })
   async exportCustomer(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
@@ -86,7 +100,7 @@ export class GdprController {
   @Post('offboard')
   @ApiOperation({
     summary:
-      "Offboard the whole workspace: delete (default) or anonymize all CRM data + drop the " +
+      'Offboard the whole workspace: delete (default) or anonymize all CRM data + drop the ' +
       'FalkorDB graph (owner-only; audited DELETE).',
   })
   async offboard(
@@ -116,10 +130,7 @@ export class GdprController {
       'Run the dormant-record retention sweep for THIS workspace now (owner-only). No-op ' +
       'unless CUSTOMER_OPS_RETENTION_SWEEP_ENABLED is on AND a retention window is set.',
   })
-  async runSweep(
-    @CurrentUser() user: AuthedUser,
-    @Param('workspaceId') workspaceId: string,
-  ) {
+  async runSweep(@CurrentUser() user: AuthedUser, @Param('workspaceId') workspaceId: string) {
     // Owner-gate before triggering (the sweep itself is a system job that skips
     // authz + writes its own per-customer DELETE audit rows). No-op unless the
     // master flag is on AND this workspace has a retention window.

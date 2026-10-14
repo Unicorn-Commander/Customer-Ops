@@ -24,12 +24,19 @@ import { QuotePublicSource } from './quotes-render.port';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true, envFilePath: '.env' }),
-    ThrottlerModule.forRoot([{ name: 'short', ttl: 60_000, limit: 200 }, { name: 'long', ttl: 3_600_000, limit: 5000 }]),
+    ThrottlerModule.forRoot([
+      { name: 'short', ttl: 60_000, limit: 200 },
+      { name: 'long', ttl: 3_600_000, limit: 5000 },
+    ]),
     FederationAuthModule,
     BrandOpsModule,
   ],
   controllers: [QuotesRenderPublicController, QuotesRenderDevStudioController],
-  providers: [QuotesRenderService, QuotePdfService, { provide: QuotePublicSource, useClass: FixtureQuoteSource }],
+  providers: [
+    QuotesRenderService,
+    QuotePdfService,
+    { provide: QuotePublicSource, useClass: FixtureQuoteSource },
+  ],
 })
 class QuotesRenderDevModule {}
 
@@ -41,7 +48,9 @@ async function main() {
   const port = Number(app.get(ConfigService).get('QUOTES_RENDER_DEV_PORT') ?? 3212);
   await app.listen(port, '0.0.0.0');
   // eslint-disable-next-line no-console
-  console.log(`quotes-render dev server: http://localhost:${port}/api/v1/public/quotes/fx-orderpad/document`);
+  console.log(
+    `quotes-render dev server: http://localhost:${port}/api/v1/public/quotes/fx-orderpad/document`,
+  );
 }
 
 void main();

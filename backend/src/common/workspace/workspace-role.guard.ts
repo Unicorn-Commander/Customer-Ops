@@ -11,11 +11,7 @@ import { User, WorkspaceRole } from '@prisma/client';
 import { REQUIRE_WORKSPACE_ROLE_KEY } from '../../auth/decorators/require-workspace-role.decorator';
 import { MembershipService } from './membership.service';
 import { tenancyEnabled } from './feature-flags';
-import {
-  defaultWorkspaceId,
-  resolveWorkspaceId,
-  WithWorkspaceClaim,
-} from './workspace.util';
+import { defaultWorkspaceId, resolveWorkspaceId, WithWorkspaceClaim } from './workspace.util';
 import { roleMeetsMinimum } from './workspace-role.util';
 
 /**

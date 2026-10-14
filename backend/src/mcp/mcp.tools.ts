@@ -373,10 +373,16 @@ export class CustomerOpsTools {
       idempotency_key?: string;
     },
   ) {
-    return this.collections.draftNudge(user, args.customer_id, args.workspace_id ?? null, 'bundled', {
-      stageDraft: args.stage_draft,
-      idempotencyKey: args.idempotency_key,
-    });
+    return this.collections.draftNudge(
+      user,
+      args.customer_id,
+      args.workspace_id ?? null,
+      'bundled',
+      {
+        stageDraft: args.stage_draft,
+        idempotencyKey: args.idempotency_key,
+      },
+    );
   }
 
   // ── Phase 6 lead-ingestion tools (delegate to LeadIntakeService) ──

@@ -194,11 +194,7 @@ export class GraphService {
    *
    * @returns the count of rows submitted.
    */
-  async upsertNodesBatch(
-    graphKey: string,
-    label: NodeLabel,
-    nodes: NodeUpsert[],
-  ): Promise<number> {
+  async upsertNodesBatch(graphKey: string, label: NodeLabel, nodes: NodeUpsert[]): Promise<number> {
     assertLabel(label);
     if (nodes.length === 0) return 0;
     const workspaceId = workspaceIdFromKey(graphKey);

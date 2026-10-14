@@ -292,10 +292,7 @@ export class WorkspaceEntitlementsResolver {
   // --- internals -------------------------------------------------------------
 
   /** Read the source, apply the outage posture, and cache with the right TTL. */
-  private async resolveFresh(
-    key: string,
-    now: number,
-  ): Promise<WorkspaceEntitlementResolution> {
+  private async resolveFresh(key: string, now: number): Promise<WorkspaceEntitlementResolution> {
     let value: WorkspaceEntitlementResolution;
     try {
       value = await this.resolveUncached(key);
@@ -467,11 +464,7 @@ export class WorkspaceEntitlementsResolver {
     return { skus: null, source: 'none', stale: false };
   }
 
-  private async writeMirror(
-    workspaceId: string,
-    skus: string[],
-    source: string,
-  ): Promise<void> {
+  private async writeMirror(workspaceId: string, skus: string[], source: string): Promise<void> {
     const now = new Date();
     const expiresAt = new Date(now.getTime() + this.ttlMs);
     try {

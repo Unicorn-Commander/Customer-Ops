@@ -1,4 +1,5 @@
 'use client';
+/* eslint-disable @typescript-eslint/no-explicit-any -- react-force-graph-3d node/link objects and three.js callbacks are untyped at this boundary */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import SpriteText from 'three-spritetext';

@@ -117,7 +117,9 @@ export class ReconciliationSchedulerService implements OnModuleInit, OnModuleDes
       this.logger.error(`Reconciliation scheduler: '${name}' failed: ${(err as Error).message}`);
     } finally {
       this.running.delete(name);
-      this.logger.debug(`Reconciliation scheduler: '${name}' tick done in ${Date.now() - started}ms.`);
+      this.logger.debug(
+        `Reconciliation scheduler: '${name}' tick done in ${Date.now() - started}ms.`,
+      );
     }
   }
 

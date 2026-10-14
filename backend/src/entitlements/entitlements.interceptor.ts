@@ -46,14 +46,12 @@ export class EntitlementsInterceptor implements NestInterceptor {
     config: ConfigService,
   ) {
     this.enforce =
-      (config.get<string>('ENTITLEMENTS_LAUNCH_GATE') || 'off').trim().toLowerCase() ===
-      'enforce';
+      (config.get<string>('ENTITLEMENTS_LAUNCH_GATE') || 'off').trim().toLowerCase() === 'enforce';
     this.launchKey = (
       config.get<string>('ENTITLEMENTS_LAUNCH_FEATURE_KEY') || 'customer_ops_access'
     ).trim();
     this.workspaceIsOrg =
-      (config.get<string>('ENTITLEMENTS_WORKSPACE_IS_ORG') || '').trim().toLowerCase() ===
-      'true';
+      (config.get<string>('ENTITLEMENTS_WORKSPACE_IS_ORG') || '').trim().toLowerCase() === 'true';
   }
 
   async intercept(context: ExecutionContext, next: CallHandler): Promise<Observable<any>> {

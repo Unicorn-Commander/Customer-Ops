@@ -56,14 +56,21 @@ export class QuotesRenderService {
    * markup, so the page keeps its own document shell and the PDF and the page
    * still come from one source. Null when the token does not resolve.
    */
-  async resolvePublic(token: string, meta: RequestMeta): Promise<{ view: QuoteView; theme: QuoteTheme } | null> {
+  async resolvePublic(
+    token: string,
+    meta: RequestMeta,
+  ): Promise<{ view: QuoteView; theme: QuoteTheme } | null> {
     const found = await this.source.lookup(token, meta);
     if (!found.found) return null;
     return { view: found.view, theme: await this.theme(found.view.brand_slug) };
   }
 
   /** The public share page for a token (200) or the styled not-found page (404). */
-  async renderPublic(token: string, meta: RequestMeta, links: DocumentLinks): Promise<PublicRender> {
+  async renderPublic(
+    token: string,
+    meta: RequestMeta,
+    links: DocumentLinks,
+  ): Promise<PublicRender> {
     const found = await this.source.lookup(token, meta);
     if (!found.found) return { status: 404, html: this.notFoundPage(), view: null };
     const theme = await this.theme(found.view.brand_slug);
@@ -78,24 +85,52 @@ export class QuotesRenderService {
   }
 
   /** The PDF for a token: null when the token is unknown. */
-  async renderPublicPdf(token: string, meta: RequestMeta, pageSize: PageSize): Promise<{ pdf: Buffer; filename: string } | null> {
+  async renderPublicPdf(
+    token: string,
+    meta: RequestMeta,
+    pageSize: PageSize,
+  ): Promise<{ pdf: Buffer; filename: string } | null> {
     const found = await this.source.lookup(token, { ...meta });
     if (!found.found) return null;
     const theme = await this.theme(found.view.brand_slug);
-    const html = renderQuoteDocument(found.view, { mode: 'print', pageSize, theme, acceptUrl: null, confirmUrl: null, pdfUrl: null });
+    const html = renderQuoteDocument(found.view, {
+      mode: 'print',
+      pageSize,
+      theme,
+      acceptUrl: null,
+      confirmUrl: null,
+      pdfUrl: null,
+    });
     const pdf = await this.pdf.render(this.job(found.view, html, pageSize));
     const suffix = found.view.acceptance.state === 'accepted' ? '-accepted' : '';
     return { pdf, filename: `${found.view.number}-v${found.view.version.no}${suffix}.pdf` };
   }
 
   /** Studio / client preview of a live record (member surface). */
-  async renderPreview(record: QuoteRecord, mode: 'client' | 'studio', opts: { brandSlug?: string | null; state?: AcceptanceState; pageSize?: PageSize; pdf?: boolean } = {}): Promise<{ html: string; view: QuoteView; pdf?: Buffer }> {
+  async renderPreview(
+    record: QuoteRecord,
+    mode: 'client' | 'studio',
+    opts: {
+      brandSlug?: string | null;
+      state?: AcceptanceState;
+      pageSize?: PageSize;
+      pdf?: boolean;
+    } = {},
+  ): Promise<{ html: string; view: QuoteView; pdf?: Buffer }> {
     const slug = opts.brandSlug === undefined ? record.quote.brand_slug : opts.brandSlug;
     const view = toQuoteView(record, this.previewState(record, opts.state));
     const theme = await this.theme(slug);
     const pageSize = opts.pageSize ?? 'letter';
     if (opts.pdf) {
-      const html = renderQuoteDocument(view, { mode: 'print', pageSize, theme, acceptUrl: null, confirmUrl: null, pdfUrl: null, studio: mode === 'studio' ? toStudioOverlay(record) : null });
+      const html = renderQuoteDocument(view, {
+        mode: 'print',
+        pageSize,
+        theme,
+        acceptUrl: null,
+        confirmUrl: null,
+        pdfUrl: null,
+        studio: mode === 'studio' ? toStudioOverlay(record) : null,
+      });
       const pdf = await this.pdf.render(this.job(view, html, pageSize));
       return { html, view, pdf };
     }
@@ -114,12 +149,39 @@ export class QuotesRenderService {
 
   private previewState(record: QuoteRecord, override?: AcceptanceState) {
     const q = record.quote;
-    const state: AcceptanceState = override ?? (q.status === 'accepted' ? 'accepted' : q.status === 'draft' ? 'draft' : q.status === 'declined' ? 'declined' : q.status === 'expired' ? 'expired' : q.status === 'voided' ? 'voided' : 'open');
+    const state: AcceptanceState =
+      override ??
+      (q.status === 'accepted'
+        ? 'accepted'
+        : q.status === 'draft'
+          ? 'draft'
+          : q.status === 'declined'
+            ? 'declined'
+            : q.status === 'expired'
+              ? 'expired'
+              : q.status === 'voided'
+                ? 'voided'
+                : 'open');
     return {
       state,
-      state_at: state === 'accepted' ? q.accepted_at ?? new Date().toISOString() : null,
-      accepted_by: state === 'accepted' ? q.accepted_by ?? { name: 'Preview acceptor', email: 'preview@example.com', title: 'Title' } : null,
-      version: { no: q.current_version_no, disposition: state === 'accepted' ? ('accepted' as const) : state === 'superseded' ? ('superseded' as const) : ('current' as const) },
+      state_at: state === 'accepted' ? (q.accepted_at ?? new Date().toISOString()) : null,
+      accepted_by:
+        state === 'accepted'
+          ? (q.accepted_by ?? {
+              name: 'Preview acceptor',
+              email: 'preview@example.com',
+              title: 'Title',
+            })
+          : null,
+      version: {
+        no: q.current_version_no,
+        disposition:
+          state === 'accepted'
+            ? ('accepted' as const)
+            : state === 'superseded'
+              ? ('superseded' as const)
+              : ('current' as const),
+      },
     };
   }
 

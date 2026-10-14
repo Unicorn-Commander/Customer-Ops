@@ -43,7 +43,10 @@ import type { FalkorDBOptions } from 'falkordb/dist/src/falkordb';
  * node-redis client at runtime. We type it ourselves and attach it via this
  * narrow shape so the strategy is real (per the brief) without an opaque cast.
  */
-type ReconnectStrategy = false | number | ((retries: number, cause: Error) => false | number | Error);
+type ReconnectStrategy =
+  | false
+  | number
+  | ((retries: number, cause: Error) => false | number | Error);
 type ConnectOptionsWithReconnect = FalkorDBOptions & {
   socket?: FalkorDBOptions['socket'] & { reconnectStrategy?: ReconnectStrategy };
 };

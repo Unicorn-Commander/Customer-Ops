@@ -35,11 +35,7 @@ export class RedisThrottlerStorage implements ThrottlerStorage {
       try {
         // Fixed window: INCR the counter; the FIRST hit in a window (result === 1)
         // stamps the window's TTL. A pipeline keeps it to one round-trip.
-        const results = await client
-          .multi()
-          .incr(storageKey)
-          .pTTL(storageKey)
-          .exec();
+        const results = await client.multi().incr(storageKey).pTTL(storageKey).exec();
         const totalHits = Number(results?.[0] ?? 1);
         let pttl = Number(results?.[1] ?? -1);
 
