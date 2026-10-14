@@ -67,9 +67,7 @@ export class ProjectOpsClient extends ProjectOpsPort {
           'made until configured.',
       );
     } else {
-      this.logger.log(
-        `Project-Ops federation target: ${this.baseUrl} (auth=${this.authMode})`,
-      );
+      this.logger.log(`Project-Ops federation target: ${this.baseUrl} (auth=${this.authMode})`);
     }
   }
 
@@ -263,10 +261,23 @@ export class ProjectOpsClient extends ProjectOpsPort {
   async ping(): Promise<SeamHealth> {
     const seam = 'project-ops';
     if (!this.baseUrl) {
-      return { seam, configured: false, ok: false, status: null, detail: 'not-configured', latencyMs: null };
+      return {
+        seam,
+        configured: false,
+        ok: false,
+        status: null,
+        detail: 'not-configured',
+        latencyMs: null,
+      };
     }
     const base = this.baseUrl;
-    const ws = this.federationMap.resolveSync(this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ?? '', 'project-ops') ?? this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ?? '';
+    const ws =
+      this.federationMap.resolveSync(
+        this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ?? '',
+        'project-ops',
+      ) ??
+      this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ??
+      '';
     const ctx: FederationContext = { workspaceId: ws, ucUid: null, entitlements: [] };
     const body = { jsonrpc: '2.0', id: ++this.rpcId, method: 'tools/list', params: {} };
 

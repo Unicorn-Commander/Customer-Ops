@@ -49,7 +49,12 @@ const CANDIDATES = [
   '/Applications/Chromium.app/Contents/MacOS/Chromium',
 ];
 
-type Browser = { newPage: () => Promise<Page>; close: () => Promise<void>; connected?: boolean; isConnected?: () => boolean };
+type Browser = {
+  newPage: () => Promise<Page>;
+  close: () => Promise<void>;
+  connected?: boolean;
+  isConnected?: () => boolean;
+};
 type Page = {
   setContent: (html: string, opts: Record<string, unknown>) => Promise<void>;
   emulateMediaType: (t: string) => Promise<void>;
@@ -59,7 +64,11 @@ type Page = {
 };
 
 function escapeHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 @Injectable()
@@ -84,10 +93,14 @@ export class QuotePdfService implements OnModuleDestroy {
   }
 
   private async launch(): Promise<Browser> {
-    if (this.browser && (this.browser.connected ?? this.browser.isConnected?.() ?? true)) return this.browser;
+    if (this.browser && (this.browser.connected ?? this.browser.isConnected?.() ?? true))
+      return this.browser;
     if (this.launching) return this.launching;
     const exe = this.executablePath();
-    if (!exe) throw new PdfUnavailableError('No Chromium found: set QUOTES_CHROMIUM_PATH (apk add chromium in the image).');
+    if (!exe)
+      throw new PdfUnavailableError(
+        'No Chromium found: set QUOTES_CHROMIUM_PATH (apk add chromium in the image).',
+      );
     this.launching = (async () => {
       let puppeteer: { launch: (o: Record<string, unknown>) => Promise<Browser> };
       try {
@@ -98,7 +111,13 @@ export class QuotePdfService implements OnModuleDestroy {
       const b = await puppeteer.launch({
         executablePath: exe,
         headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--font-render-hinting=none', '--disable-gpu'],
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--font-render-hinting=none',
+          '--disable-gpu',
+        ],
       });
       this.browser = b;
       this.logger.log(`PDF renderer ready (${exe})`);
@@ -162,10 +181,13 @@ export class QuotePdfService implements OnModuleDestroy {
       // document prints in its fallback stack — degraded typography, but a PDF.
       const fontBudget = Number(this.config.get('QUOTES_PDF_FONT_WAIT_MS') ?? 6_000);
       await Promise.race([
-        page.evaluate('document.fonts ? document.fonts.ready.then(() => true) : true').catch(() => false),
+        page
+          .evaluate('document.fonts ? document.fonts.ready.then(() => true) : true')
+          .catch(() => false),
         new Promise((resolve) => setTimeout(resolve, fontBudget)),
       ]);
-      const style = 'font-family:Menlo,Consolas,monospace;font-size:7.5px;letter-spacing:.12em;text-transform:uppercase;color:#6a655b;width:100%;padding:0 16mm;display:flex;justify-content:space-between;align-items:center;';
+      const style =
+        'font-family:Menlo,Consolas,monospace;font-size:7.5px;letter-spacing:.12em;text-transform:uppercase;color:#6a655b;width:100%;padding:0 16mm;display:flex;justify-content:space-between;align-items:center;';
       const bytes = await page.pdf({
         format: job.pageSize === 'a4' ? 'A4' : 'Letter',
         printBackground: true,

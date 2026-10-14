@@ -33,11 +33,28 @@ export class QuotesRenderStudioHandlers {
     res.setHeader('Cache-Control', 'no-store');
     const parsed = PreviewBodySchema.safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).type('application/problem+json').send(JSON.stringify({ type: 'about:blank', title: 'Bad preview body', status: 400, detail: parsed.error.issues.slice(0, 5).map((i) => `${i.path.join('.')}: ${i.message}`).join('; ') }));
+      res
+        .status(400)
+        .type('application/problem+json')
+        .send(
+          JSON.stringify({
+            type: 'about:blank',
+            title: 'Bad preview body',
+            status: 400,
+            detail: parsed.error.issues
+              .slice(0, 5)
+              .map((i) => `${i.path.join('.')}: ${i.message}`)
+              .join('; '),
+          }),
+        );
       return;
     }
     const { record, mode, brand_slug, state, page_size } = parsed.data;
-    const out = await this.render.renderPreview(record as QuoteRecord, mode, { brandSlug: brand_slug, state, pageSize: page_size });
+    const out = await this.render.renderPreview(record as QuoteRecord, mode, {
+      brandSlug: brand_slug,
+      state,
+      pageSize: page_size,
+    });
     res.status(200).type('html').send(out.html);
   }
 
@@ -45,18 +62,46 @@ export class QuotesRenderStudioHandlers {
     res.setHeader('Cache-Control', 'no-store');
     const parsed = PreviewBodySchema.safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).type('application/problem+json').send(JSON.stringify({ type: 'about:blank', title: 'Bad preview body', status: 400, detail: 'record is malformed' }));
+      res
+        .status(400)
+        .type('application/problem+json')
+        .send(
+          JSON.stringify({
+            type: 'about:blank',
+            title: 'Bad preview body',
+            status: 400,
+            detail: 'record is malformed',
+          }),
+        );
       return;
     }
     const { record, mode, brand_slug, state, page_size } = parsed.data;
     try {
-      const out = await this.render.renderPreview(record as QuoteRecord, mode, { brandSlug: brand_slug, state, pageSize: page_size, pdf: true });
+      const out = await this.render.renderPreview(record as QuoteRecord, mode, {
+        brandSlug: brand_slug,
+        state,
+        pageSize: page_size,
+        pdf: true,
+      });
       res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Disposition', `inline; filename="${out.view.number}-v${out.view.version.no}-preview.pdf"`);
+      res.setHeader(
+        'Content-Disposition',
+        `inline; filename="${out.view.number}-v${out.view.version.no}-preview.pdf"`,
+      );
       res.status(200).send(out.pdf);
     } catch (err) {
       if (err instanceof PdfUnavailableError) {
-        res.status(503).type('application/problem+json').send(JSON.stringify({ type: 'about:blank', title: 'PDF renderer unavailable', status: 503, detail: err.message }));
+        res
+          .status(503)
+          .type('application/problem+json')
+          .send(
+            JSON.stringify({
+              type: 'about:blank',
+              title: 'PDF renderer unavailable',
+              status: 503,
+              detail: err.message,
+            }),
+          );
         return;
       }
       throw err;

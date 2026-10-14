@@ -41,13 +41,18 @@ export class TokenRateLimiter {
     const t = this.now();
     this.sweep(t);
     const existing = this.windows.get(token);
-    const win = existing && existing.resets_at > t ? existing : { count: 0, resets_at: t + this.windowMs };
+    const win =
+      existing && existing.resets_at > t ? existing : { count: 0, resets_at: t + this.windowMs };
     win.count += weight;
     // Re-insert so the map's insertion order tracks recency for eviction.
     this.windows.delete(token);
     this.windows.set(token, win);
     const retry_after_s = Math.max(1, Math.ceil((win.resets_at - t) / 1000));
-    return { ok: win.count <= this.limit, retry_after_s, remaining: Math.max(0, this.limit - win.count) };
+    return {
+      ok: win.count <= this.limit,
+      retry_after_s,
+      remaining: Math.max(0, this.limit - win.count),
+    };
   }
 
   private sweep(t: number): void {

@@ -246,16 +246,25 @@ export class CustomersService {
         // A missing phonebook result cannot establish that an identity does not
         // match. Surface the unavailable search rather than a false negative.
         if (joined.some((row) => !row.contact)) {
-          throw new ServiceUnavailableException('Customer search requires resolved contact summaries; Contact-Ops could not resolve all relationships');
+          throw new ServiceUnavailableException(
+            'Customer search requires resolved contact summaries; Contact-Ops could not resolve all relationships',
+          );
         }
-        matches.push(...joined.filter((row) => [
-          row.contact?.displayName, row.contact?.primaryEmail,
-          row.contact?.currentOrgName, row.notes,
-        ].some((value) => value?.toLocaleLowerCase().includes(search))));
+        matches.push(
+          ...joined.filter((row) =>
+            [
+              row.contact?.displayName,
+              row.contact?.primaryEmail,
+              row.contact?.currentOrgName,
+              row.notes,
+            ].some((value) => value?.toLocaleLowerCase().includes(search)),
+          ),
+        );
         if (rows.length < 200) break;
       }
-      const items = matches.slice(offset, offset + limit).map((row) =>
-        query.withContacts === false ? { ...row, contact: null } : row);
+      const items = matches
+        .slice(offset, offset + limit)
+        .map((row) => (query.withContacts === false ? { ...row, contact: null } : row));
       return { items, count: items.length };
     }
     const rows = await this.workspaces.runForUser(
@@ -341,20 +350,20 @@ export class CustomersService {
     // every other. (Each build*Panel already parallelizes its own sub-calls.)
     const [invoices, outreachPanel, emailPanel, meetingPanel, projectPanel, conversationsPanel] =
       await Promise.all([
-      // Accounting-Ops: poll each linked invoice's live status; refresh the cache.
-      this.buildInvoicePanel(user, invoiceLinks, requestedWorkspaceId),
-      // Outreach app: live campaigns/touches + the local enrollment links.
-      this.buildOutreachPanel(user, relationship.contactId, outreachLinks, requestedWorkspaceId),
-      // Email-Ops: live mailbox threads + the local outbound links.
-      this.buildEmailPanel(user, relationship.contactId, emailLinks, requestedWorkspaceId),
-      // Meeting-Ops: the customer's meetings + summaries + action items.
-      this.buildMeetingPanel(user, relationship.contactId, requestedWorkspaceId),
-      // Project-Ops: the delivery work for this account (matched on contact org/name).
-      this.buildProjectPanel(user, contact, requestedWorkspaceId),
-      // Device messaging (UUDC): the worker's iMessage/SMS with the contact's
-      // handles, resolved from the already-federated `contact`.
-      this.buildConversationsPanel(user, contact, requestedWorkspaceId),
-    ]);
+        // Accounting-Ops: poll each linked invoice's live status; refresh the cache.
+        this.buildInvoicePanel(user, invoiceLinks, requestedWorkspaceId),
+        // Outreach app: live campaigns/touches + the local enrollment links.
+        this.buildOutreachPanel(user, relationship.contactId, outreachLinks, requestedWorkspaceId),
+        // Email-Ops: live mailbox threads + the local outbound links.
+        this.buildEmailPanel(user, relationship.contactId, emailLinks, requestedWorkspaceId),
+        // Meeting-Ops: the customer's meetings + summaries + action items.
+        this.buildMeetingPanel(user, relationship.contactId, requestedWorkspaceId),
+        // Project-Ops: the delivery work for this account (matched on contact org/name).
+        this.buildProjectPanel(user, contact, requestedWorkspaceId),
+        // Device messaging (UUDC): the worker's iMessage/SMS with the contact's
+        // handles, resolved from the already-federated `contact`.
+        this.buildConversationsPanel(user, contact, requestedWorkspaceId),
+      ]);
 
     return {
       relationship: this.serialize(relationship),
@@ -819,7 +828,8 @@ export class CustomersService {
       items = polled.map(({ link, invoice }) => {
         const updated = updatedById.get(link.id);
         if (updated) return this.serializeInvoiceLink(updated);
-        if (invoice) return { ...this.serializeInvoiceLink(link), ...this.invoiceProjection(invoice) };
+        if (invoice)
+          return { ...this.serializeInvoiceLink(link), ...this.invoiceProjection(invoice) };
         return this.serializeInvoiceLink(link);
       });
     }
@@ -906,7 +916,8 @@ export class CustomersService {
                 lastStatus: invoice.status,
                 currency: invoice.currency || 'USD',
                 totalAmount: invoice.total != null ? new Prisma.Decimal(invoice.total) : null,
-                lastBalanceDue: invoice.balanceDue != null ? new Prisma.Decimal(invoice.balanceDue) : null,
+                lastBalanceDue:
+                  invoice.balanceDue != null ? new Prisma.Decimal(invoice.balanceDue) : null,
                 lastPolledAt: new Date(),
               },
               update: this.invoiceCacheUpdate(invoice),
@@ -917,7 +928,9 @@ export class CustomersService {
         },
         requestedWorkspaceId,
       );
-      const byKey = new Map(links.map((link) => [`${link.externalSource}:${link.externalRef}`, link]));
+      const byKey = new Map(
+        links.map((link) => [`${link.externalSource}:${link.externalRef}`, link]),
+      );
       for (const row of rows) byKey.set(`${row.externalSource}:${row.externalRef}`, row);
       return [...byKey.values()];
     } catch (err) {

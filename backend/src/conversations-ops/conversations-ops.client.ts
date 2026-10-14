@@ -176,7 +176,10 @@ export class ConversationsOpsClient extends ConversationsOpsPort {
    * Parse a comma/space-separated channel list into canonical DeviceChannel[].
    * Accepts imessage/iMessage/sms/SMS. Unknown tokens are dropped.
    */
-  private parseChannels(raw: string | undefined | null, fallback: DeviceChannel[]): DeviceChannel[] {
+  private parseChannels(
+    raw: string | undefined | null,
+    fallback: DeviceChannel[],
+  ): DeviceChannel[] {
     if (!raw || !raw.trim()) return [...fallback];
     const out: DeviceChannel[] = [];
     for (const token of raw.split(/[,\s]+/)) {
@@ -193,7 +196,10 @@ export class ConversationsOpsClient extends ConversationsOpsPort {
 
   /** Channels allowed to surface on the cockpit (reads + dry-run compose). */
   enabledChannels(): DeviceChannel[] {
-    return this.parseChannels(this.config.get<string>('CONVERSATIONS_OPS_CHANNELS'), DEFAULT_CHANNELS);
+    return this.parseChannels(
+      this.config.get<string>('CONVERSATIONS_OPS_CHANNELS'),
+      DEFAULT_CHANNELS,
+    );
   }
 
   /** Channels allowed to leave dry-run when LIVE_SEND_ENABLED=true. */
@@ -446,7 +452,11 @@ export class ConversationsOpsClient extends ConversationsOpsPort {
 
     let res: PostResponse;
     try {
-      res = await this.post(`${base}${this.mcpPath}`, await this.authHeaders(ctx), JSON.stringify(body));
+      res = await this.post(
+        `${base}${this.mcpPath}`,
+        await this.authHeaders(ctx),
+        JSON.stringify(body),
+      );
     } catch (err) {
       this.logger.warn(`Conversations MCP ${name} transport error: ${(err as Error).message}`);
       return null;
@@ -539,7 +549,8 @@ export class ConversationsOpsClient extends ConversationsOpsPort {
     body: string,
   ): Promise<PostResponse> {
     const mat = this.mtlsMaterial();
-    if (!mat) return Promise.reject(new Error('mtls transport selected but client material is missing'));
+    if (!mat)
+      return Promise.reject(new Error('mtls transport selected but client material is missing'));
     const u = new URL(url);
     const payload = Buffer.from(body, 'utf8');
     return new Promise<PostResponse>((resolve, reject) => {
@@ -561,11 +572,17 @@ export class ConversationsOpsClient extends ConversationsOpsPort {
           res.on('data', (c: Buffer) => chunks.push(c));
           res.on('end', () => {
             const status = res.statusCode ?? 0;
-            resolve({ ok: status >= 200 && status < 300, status, text: Buffer.concat(chunks).toString('utf8') });
+            resolve({
+              ok: status >= 200 && status < 300,
+              status,
+              text: Buffer.concat(chunks).toString('utf8'),
+            });
           });
         },
       );
-      req.on('timeout', () => req.destroy(new Error(`mtls request timeout after ${this.timeoutMs}ms`)));
+      req.on('timeout', () =>
+        req.destroy(new Error(`mtls request timeout after ${this.timeoutMs}ms`)),
+      );
       req.on('error', reject);
       req.write(payload);
       req.end();
@@ -577,7 +594,14 @@ export class ConversationsOpsClient extends ConversationsOpsPort {
   async ping(): Promise<SeamHealth> {
     const seam = 'conversations-ops';
     if (!this.isConfigured()) {
-      return { seam, configured: false, ok: false, status: null, detail: 'not-configured', latencyMs: null };
+      return {
+        seam,
+        configured: false,
+        ok: false,
+        status: null,
+        detail: 'not-configured',
+        latencyMs: null,
+      };
     }
     const base = this.baseUrl as string;
     const ws = this.workspaceOverride ?? this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ?? '';
@@ -587,7 +611,11 @@ export class ConversationsOpsClient extends ConversationsOpsPort {
     const startedAt = Date.now();
     let res: PostResponse;
     try {
-      res = await this.post(`${base}${this.mcpPath}`, await this.authHeaders(ctx), JSON.stringify(body));
+      res = await this.post(
+        `${base}${this.mcpPath}`,
+        await this.authHeaders(ctx),
+        JSON.stringify(body),
+      );
     } catch (err) {
       return {
         seam,
@@ -652,8 +680,7 @@ export class ConversationsOpsClient extends ConversationsOpsPort {
   private toMessage(raw: Record<string, unknown>): ConversationMessage | null {
     const id = this.str(raw, 'id', 'rowid', 'guid') ?? null;
     if (!id) return null;
-    const channel =
-      this.str(raw, 'service', 'channel') ?? 'iMessage';
+    const channel = this.str(raw, 'service', 'channel') ?? 'iMessage';
     return {
       id,
       at: this.str(raw, 'at', 'date', 'sentAt', 'sent_at'),
@@ -805,7 +832,8 @@ export class ConversationsOpsClient extends ConversationsOpsPort {
     if (!raw) return null;
     const cs = (raw['changeSet'] ?? raw['change_set']) as Record<string, unknown> | undefined;
     const applied = cs ? cs['applied'] === true : false;
-    const channel = this.str(raw, 'serviceUsed', 'service_used') ?? (requestedChannel || 'iMessage');
+    const channel =
+      this.str(raw, 'serviceUsed', 'service_used') ?? (requestedChannel || 'iMessage');
     return { applied, channel, dryRun };
   }
 }

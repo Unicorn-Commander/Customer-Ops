@@ -272,8 +272,14 @@ export class GdprService {
         const [activities, invoiceLinks, outreachLinks, emailLinks, leadIntakes] =
           await Promise.all([
             t.customerActivity.findMany({ where: { customerId }, orderBy: { createdAt: 'asc' } }),
-            t.customerInvoiceLink.findMany({ where: { customerId }, orderBy: { createdAt: 'asc' } }),
-            t.customerOutreachLink.findMany({ where: { customerId }, orderBy: { createdAt: 'asc' } }),
+            t.customerInvoiceLink.findMany({
+              where: { customerId },
+              orderBy: { createdAt: 'asc' },
+            }),
+            t.customerOutreachLink.findMany({
+              where: { customerId },
+              orderBy: { createdAt: 'asc' },
+            }),
             t.customerEmailLink.findMany({ where: { customerId }, orderBy: { createdAt: 'asc' } }),
             t.leadIntake.findMany({ where: { customerId }, orderBy: { createdAt: 'asc' } }),
           ]);

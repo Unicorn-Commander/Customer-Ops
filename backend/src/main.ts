@@ -46,9 +46,7 @@ async function bootstrap() {
           tenancyMulti: tenancyEnabled(),
         });
       } catch (err) {
-        logger.error(
-          `FATAL: refusing to start — ${(err as Error).message}`,
-        );
+        logger.error(`FATAL: refusing to start — ${(err as Error).message}`);
         await app.close();
         throw err;
       }

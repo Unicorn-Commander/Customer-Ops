@@ -211,7 +211,9 @@ export class MembershipService {
     workspaceId: string,
   ): Promise<WorkspaceRole | null> {
     const m = await this.prisma.membership.findUnique({
-      where: { userKey_workspaceId: { userKey: MembershipService.membershipKey(user), workspaceId } },
+      where: {
+        userKey_workspaceId: { userKey: MembershipService.membershipKey(user), workspaceId },
+      },
     });
     return m && m.status === MembershipStatus.ACTIVE ? m.role : null;
   }
@@ -265,9 +267,7 @@ export class MembershipService {
       data: { agentsPaused: paused },
       select: { agentsPaused: true },
     });
-    this.logger.log(
-      `Workspace ${workspaceId} kill switch → agentsPaused=${updated.agentsPaused}`,
-    );
+    this.logger.log(`Workspace ${workspaceId} kill switch → agentsPaused=${updated.agentsPaused}`);
     return updated.agentsPaused;
   }
 

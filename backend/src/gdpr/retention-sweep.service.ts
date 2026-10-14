@@ -28,10 +28,7 @@ import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/commo
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { WorkspaceContextService } from '../common/workspace/workspace-context.service';
-import {
-  retentionSweepEnabled,
-  retentionSweepIntervalMs,
-} from '../common/workspace/feature-flags';
+import { retentionSweepEnabled, retentionSweepIntervalMs } from '../common/workspace/feature-flags';
 import { GdprService } from './gdpr.service';
 
 /** The outcome of a sweep pass (structural counts for logging / the API). */

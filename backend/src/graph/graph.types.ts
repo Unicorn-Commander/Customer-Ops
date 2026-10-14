@@ -145,13 +145,7 @@ export interface UniversalEdgeProps {
  * props this way (instead of `unknown`) makes them pass straight into the client's
  * `{ params }` and rejects a non-serializable value at the call site.
  */
-export type GraphParamValue =
-  | null
-  | string
-  | number
-  | boolean
-  | GraphProps
-  | GraphParamValue[];
+export type GraphParamValue = null | string | number | boolean | GraphProps | GraphParamValue[];
 
 /** A map of Cypher-serializable property values. Matches FalkorDB `QueryParams`. */
 export interface GraphProps {

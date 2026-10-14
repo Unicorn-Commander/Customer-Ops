@@ -119,10 +119,8 @@ export class HealthController {
     const act = this.conversationsOps.activation();
     const smsEnabled = act.enabledChannels.includes('SMS');
     const imsgEnabled = act.enabledChannels.includes('iMessage');
-    const smsLive =
-      act.liveSendEnabled && act.liveSendChannels.includes('SMS');
-    const imsgLive =
-      act.liveSendEnabled && act.liveSendChannels.includes('iMessage');
+    const smsLive = act.liveSendEnabled && act.liveSendChannels.includes('SMS');
+    const imsgLive = act.liveSendEnabled && act.liveSendChannels.includes('iMessage');
     const smsProd =
       this.config.get<string>('CHANNEL_SMS_PROD_ENABLED')?.trim().toLowerCase() === 'true' &&
       smsLive;
@@ -130,11 +128,10 @@ export class HealthController {
       this.config.get<string>('CHANNEL_IMESSAGE_PROD_ENABLED')?.trim().toLowerCase() === 'true' &&
       imsgLive;
     // Enterprise Twilio SMS lives in Email-Ops; Customer-Ops does not federate it yet.
-    const enterpriseTwilioConfigured =
-      !!(
-        this.config.get<string>('TWILIO_ACCOUNT_SID')?.trim() &&
-        this.config.get<string>('TWILIO_AUTH_TOKEN')?.trim()
-      );
+    const enterpriseTwilioConfigured = !!(
+      this.config.get<string>('TWILIO_ACCOUNT_SID')?.trim() &&
+      this.config.get<string>('TWILIO_AUTH_TOKEN')?.trim()
+    );
     // Note: Twilio env is Email-Ops-side; CO typically won't have it. Matrix still
     // documents the lane so marketing does not conflate device SMS with shared-line.
 
@@ -185,9 +182,7 @@ export class HealthController {
                 'CONVERSATIONS_OPS_LIVE_SEND_ENABLED≠true — dry-run only (Aaron checkpoint before live dogfood sends)',
               ]
             : []),
-          ...(!imsgProd
-            ? ['CHANNEL_IMESSAGE_PROD_ENABLED≠true — no production claim']
-            : []),
+          ...(!imsgProd ? ['CHANNEL_IMESSAGE_PROD_ENABLED≠true — no production claim'] : []),
           'Requires signed-in Apple ID + continuous UUDC device/relay availability',
         ],
         notes:
@@ -215,8 +210,7 @@ export class HealthController {
           ...(!smsProd ? ['CHANNEL_SMS_PROD_ENABLED≠true — no production claim'] : []),
           'Device SMS depends on iPhone Continuity / Personal Hotspot path via UUDC',
         ],
-        notes:
-          'Worker-device SMS. Distinct from enterprise shared-line SMS (Email-Ops/Twilio).',
+        notes: 'Worker-device SMS. Distinct from enterprise shared-line SMS (Email-Ops/Twilio).',
       },
       {
         id: 'enterprise-sms',

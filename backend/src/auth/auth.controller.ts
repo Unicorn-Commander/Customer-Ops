@@ -106,7 +106,10 @@ export class AuthController {
   @Get('keycloak/callback')
   @UseGuards(AuthGuard('keycloak'))
   @ApiOperation({ summary: 'Keycloak OAuth callback (uchub realm)' })
-  @ApiResponse({ status: 302, description: 'Redirects to the frontend with a single-use exchange code' })
+  @ApiResponse({
+    status: 302,
+    description: 'Redirects to the frontend with a single-use exchange code',
+  })
   async keycloakCallback(@Req() req: any, @Res() res: any) {
     const tokenData = await this.authService.generateTokenForUser(req.user);
     const frontendUrl = this.configService.get<string>(
@@ -130,7 +133,10 @@ export class AuthController {
       'expires within seconds — a redeemed, unknown, or expired code returns 400.',
   })
   @ApiResponse({ status: 201, description: 'Returns the session access token' })
-  @ApiResponse({ status: 400, description: 'The code is missing, unknown, already used, or expired' })
+  @ApiResponse({
+    status: 400,
+    description: 'The code is missing, unknown, already used, or expired',
+  })
   async ssoExchange(@Body() body: { code?: unknown }) {
     const code = typeof body?.code === 'string' ? body.code : '';
     if (!code) {

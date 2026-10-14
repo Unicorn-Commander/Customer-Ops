@@ -359,10 +359,23 @@ export class OutreachClient extends OutreachPort {
   async ping(): Promise<SeamHealth> {
     const seam = 'outreach-ops';
     if (!this.baseUrl) {
-      return { seam, configured: false, ok: false, status: null, detail: 'not-configured', latencyMs: null };
+      return {
+        seam,
+        configured: false,
+        ok: false,
+        status: null,
+        detail: 'not-configured',
+        latencyMs: null,
+      };
     }
     const base = this.baseUrl;
-    const ws = this.federationMap.resolveSync(this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ?? '', 'outreach') ?? this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ?? '';
+    const ws =
+      this.federationMap.resolveSync(
+        this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ?? '',
+        'outreach',
+      ) ??
+      this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ??
+      '';
     const ctx: FederationContext = { workspaceId: ws, ucUid: null, entitlements: [] };
     const body = { jsonrpc: '2.0', id: ++this.rpcId, method: 'tools/list', params: {} };
 

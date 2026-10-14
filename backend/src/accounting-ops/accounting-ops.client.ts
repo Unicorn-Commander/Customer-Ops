@@ -155,7 +155,10 @@ export class AccountingOpsClient extends AccountingOpsPort {
    * X-Workspace-Id rides along for AO's per-request addressing; AO re-gates
    * membership server-side, so the header is a hint, never the authz boundary.
    */
-  private async authHeaders(ctx: FederationContext, scope = 'invoices:read invoices:write'): Promise<Record<string, string>> {
+  private async authHeaders(
+    ctx: FederationContext,
+    scope = 'invoices:read invoices:write',
+  ): Promise<Record<string, string>> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       // AO's MCP is Streamable HTTP — it 406s unless the client accepts BOTH.
@@ -204,7 +207,10 @@ export class AccountingOpsClient extends AccountingOpsPort {
    *  forwards AO_SERVICE_TOKEN; `brigade-sts` delegates to the shared
    *  BrigadeTokenSource (mint customer-ops CC → exchange for aud=accounting-ops).
    *  Degrade-clean: a failed exchange returns null and the caller sends no bearer. */
-  private async bearerFor(workspaceId: string, scope = 'invoices:read invoices:write'): Promise<string | null> {
+  private async bearerFor(
+    workspaceId: string,
+    scope = 'invoices:read invoices:write',
+  ): Promise<string | null> {
     if (this.authMode === 'static') {
       const t = this.config.get<string>('AO_SERVICE_TOKEN');
       return t && t.trim() ? t.trim() : null;
@@ -282,11 +288,12 @@ export class AccountingOpsClient extends AccountingOpsPort {
       params: { name, arguments: args },
     };
 
-    const scope = this.authMode === 'client-credentials'
-      ? (name === 'create_invoice_from_draft' || name === 'create_invoices_from_quote'
+    const scope =
+      this.authMode === 'client-credentials'
+        ? name === 'create_invoice_from_draft' || name === 'create_invoices_from_quote'
           ? 'invoices:write'
-          : 'invoices:read')
-      : 'invoices:read invoices:write';
+          : 'invoices:read'
+        : 'invoices:read invoices:write';
     const headers = await this.authHeaders(ctx, scope);
     if (this.authMode === 'client-credentials' && !headers.Authorization) return null;
 
@@ -379,10 +386,23 @@ export class AccountingOpsClient extends AccountingOpsPort {
   async ping(): Promise<SeamHealth> {
     const seam = 'accounting-ops';
     if (!this.isConfigured()) {
-      return { seam, configured: false, ok: false, status: null, detail: 'not-configured', latencyMs: null };
+      return {
+        seam,
+        configured: false,
+        ok: false,
+        status: null,
+        detail: 'not-configured',
+        latencyMs: null,
+      };
     }
     const base = this.baseUrl as string;
-    const ws = this.federationMap.resolveSync(this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ?? '', 'accounting-ops') ?? this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ?? '';
+    const ws =
+      this.federationMap.resolveSync(
+        this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ?? '',
+        'accounting-ops',
+      ) ??
+      this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ??
+      '';
     const ctx: FederationContext = { workspaceId: ws, ucUid: null, entitlements: [] };
     const body = { jsonrpc: '2.0', id: ++this.rpcId, method: 'tools/list', params: {} };
 
@@ -391,7 +411,10 @@ export class AccountingOpsClient extends AccountingOpsPort {
     try {
       res = await this.fetchWithTimeout(`${base}/mcp/`, {
         method: 'POST',
-        headers: await this.authHeaders(ctx, this.authMode === 'client-credentials' ? 'invoices:read' : 'invoices:read invoices:write'),
+        headers: await this.authHeaders(
+          ctx,
+          this.authMode === 'client-credentials' ? 'invoices:read' : 'invoices:read invoices:write',
+        ),
         body: JSON.stringify(body),
       });
     } catch (err) {
@@ -514,8 +537,13 @@ export class AccountingOpsClient extends AccountingOpsPort {
       const entities: unknown = await response.json();
       if (!Array.isArray(entities)) return null;
       const entity = entities.find((e) => e && e.id === entityId && e.status === 'active');
-      if (!entity || typeof entity.legal_name !== 'string' || !entity.legal_name.trim()) return null;
-      return { id: entity.id as string, legal_name: entity.legal_name as string, status: entity.status as string };
+      if (!entity || typeof entity.legal_name !== 'string' || !entity.legal_name.trim())
+        return null;
+      return {
+        id: entity.id as string,
+        legal_name: entity.legal_name as string,
+        status: entity.status as string,
+      };
     } catch {
       return null;
     }
@@ -589,11 +617,14 @@ export class AccountingOpsClient extends AccountingOpsPort {
       const response = await this.fetchWithTimeout(url, { headers, redirect: 'error' });
       if (!response.ok) return [];
       const body: unknown = await response.json();
-      const rows = body && typeof body === 'object' && Array.isArray((body as { invoices?: unknown }).invoices)
-        ? (body as { invoices: unknown[] }).invoices
-        : [];
+      const rows =
+        body && typeof body === 'object' && Array.isArray((body as { invoices?: unknown }).invoices)
+          ? (body as { invoices: unknown[] }).invoices
+          : [];
       return rows
-        .map((row) => (row && typeof row === 'object' ? this.toInvoice(row as Record<string, unknown>) : null))
+        .map((row) =>
+          row && typeof row === 'object' ? this.toInvoice(row as Record<string, unknown>) : null,
+        )
         .filter((row): row is FederatedInvoice => row !== null);
     } catch (err) {
       this.logger.warn(`Accounting-Ops list invoices failed: ${(err as Error).message}`);

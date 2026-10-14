@@ -14,7 +14,6 @@ import type { ReactNode } from 'react';
 import Link from 'next/link';
 import { ChevronRight } from 'lucide-react';
 import { TR, TD } from '@/components/ui/Table';
-import { cn } from '@/components/ui/cn';
 
 /** The whole-row 360 deep-link + the identity (avatar + name + sub) cell, then
  *  the caller's data cells, then a trailing chevron column. */

@@ -107,7 +107,8 @@ export class PatService {
   ): Promise<CreatePatResult> {
     const name = (input.name ?? '').trim();
     if (!name) throw new BadRequestException('Token name is required');
-    if (name.length > 100) throw new BadRequestException('Token name must be 100 characters or less');
+    if (name.length > 100)
+      throw new BadRequestException('Token name must be 100 characters or less');
 
     const scopes = this.normalizeScopes(input.scopes);
     const expiresAt = this.normalizeExpiry(input.expiresAt);
@@ -212,7 +213,9 @@ export class PatService {
       this.prisma.personalAccessToken
         .update({ where: { id: token.id }, data: { lastUsedAt: now } })
         .catch((err) =>
-          this.logger.warn(`Failed to bump lastUsedAt for PAT ${token.id}: ${(err as Error).message}`),
+          this.logger.warn(
+            `Failed to bump lastUsedAt for PAT ${token.id}: ${(err as Error).message}`,
+          ),
         );
 
       const { user, ...bare } = token;

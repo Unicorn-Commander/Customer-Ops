@@ -12,7 +12,6 @@ import { z } from 'zod';
 import { PrismaService, WorkspaceTxClient } from '../prisma/prisma.service';
 import { WorkspaceContextService } from '../common/workspace/workspace-context.service';
 import { MembershipService } from '../common/workspace/membership.service';
-import { tenancyEnabled } from '../common/workspace/feature-flags';
 import { ucUidOf } from '../common/workspace/workspace.util';
 import { computeStoredQuote, validateCurrency, QuoteComputationError } from './compute-quote';
 import * as S from './quote.schemas';

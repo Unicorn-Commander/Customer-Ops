@@ -16,7 +16,6 @@ import { z } from 'zod';
 import { PrismaService, WorkspaceTxClient } from '../prisma/prisma.service';
 import { WorkspaceContextService } from '../common/workspace/workspace-context.service';
 import { MembershipService } from '../common/workspace/membership.service';
-import { tenancyEnabled } from '../common/workspace/feature-flags';
 import { ucUidOf } from '../common/workspace/workspace.util';
 import { EmailOpsPort, FederationContext } from '../email-ops/email-ops.port';
 import { AccountingOpsPort } from '../accounting-ops/accounting-ops.port';
@@ -64,7 +63,9 @@ export class QuotesLifecycleService {
     private readonly email: EmailOpsPort,
     private readonly presentation: QuotePresentationService,
     private readonly audit: AuditService = new AuditService(workspaces),
-    @Optional() @Inject(AccountingOpsPort) private readonly accounting: AccountingOpsPort | null = null,
+    @Optional()
+    @Inject(AccountingOpsPort)
+    private readonly accounting: AccountingOpsPort | null = null,
     @Optional() @Inject(ProjectOpsPort) private readonly projects: ProjectOpsPort | null = null,
   ) {}
   private enabled() {
@@ -940,7 +941,9 @@ export class QuotesLifecycleService {
           }
         | null
         | undefined;
-      const lines = (snap?.lines ?? []).filter((line) => line && line.selected !== false && line.label && line.kind);
+      const lines = (snap?.lines ?? []).filter(
+        (line) => line && line.selected !== false && line.label && line.kind,
+      );
       if (bundle && version && this.accounting?.isConfigured()) {
         const entityId = this.config.get<string>('ACCOUNTING_OPS_ENTITY_ID')?.trim();
         const aoLines = lines
@@ -980,9 +983,15 @@ export class QuotesLifecycleService {
                     milestone_total_cents: totals.milestone_cents ?? 0,
                     deposit_cents: totals.deposit_cents ?? 0,
                     recurring: {
-                      ...(totals.recurring?.month_cents ? { month: totals.recurring.month_cents } : {}),
-                      ...(totals.recurring?.quarter_cents ? { quarter: totals.recurring.quarter_cents } : {}),
-                      ...(totals.recurring?.year_cents ? { year: totals.recurring.year_cents } : {}),
+                      ...(totals.recurring?.month_cents
+                        ? { month: totals.recurring.month_cents }
+                        : {}),
+                      ...(totals.recurring?.quarter_cents
+                        ? { quarter: totals.recurring.quarter_cents }
+                        : {}),
+                      ...(totals.recurring?.year_cents
+                        ? { year: totals.recurring.year_cents }
+                        : {}),
                     },
                   }
                 : null,
@@ -991,12 +1000,25 @@ export class QuotesLifecycleService {
         }
       }
       const base = this.config.get<string>('QUOTES_PUBLIC_BASE_URL')?.replace(/\/$/, '');
-      if (bundle && version && this.projects?.isConfigured() && base && /^https:\/\//.test(base) && lines.length > 0) {
+      if (
+        bundle &&
+        version &&
+        this.projects?.isConfigured() &&
+        base &&
+        /^https:\/\//.test(base) &&
+        lines.length > 0
+      ) {
         const totals = snap?.totals ?? {};
         const recurring = [
-          totals.recurring?.month_cents ? { interval: 'month', amount_cents: totals.recurring.month_cents } : null,
-          totals.recurring?.quarter_cents ? { interval: 'quarter', amount_cents: totals.recurring.quarter_cents } : null,
-          totals.recurring?.year_cents ? { interval: 'year', amount_cents: totals.recurring.year_cents } : null,
+          totals.recurring?.month_cents
+            ? { interval: 'month', amount_cents: totals.recurring.month_cents }
+            : null,
+          totals.recurring?.quarter_cents
+            ? { interval: 'quarter', amount_cents: totals.recurring.quarter_cents }
+            : null,
+          totals.recurring?.year_cents
+            ? { interval: 'year', amount_cents: totals.recurring.year_cents }
+            : null,
         ].filter((row) => row !== null);
         const ctx = await this.context(workspace, user);
         attempted.project_ops = true;
@@ -1020,7 +1042,9 @@ export class QuotesLifecycleService {
             kind: line.kind,
             label: String(line.label).slice(0, 500),
             position: typeof line.position === 'number' ? line.position : index,
-            ...(typeof line.amount_cents === 'number' ? { amount_cents: Math.round(line.amount_cents) } : {}),
+            ...(typeof line.amount_cents === 'number'
+              ? { amount_cents: Math.round(line.amount_cents) }
+              : {}),
             ...(line.id ? { customer_ops_line_id: String(line.id) } : {}),
           })),
         });

@@ -86,7 +86,11 @@ export class WorkspaceController {
       this.membership.roleInWorkspace(user, workspaceId),
     ]);
     // `canManage` lets the UI show/hide the owner-only controls without guessing.
-    return { members, your_role: yourRole ? String(yourRole).toLowerCase() : null, can_manage: yourRole === 'OWNER' };
+    return {
+      members,
+      your_role: yourRole ? String(yourRole).toLowerCase() : null,
+      can_manage: yourRole === 'OWNER',
+    };
   }
 
   @Patch('agent-pause')
@@ -134,7 +138,11 @@ export class WorkspaceController {
       resourceId: userKey,
       details: { role: dto.role },
     });
-    return { user_key: updated.userKey, role: String(updated.role).toLowerCase(), status: String(updated.status).toLowerCase() };
+    return {
+      user_key: updated.userKey,
+      role: String(updated.role).toLowerCase(),
+      status: String(updated.status).toLowerCase(),
+    };
   }
 
   @Delete('members/:userKey')

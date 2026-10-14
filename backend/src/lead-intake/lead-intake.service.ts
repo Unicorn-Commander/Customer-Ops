@@ -27,12 +27,7 @@
  * Contact-Ops upsert (an external call) runs OUTSIDE the DB transaction.
  */
 
-import {
-  BadRequestException,
-  Injectable,
-  Logger,
-  NotFoundException,
-} from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHash } from 'crypto';
 import {
@@ -459,7 +454,12 @@ export class LeadIntakeService extends LeadLabelResolver {
   async reconcilePendingSystem(
     workspaceId: string,
     limit = 100,
-  ): Promise<{ scanned: number; resolved: number; stillOpen: number; provisionalUpgraded: number }> {
+  ): Promise<{
+    scanned: number;
+    resolved: number;
+    stillOpen: number;
+    provisionalUpgraded: number;
+  }> {
     // Pass A — promote PENDING intakes, oldest-first.
     const pending = await this.workspaces.runInWorkspace(workspaceId, null, (tx) =>
       tx.leadIntake.findMany({
@@ -565,7 +565,10 @@ export class LeadIntakeService extends LeadLabelResolver {
   }
 
   /** System-actor counterpart of upgradeProvisional. */
-  private async upgradeProvisionalSystem(workspaceId: string, intake: LeadIntake): Promise<boolean> {
+  private async upgradeProvisionalSystem(
+    workspaceId: string,
+    intake: LeadIntake,
+  ): Promise<boolean> {
     const fedCtx: FederationContext = { workspaceId, ucUid: null };
     const upserted = await this.contactOps.upsertContact(fedCtx, this.toIdentity(intake));
     if (!upserted || !intake.resolvedContactId) return false;
@@ -671,7 +674,11 @@ export class LeadIntakeService extends LeadLabelResolver {
   // OBSERVABILITY — list / get / discard the intake buffer.
   // ========================================================================
 
-  async listForUser(user: AuthedUser, query: ListIntakesQueryDto, requestedWorkspaceId?: string | null) {
+  async listForUser(
+    user: AuthedUser,
+    query: ListIntakesQueryDto,
+    requestedWorkspaceId?: string | null,
+  ) {
     const rows = await this.workspaces.runForUser(
       user,
       (tx) => {
@@ -838,7 +845,9 @@ export class LeadIntakeService extends LeadLabelResolver {
 
   /** The workspace id the current RLS transaction is bound to (GUC read). */
   private async boundWorkspaceId(tx: WorkspaceTxClient): Promise<string> {
-    const rows = await tx.$queryRaw<Array<{ ws: string | null }>>`SELECT current_workspace_id() AS ws`;
+    const rows = await tx.$queryRaw<
+      Array<{ ws: string | null }>
+    >`SELECT current_workspace_id() AS ws`;
     const ws = rows?.[0]?.ws;
     if (!ws) throw new BadRequestException('No workspace bound to the request transaction');
     return ws;

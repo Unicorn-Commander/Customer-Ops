@@ -277,10 +277,23 @@ export class MeetingOpsClient extends MeetingOpsPort {
   async ping(): Promise<SeamHealth> {
     const seam = 'meeting-ops';
     if (!this.baseUrl) {
-      return { seam, configured: false, ok: false, status: null, detail: 'not-configured', latencyMs: null };
+      return {
+        seam,
+        configured: false,
+        ok: false,
+        status: null,
+        detail: 'not-configured',
+        latencyMs: null,
+      };
     }
     const base = this.baseUrl;
-    const ws = this.federationMap.resolveSync(this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ?? '', 'meeting-ops') ?? this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ?? '';
+    const ws =
+      this.federationMap.resolveSync(
+        this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ?? '',
+        'meeting-ops',
+      ) ??
+      this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ??
+      '';
     // Meeting-Ops' FederationContext is the read-only (no-entitlements) shape.
     const ctx: FederationContext = { workspaceId: ws, ucUid: null };
     const body = { jsonrpc: '2.0', id: ++this.rpcId, method: 'tools/list', params: {} };
