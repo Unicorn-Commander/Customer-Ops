@@ -388,9 +388,9 @@ export class CustomersController {
   @Get(':id/projects')
   @ApiOperation({
     summary:
-      "The projects Project-Ops is delivering for this customer's account, matched on the " +
-      'federated org/contact name. Read-only; reports a connect affordance when Project-Ops ' +
-      'is unconfigured.',
+      "The projects Project-Ops is delivering for this customer's account, matched by " +
+      'relationship ids first and federated org/contact name second. Read-only; reports a ' +
+      'connect affordance when Project-Ops is unconfigured.',
   })
   @RequireScopes('read:customers')
   async listProjects(

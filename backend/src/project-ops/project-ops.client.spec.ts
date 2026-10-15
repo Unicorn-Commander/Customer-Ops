@@ -25,7 +25,7 @@ function makeFedMap(mapped: string | null = null) {
  *   - DEGRADE-CLEAN: unset PROJECT_OPS_BASE_URL → isConfigured() false, [] with
  *     NO fetch, never throws,
  *   - the configured happy path posts a JSON-RPC tools/call for search_projects
- *     (org name preferred over contact name) + maps Project → FederatedProject,
+ *     (relationship ids preferred over org/contact name) + maps Project → FederatedProject,
  *   - a JSON-RPC error envelope / result.isError / a transport throw / an HTTP
  *     500 each return [] and NEVER throw (federation is best-effort).
  *
@@ -157,6 +157,7 @@ describe('ProjectOpsClient (Project-Ops MOCKED)', () => {
       expect(projects).toHaveLength(1);
       expect(projects[0]).toMatchObject({
         id: 'proj-1',
+        matchedBy: 'name',
         projectNumber: 'P-00085',
         title: 'Acme website rebuild',
         status: 'IN_PROGRESS',
@@ -166,6 +167,143 @@ describe('ProjectOpsClient (Project-Ops MOCKED)', () => {
         organizationName: 'Acme',
         assignedTo: { displayName: 'Sam Dev', email: 'sam@x.test' },
       });
+    });
+
+    it('uses the Customer-Ops relationship id first and labels the result', async () => {
+      const fetchSpy = jest
+        .fn()
+        .mockResolvedValueOnce(textResponse(rpcOk({ projects: [{ id: 'proj-customer', title: 'Exact customer match' }] })))
+        .mockResolvedValueOnce(textResponse(rpcOk({ projects: [] })));
+      global.fetch = fetchSpy as any;
+      const client = new ProjectOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
+
+      const projects = await client.listProjectsForContact(CTX, {
+        customerOpsCustomerId: 'customer-1',
+        contactOpsContactId: 'contact-1',
+        orgName: null,
+        contactName: null,
+      });
+
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      expect(JSON.parse(fetchSpy.mock.calls[0][1].body).params.arguments).toEqual({
+        customerOpsCustomerId: 'customer-1',
+        limit: 25,
+      });
+      expect(projects).toMatchObject([{ id: 'proj-customer', matchedBy: 'customerOpsCustomerId' }]);
+    });
+
+    it('uses the Contact-Ops contact id when the customer id has no hit', async () => {
+      const fetchSpy = jest
+        .fn()
+        .mockResolvedValueOnce(textResponse(rpcOk({ projects: [] })))
+        .mockResolvedValueOnce(textResponse(rpcOk({ projects: [{ id: 'proj-contact', title: 'Exact contact match' }] })));
+      global.fetch = fetchSpy as any;
+      const client = new ProjectOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
+
+      const projects = await client.listProjectsForContact(CTX, {
+        customerOpsCustomerId: 'customer-1',
+        contactOpsContactId: 'contact-1',
+        orgName: 'Acme',
+        contactName: 'Jane Lead',
+      });
+
+      expect(JSON.parse(fetchSpy.mock.calls[1][1].body).params.arguments).toEqual({
+        contactOpsContactId: 'contact-1',
+        limit: 25,
+      });
+      expect(projects).toMatchObject([{ id: 'proj-contact', matchedBy: 'contactOpsContactId' }]);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it('falls back to the name query only when both id lookups are empty', async () => {
+      const fetchSpy = jest
+        .fn()
+        .mockResolvedValueOnce(textResponse(rpcOk({ projects: [] })))
+        .mockResolvedValueOnce(textResponse(rpcOk({ projects: [] })))
+        .mockResolvedValueOnce(textResponse(rpcOk({ projects: [{ id: 'proj-name', title: 'Name match' }] })));
+      global.fetch = fetchSpy as any;
+      const client = new ProjectOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
+
+      const projects = await client.listProjectsForContact(CTX, {
+        customerOpsCustomerId: 'customer-1',
+        contactOpsContactId: 'contact-1',
+        orgName: 'Acme',
+        contactName: 'Jane Lead',
+      });
+
+      expect(JSON.parse(fetchSpy.mock.calls[2][1].body).params.arguments).toEqual({
+        query: 'Acme',
+        limit: 25,
+      });
+      expect(projects).toMatchObject([{ id: 'proj-name', matchedBy: 'name' }]);
+      expect(fetchSpy).toHaveBeenCalledTimes(3);
+    });
+
+    it('falls through to the name query when id lookups return errors', async () => {
+      const fetchSpy = jest
+        .fn()
+        .mockResolvedValueOnce(textResponse({}, false, 503))
+        .mockRejectedValueOnce(new Error('timeout'))
+        .mockResolvedValueOnce(textResponse(rpcOk({ projects: [{ id: 'proj-after-error' }] })));
+      global.fetch = fetchSpy as any;
+      const client = new ProjectOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
+
+      const projects = await client.listProjectsForContact(CTX, {
+        customerOpsCustomerId: 'customer-1',
+        contactOpsContactId: 'contact-1',
+        orgName: 'Acme',
+        contactName: 'Jane Lead',
+      });
+
+      expect(projects).toMatchObject([{ id: 'proj-after-error', matchedBy: 'name' }]);
+      expect(fetchSpy).toHaveBeenCalledTimes(3);
+    });
+
+    it('merges id hits and dedupes by project id, preserving the stronger match label', async () => {
+      const fetchSpy = jest
+        .fn()
+        .mockResolvedValueOnce(
+          textResponse(
+            rpcOk({
+              projects: [
+                { id: 'proj-shared', title: 'Shared from customer id' },
+                { id: 'proj-customer-only', title: 'Customer only' },
+              ],
+            }),
+          ),
+        )
+        .mockResolvedValueOnce(
+          textResponse(
+            rpcOk({
+              projects: [
+                { id: 'proj-shared', title: 'Shared from contact id' },
+                { id: 'proj-contact-only', title: 'Contact only' },
+              ],
+            }),
+          ),
+        );
+      global.fetch = fetchSpy as any;
+      const client = new ProjectOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
+
+      const projects = await client.listProjectsForContact(CTX, {
+        customerOpsCustomerId: 'customer-1',
+        contactOpsContactId: 'contact-1',
+        orgName: 'Acme',
+        contactName: 'Jane Lead',
+      });
+
+      expect(projects.map((project) => project.id)).toEqual([
+        'proj-shared',
+        'proj-customer-only',
+        'proj-contact-only',
+      ]);
+      expect(projects.find((project) => project.id === 'proj-shared')?.matchedBy).toBe(
+        'customerOpsCustomerId',
+      );
+      expect(projects.find((project) => project.id === 'proj-contact-only')?.matchedBy).toBe(
+        'contactOpsContactId',
+      );
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
     });
 
     it('prefers the org name over the contact name as the search query', async () => {

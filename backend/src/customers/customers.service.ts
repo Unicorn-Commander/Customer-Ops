@@ -358,8 +358,15 @@ export class CustomersService {
         this.buildEmailPanel(user, relationship.contactId, emailLinks, requestedWorkspaceId),
         // Meeting-Ops: the customer's meetings + summaries + action items.
         this.buildMeetingPanel(user, relationship.contactId, requestedWorkspaceId),
-        // Project-Ops: the delivery work for this account (matched on contact org/name).
-        this.buildProjectPanel(user, contact, requestedWorkspaceId),
+        // Project-Ops: the delivery work for this account (relationship ids first,
+        // then contact org/name).
+        this.buildProjectPanel(
+          user,
+          relationship.id,
+          relationship.contactId,
+          contact,
+          requestedWorkspaceId,
+        ),
         // Device messaging (UUDC): the worker's iMessage/SMS with the contact's
         // handles, resolved from the already-federated `contact`.
         this.buildConversationsPanel(user, contact, requestedWorkspaceId),
@@ -1698,7 +1705,7 @@ export class CustomersService {
       requestedWorkspaceId,
     );
     const contact = await this.contactOps.getContact(fedCtx, contactId);
-    return this.buildProjectPanel(user, contact, requestedWorkspaceId);
+    return this.buildProjectPanel(user, customerId, contactId, contact, requestedWorkspaceId);
   }
 
   /** Build the Project-Ops federation identity (workspace + actor; entitlements
@@ -1717,14 +1724,15 @@ export class CustomersService {
 
   /**
    * Assemble the customer-360 projects panel: the projects Project-Ops is
-   * delivering for this account, matched on the customer's federated org / contact
-   * name (Project-Ops' search_projects covers client + organization name). Never
-   * throws (best-effort); degrade-clean when Project-Ops is unconfigured or there
-   * is no usable match key. Read-only — Project-Ops owns the lifecycle; nothing is
-   * persisted here.
+   * delivering for this account, matched by relationship ids first and the
+   * customer's federated org / contact name second. Never throws (best-effort);
+   * degrade-clean when Project-Ops is unconfigured or there is no usable match
+   * key. Read-only — Project-Ops owns the lifecycle; nothing is persisted here.
    */
   private async buildProjectPanel(
     user: User & Partial<WithWorkspaceClaim>,
+    customerOpsCustomerId: string,
+    contactOpsContactId: string,
     contact: FederatedContact | null,
     requestedWorkspaceId?: string | null,
   ): Promise<ProjectPanel> {
@@ -1738,11 +1746,20 @@ export class CustomersService {
     if (!configured) return base;
 
     const lookup: ProjectLookup = {
+      customerOpsCustomerId,
+      contactOpsContactId,
       orgName: contact?.currentOrgName ?? null,
       contactName: contact?.displayName ?? null,
     };
-    // No usable match key (e.g. a provisional contact with no org/name) → no call.
-    if (!lookup.orgName && !lookup.contactName) return base;
+    // No usable match key (e.g. a provisional contact with no ids/org/name) → no call.
+    if (
+      !lookup.customerOpsCustomerId &&
+      !lookup.contactOpsContactId &&
+      !lookup.orgName &&
+      !lookup.contactName
+    ) {
+      return base;
+    }
 
     const fedCtx = await this.projectFederationContext(user, requestedWorkspaceId);
     try {

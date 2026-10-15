@@ -438,7 +438,6 @@ describe('CustomersService — relationship logic', () => {
     });
   });
 });
-
 describe('CustomersService — Contact-Ops federation (CO mocked)', () => {
   it('customer-360 stitches the LOCAL relationship with the FEDERATED contact + empty Phase-3 slots', async () => {
     const row = makeRow({ contactId: 'contact-42' });
@@ -526,6 +525,64 @@ describe('CustomersService — Contact-Ops federation (CO mocked)', () => {
     expect(result.contactFederation.resolved).toBe(false);
     // The relationship is still fully usable without the contact enrichment.
     expect(result.relationship.contactId).toBe('contact-x');
+  });
+
+  it('customer-360 passes relationship ids to Project-Ops and preserves matchedBy', async () => {
+    const row = makeRow({ id: 'cust-1', contactId: 'contact-42' });
+    const getContact = jest.fn().mockResolvedValue({
+      contactId: 'contact-42',
+      displayName: 'Jane Lead',
+      primaryEmail: 'jane@example.com',
+      currentOrgId: null,
+      currentOrgName: 'Acme',
+      lastInteractionAt: null,
+      communicationStrength: 0.8,
+      tags: [],
+      etag: null,
+      vcardUid: null,
+      kind: 'individual',
+      status: 'active',
+      emails: [],
+      phones: [],
+      recentEvents: [],
+    });
+    const project = {
+      isConfigured: jest.fn().mockReturnValue(true),
+      listProjectsForContact: jest.fn().mockResolvedValue([
+        {
+          id: 'proj-1',
+          matchedBy: 'customerOpsCustomerId',
+          projectNumber: 'P-0001',
+          title: 'Acme delivery',
+          status: 'IN_PROGRESS',
+          priority: 'HIGH',
+          dueDate: null,
+          clientName: 'Acme',
+          organizationName: 'Acme',
+          assignedTo: null,
+        },
+      ]),
+    };
+    const { svc, lastTx } = makeService({ contact: { getContact }, project });
+    const { tx } = makeTx(row);
+    lastTx.current = tx;
+
+    const result = await svc.customer360ForUser(aaron, 'cust-1', WS);
+
+    expect(project.listProjectsForContact).toHaveBeenCalledWith(
+      { workspaceId: WS, ucUid: UC_UID, entitlements: [] },
+      expect.objectContaining({
+        customerOpsCustomerId: 'cust-1',
+        contactOpsContactId: 'contact-42',
+        orgName: 'Acme',
+        contactName: 'Jane Lead',
+      }),
+    );
+    expect(result.projects).toMatchObject({
+      federated: true,
+      configured: true,
+      projects: [{ id: 'proj-1', matchedBy: 'customerOpsCustomerId' }],
+    });
   });
 
   it('list join federates contact summaries onto rows (batched, not copied)', async () => {

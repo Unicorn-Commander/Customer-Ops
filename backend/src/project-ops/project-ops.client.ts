@@ -5,9 +5,11 @@
  * `POST {PROJECT_OPS_BASE_URL}/mcp`). Project-Ops resolves the tenant from the
  * bearer's `workspace_id` claim (re-gated server-side), never a trusted header.
  * Tool used:
- *   - search_projects(query, limit) -> { projects: [...], count }
- *       Free-text across project title, description, project number, client name
- *       and organization name. We hand it the customer's org (or contact) name.
+ *   - search_projects(customerOpsCustomerId|contactOpsContactId|query, limit)
+ *       -> { projects: [...], count }
+ *       Exact relationship ids are preferred; free-text across project title,
+ *       description, project number, client name and organization name is the
+ *       fallback.
  *
  * AUTH: Customer-Ops calls Project-Ops as a service. The auth MODE is selectable
  * (mirrors the Contact-Ops / Meeting-Ops / Accounting-Ops clients):
@@ -32,7 +34,7 @@ import { ConfigService } from '@nestjs/config';
 import { BrigadeTokenSource } from '../common/federation/brigade-token-source';
 import { FederationWorkspaceMapService } from '../common/federation/federation-workspace-map.service';
 import { FederationContext, ProjectLookup, ProjectOpsPort } from './project-ops.port';
-import { FederatedProject } from './project-ops.types';
+import { FederatedProject, ProjectMatchSource } from './project-ops.types';
 import { SeamHealth } from '../health/seam-health';
 import { shortBody } from '../health/probe-util';
 
@@ -317,21 +319,70 @@ export class ProjectOpsClient extends ProjectOpsPort {
     lookup: ProjectLookup,
   ): Promise<FederatedProject[]> {
     if (!this.baseUrl) return [];
+
+    // Query both exact relationship keys in priority order. A project returned
+    // by both is kept once, with the customer id match winning because it is the
+    // stronger relationship key. An unavailable/failed lookup is [] and therefore
+    // naturally participates in the name fallback below.
+    const byId = new Map<string, FederatedProject>();
+    const addProjects = (projects: FederatedProject[]) => {
+      for (const project of projects) {
+        if (!byId.has(project.id)) byId.set(project.id, project);
+      }
+    };
+
+    const customerOpsCustomerId = lookup.customerOpsCustomerId?.trim();
+    if (customerOpsCustomerId) {
+      addProjects(
+        await this.searchProjects(
+          ctx,
+          { customerOpsCustomerId, limit: this.searchLimit },
+          'customerOpsCustomerId',
+        ),
+      );
+    }
+
+    const contactOpsContactId = lookup.contactOpsContactId?.trim();
+    if (contactOpsContactId) {
+      addProjects(
+        await this.searchProjects(
+          ctx,
+          { contactOpsContactId, limit: this.searchLimit },
+          'contactOpsContactId',
+        ),
+      );
+    }
+
+    if (byId.size > 0) return [...byId.values()];
+
     // Prefer the organization name (an account maps to its org's projects);
     // fall back to the contact's display name. No usable key → no call.
     const query = (lookup.orgName || lookup.contactName || '').trim();
     if (!query) return [];
 
-    const raw = await this.callTool(ctx, 'search_projects', {
-      query,
-      limit: this.searchLimit,
-    });
-    if (!raw) return [];
+    return this.searchProjects(ctx, { query, limit: this.searchLimit }, 'name');
+  }
 
-    const projects = Array.isArray(raw['projects']) ? (raw['projects'] as unknown[]) : [];
-    return projects
-      .map((p) => this.mapProject(p as Record<string, unknown>))
-      .filter((p): p is FederatedProject => p !== null);
+  private async searchProjects(
+    ctx: FederationContext,
+    args: Record<string, unknown>,
+    matchedBy: ProjectMatchSource,
+  ): Promise<FederatedProject[]> {
+    try {
+      const raw = await this.callTool(ctx, 'search_projects', args);
+      if (!raw) return [];
+
+      const projects = Array.isArray(raw['projects']) ? (raw['projects'] as unknown[]) : [];
+      const unique = new Map<string, FederatedProject>();
+      for (const value of projects) {
+        const project = this.mapProject(value as Record<string, unknown>, matchedBy);
+        if (project && !unique.has(project.id)) unique.set(project.id, project);
+      }
+      return [...unique.values()];
+    } catch (err) {
+      this.logger.warn(`Project-Ops ${matchedBy} lookup failed: ${(err as Error).message}`);
+      return [];
+    }
   }
 
   async acceptQuote(
@@ -356,7 +407,10 @@ export class ProjectOpsClient extends ProjectOpsPort {
 
   // --- mapping: Project-Ops wire shape -> Customer-Ops projection ---------
 
-  private mapProject(p: Record<string, unknown>): FederatedProject | null {
+  private mapProject(
+    p: Record<string, unknown>,
+    matchedBy: ProjectMatchSource,
+  ): FederatedProject | null {
     const id = typeof p['id'] === 'string' ? (p['id'] as string) : null;
     if (!id) return null;
 
@@ -365,6 +419,7 @@ export class ProjectOpsClient extends ProjectOpsPort {
 
     return {
       id,
+      matchedBy,
       projectNumber: (p['projectNumber'] as string) ?? '',
       title: (p['title'] as string) ?? '(untitled project)',
       status: (p['status'] as string) ?? 'NEW',
