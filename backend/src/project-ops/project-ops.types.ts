@@ -34,7 +34,8 @@ export type ProjectMatchSource = 'customerOpsCustomerId' | 'contactOpsContactId'
  * A PROJECT as Project-Ops exposes it — the read-time projection the customer-360
  * renders. Project-Ops owns the project + its tasks; this carries only the
  * load-bearing header fields (no task list / no comments). Surfaced on a customer
- * when its client/organization (or contact) name matches the account.
+ * when its relationship id matches, or when the fallback client/organization (or
+ * contact) name matches the account.
  */
 export interface FederatedProject {
   /** Project-Ops project id (the app's; opaque to Customer-Ops). */

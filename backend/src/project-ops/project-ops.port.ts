@@ -43,9 +43,9 @@ export interface ProjectLookup {
   customerOpsCustomerId?: string | null;
   /** Contact-Ops contact id, carried by Project-Ops on the project. */
   contactOpsContactId?: string | null;
-  /** The customer contact's current organization name (preferred match key). */
+  /** The customer contact's current organization name (fallback name key). */
   orgName: string | null;
-  /** The customer contact's display name (fallback match key). */
+  /** The customer contact's display name (fallback when no org name exists). */
   contactName: string | null;
 }
 
