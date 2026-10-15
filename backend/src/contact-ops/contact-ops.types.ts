@@ -37,6 +37,36 @@ export interface FederatedContactPhone {
 }
 
 /**
+ * A contact IM handle as Contact-Ops shapes it inside `get_person.im_handles[]`.
+ * Read-only here — writing handles is Contact-Ops' surface, not Customer-Ops'.
+ */
+export interface FederatedContactIMHandle {
+  id: string;
+  protocol: string;
+  handle: string;
+  label: string | null;
+  is_primary: boolean;
+}
+
+/** A contact identifier as Contact-Ops shapes it inside `get_person.identifiers[]`. */
+export interface FederatedContactIdentifier {
+  id: string;
+  namespace: string;
+  value: string;
+  url: string | null;
+  verified: boolean;
+}
+
+/** A contact URL as Contact-Ops shapes it inside `get_person.urls[]`. */
+export interface FederatedContactUrl {
+  id: string;
+  url: string;
+  type: string | null;
+  label: string | null;
+  is_primary: boolean;
+}
+
+/**
  * The thin contact summary Contact-Ops returns from `list_people` /
  * `search_people` (its `PersonSummary`). Used for the customers/leads list and
  * the pipeline board cards — enough to render a row without a full fetch.
@@ -61,8 +91,23 @@ export interface FederatedContact extends FederatedContactSummary {
   vcardUid: string | null;
   kind: string; // individual|group|org|location
   status: string; // active|archived|...
+  mergedIntoId: string | null;
+  relationshipCategory: string | null;
+  givenName: string | null;
+  familyName: string | null;
+  additionalNames: string[];
+  honorificPrefix: string | null;
+  honorificSuffix: string | null;
+  phoneticGivenName: string | null;
+  phoneticFamilyName: string | null;
+  nicknames: string[];
+  fileAs: string | null;
+  pronouns: string | null;
   emails: FederatedContactEmail[];
   phones: FederatedContactPhone[];
+  imHandles: FederatedContactIMHandle[];
+  identifiers: FederatedContactIdentifier[];
+  urls: FederatedContactUrl[];
   recentEvents: Array<Record<string, unknown>>;
 }
 

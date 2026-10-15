@@ -340,7 +340,7 @@ export class ContactOpsClient extends ContactOpsPort {
     if (!contactId || contactId.startsWith('prov:')) return null;
     const raw = await this.callTool(ctx, 'get_person', {
       person_id: contactId,
-      include: ['emails', 'phones'],
+      include: ['emails', 'phones', 'im_handles', 'identifiers', 'urls'],
     });
     if (!raw) return null;
     const personId = raw['person_id'];
@@ -363,8 +363,27 @@ export class ContactOpsClient extends ContactOpsPort {
       vcardUid: (raw['vcard_uid'] as string | null) ?? null,
       kind: (raw['kind'] as string) ?? 'individual',
       status: (raw['status'] as string) ?? 'active',
+      mergedIntoId: (raw['merged_into_id'] as string | null) ?? null,
+      relationshipCategory: (raw['relationship_category'] as string | null) ?? null,
+      givenName: (raw['given_name'] as string | null) ?? null,
+      familyName: (raw['family_name'] as string | null) ?? null,
+      additionalNames: stringList(raw['additional_names']),
+      honorificPrefix: (raw['honorific_prefix'] as string | null) ?? null,
+      honorificSuffix: (raw['honorific_suffix'] as string | null) ?? null,
+      phoneticGivenName: (raw['phonetic_given_name'] as string | null) ?? null,
+      phoneticFamilyName: (raw['phonetic_family_name'] as string | null) ?? null,
+      nicknames: stringList(raw['nicknames']),
+      fileAs: (raw['file_as'] as string | null) ?? null,
+      pronouns: (raw['pronouns'] as string | null) ?? null,
       emails: Array.isArray(raw['emails']) ? (raw['emails'] as FederatedContact['emails']) : [],
       phones: Array.isArray(raw['phones']) ? (raw['phones'] as FederatedContact['phones']) : [],
+      imHandles: Array.isArray(raw['im_handles'])
+        ? (raw['im_handles'] as FederatedContact['imHandles'])
+        : [],
+      identifiers: Array.isArray(raw['identifiers'])
+        ? (raw['identifiers'] as FederatedContact['identifiers'])
+        : [],
+      urls: Array.isArray(raw['urls']) ? (raw['urls'] as FederatedContact['urls']) : [],
       recentEvents: Array.isArray(raw['recent_events'])
         ? (raw['recent_events'] as Array<Record<string, unknown>>)
         : [],
@@ -546,6 +565,12 @@ export class ContactOpsClient extends ContactOpsPort {
     if (identity.tags && identity.tags.length) args['initial_tags'] = identity.tags;
     return args;
   }
+}
+
+/** Coerce a Contact-Ops list field to string[] and tolerate absent/null data. */
+function stringList(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((v): v is string => typeof v === 'string');
 }
 
 /** Pull the primary (or first) email address out of CO's get_person emails[]. */
