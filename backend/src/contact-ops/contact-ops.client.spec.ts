@@ -14,7 +14,6 @@ function makeFedMap(mapped: string | null = null) {
   return { resolveSync: jest.fn().mockReturnValue(mapped) } as any;
 }
 
-
 /** These tests exercise STATIC auth mode (CONTACT_OPS_SERVICE_TOKEN forwarded),
  *  so the Brigade source is never reached; a stub that returns null suffices.
  *  The brigade-sts path is proven live, not unit-mocked. */
@@ -151,9 +150,9 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
     });
 
     it('upsertContact: passes given_name/family_name/nicknames through to upsert_person', async () => {
-      const fetchSpy = jest.fn().mockResolvedValue(
-        jsonResponse(rpcOk({ person_id: 'p3', created: true, etag: 'W/"4"' })),
-      );
+      const fetchSpy = jest
+        .fn()
+        .mockResolvedValue(jsonResponse(rpcOk({ person_id: 'p3', created: true, etag: 'W/"4"' })));
       global.fetch = fetchSpy as any;
       const client = new ContactOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
 
@@ -176,6 +175,157 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
         nicknames: ['Diesel'],
         emails: [{ address: 'diesel@x.com', is_primary: true }],
       });
+    });
+
+    it('get_person: maps structured names, nicknames, handles and links', async () => {
+      const fetchSpy = jest.fn().mockResolvedValue(
+        jsonResponse(
+          rpcOk({
+            person_id: 'p-named',
+            display_name: 'Diesel',
+            kind: 'individual',
+            status: 'active',
+            given_name: 'Diesel',
+            family_name: 'Dude',
+            additional_names: ['Diesel Dave'],
+            honorific_prefix: 'Mr.',
+            honorific_suffix: 'Jr.',
+            phonetic_given_name: 'DEE-sel',
+            phonetic_family_name: 'DOOD',
+            nicknames: ['Big D'],
+            file_as: 'Diesel',
+            pronouns: 'he/him',
+            emails: [],
+            phones: [],
+            im_handles: [
+              {
+                id: 'h1',
+                protocol: 'telegram',
+                handle: '@diesel',
+                label: 'personal',
+                is_primary: true,
+              },
+            ],
+            identifiers: [
+              {
+                id: 'i1',
+                namespace: 'linkedin',
+                value: 'diesel',
+                url: 'https://linkedin.example/diesel',
+                verified: true,
+              },
+            ],
+            urls: [
+              {
+                id: 'u1',
+                url: 'https://diesel.example',
+                type: 'website',
+                label: 'Home',
+                is_primary: true,
+              },
+            ],
+            recent_events: [],
+          }),
+        ),
+      );
+      global.fetch = fetchSpy as any;
+      const client = new ContactOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
+
+      const contact = await client.getContact(CTX, 'p-named');
+      const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+      expect(body.params.arguments.include).toEqual(
+        expect.arrayContaining(['emails', 'phones', 'im_handles', 'identifiers', 'urls']),
+      );
+      expect(contact).toMatchObject({
+        givenName: 'Diesel',
+        familyName: 'Dude',
+        additionalNames: ['Diesel Dave'],
+        honorificPrefix: 'Mr.',
+        honorificSuffix: 'Jr.',
+        phoneticGivenName: 'DEE-sel',
+        phoneticFamilyName: 'DOOD',
+        nicknames: ['Big D'],
+        fileAs: 'Diesel',
+        pronouns: 'he/him',
+        imHandles: [{ id: 'h1', protocol: 'telegram', handle: '@diesel' }],
+        identifiers: [{ id: 'i1', namespace: 'linkedin', verified: true }],
+        urls: [{ id: 'u1', url: 'https://diesel.example', type: 'website' }],
+      });
+    });
+
+    it('get_person: defaults optional structured collections when Contact-Ops omits them', async () => {
+      global.fetch = jest
+        .fn()
+        .mockResolvedValue(
+          jsonResponse(
+            rpcOk({
+              person_id: 'p-bare',
+              display_name: 'Bare',
+              kind: 'individual',
+              status: 'active',
+            }),
+          ),
+        ) as any;
+      const client = new ContactOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
+
+      const contact = await client.getContact(CTX, 'p-bare');
+      expect(contact).toMatchObject({
+        givenName: null,
+        familyName: null,
+        fileAs: null,
+        pronouns: null,
+        additionalNames: [],
+        nicknames: [],
+        imHandles: [],
+        identifiers: [],
+        urls: [],
+      });
+    });
+
+    it('get_person: maps merged state and the owner relationship category', async () => {
+      global.fetch = jest.fn().mockResolvedValue(
+        jsonResponse(
+          rpcOk({
+            person_id: 'p-merged',
+            display_name: 'Old Duplicate',
+            kind: 'individual',
+            status: 'active',
+            merged_into_id: 'p-survivor',
+            relationship_category: 'coworker',
+            emails: [],
+            phones: [],
+            recent_events: [],
+          }),
+        ),
+      ) as any;
+      const client = new ContactOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
+
+      const contact = await client.getContact(CTX, 'p-merged');
+      expect(contact).toMatchObject({
+        mergedIntoId: 'p-survivor',
+        relationshipCategory: 'coworker',
+        status: 'active',
+      });
+    });
+
+    it('get_person: defaults lifecycle fields to null when Contact-Ops omits them', async () => {
+      global.fetch = jest
+        .fn()
+        .mockResolvedValue(
+          jsonResponse(
+            rpcOk({
+              person_id: 'p-live',
+              display_name: 'Live',
+              kind: 'individual',
+              status: 'active',
+            }),
+          ),
+        ) as any;
+      const client = new ContactOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
+
+      const contact = await client.getContact(CTX, 'p-live');
+      expect(contact?.mergedIntoId).toBeNull();
+      expect(contact?.relationshipCategory).toBeNull();
     });
 
     it('get_person: derives primary_email from emails[] when CO omits the flat field', async () => {
@@ -225,15 +375,23 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
       const page = await client.listContacts(CTX, { hasEmail: true, tagsAny: ['vip'], limit: 10 });
       const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
       expect(body.params.name).toBe('list_people');
-      expect(body.params.arguments).toMatchObject({ has_email: true, tags_any: ['vip'], limit: 10 });
-      expect(page.items[0]).toMatchObject({ contactId: 'p1', displayName: 'Alice', currentOrgName: 'Acme' });
+      expect(body.params.arguments).toMatchObject({
+        has_email: true,
+        tags_any: ['vip'],
+        limit: 10,
+      });
+      expect(page.items[0]).toMatchObject({
+        contactId: 'p1',
+        displayName: 'Alice',
+        currentOrgName: 'Acme',
+      });
       expect(page.nextCursor).toBe('cur2');
     });
 
     it('listContacts: uses search_people when a query is present', async () => {
-      const fetchSpy = jest.fn().mockResolvedValue(
-        jsonResponse(rpcOk({ items: [], count: 0, next_cursor: null })),
-      );
+      const fetchSpy = jest
+        .fn()
+        .mockResolvedValue(jsonResponse(rpcOk({ items: [], count: 0, next_cursor: null })));
       global.fetch = fetchSpy as any;
       const client = new ContactOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
 
@@ -249,7 +407,15 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
         const id = body.params.arguments.person_id;
         return Promise.resolve(
           jsonResponse(
-            rpcOk({ person_id: id, display_name: `Name ${id}`, kind: 'individual', status: 'active', emails: [], phones: [], recent_events: [] }),
+            rpcOk({
+              person_id: id,
+              display_name: `Name ${id}`,
+              kind: 'individual',
+              status: 'active',
+              emails: [],
+              phones: [],
+              recent_events: [],
+            }),
           ),
         );
       });
@@ -295,9 +461,11 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
     });
 
     it('returns null (never throws) on a JSON-RPC error envelope', async () => {
-      global.fetch = jest.fn().mockResolvedValue(
-        jsonResponse({ jsonrpc: '2.0', id: 1, error: { code: -32000, message: 'boom' } }),
-      ) as any;
+      global.fetch = jest
+        .fn()
+        .mockResolvedValue(
+          jsonResponse({ jsonrpc: '2.0', id: 1, error: { code: -32000, message: 'boom' } }),
+        ) as any;
       const client = new ContactOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
       await expect(client.getContact(CTX, 'p1')).resolves.toBeNull();
     });
@@ -318,13 +486,21 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
       global.fetch = jest.fn().mockRejectedValue(new Error('ECONNREFUSED')) as any;
       const client = new ContactOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
       await expect(client.getContact(CTX, 'p1')).resolves.toBeNull();
-      await expect(client.listContacts(CTX, {})).resolves.toEqual({ items: [], count: 0, nextCursor: null });
+      await expect(client.listContacts(CTX, {})).resolves.toEqual({
+        items: [],
+        count: 0,
+        nextCursor: null,
+      });
     });
 
     it('returns empty page (never throws) on HTTP 500', async () => {
       global.fetch = jest.fn().mockResolvedValue(jsonResponse({}, false, 500)) as any;
       const client = new ContactOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
-      await expect(client.listContacts(CTX, {})).resolves.toEqual({ items: [], count: 0, nextCursor: null });
+      await expect(client.listContacts(CTX, {})).resolves.toEqual({
+        items: [],
+        count: 0,
+        nextCursor: null,
+      });
     });
   });
 });
