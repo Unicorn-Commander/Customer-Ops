@@ -12,12 +12,12 @@
  * zero local persistence — the same shape as the Meeting-Ops seam.
  *
  * Customer-Ops federates the **Project-Ops APP** (by workspace_id), keyed to the
- * customer's organization / contact name. Project-Ops's `search_projects` tool
- * matches across project title, description, project number, client name and
- * organization name, so a customer's federated org (or contact) name resolves the
- * projects being delivered for that account. This file is the APP's `/mcp` read
- * contract, exactly as the Accounting-Ops / Meeting-Ops / Email-Ops seams mirror
- * those apps' tool surfaces.
+ * the relationship's Customer-Ops / Contact-Ops ids first, with the customer's
+ * organization / contact name as a fallback. Project-Ops's `search_projects`
+ * tool matches across project title, description, project number, client name
+ * and organization name. This file is the APP's `/mcp` read contract, exactly as
+ * the Accounting-Ops / Meeting-Ops / Email-Ops seams mirror those apps' tool
+ * surfaces.
  */
 
 /** The person a project is assigned to, as Project-Ops resolves them. */
@@ -28,6 +28,8 @@ export interface FederatedProjectAssignee {
   email: string | null;
 }
 
+export type ProjectMatchSource = 'customerOpsCustomerId' | 'contactOpsContactId' | 'name';
+
 /**
  * A PROJECT as Project-Ops exposes it — the read-time projection the customer-360
  * renders. Project-Ops owns the project + its tasks; this carries only the
@@ -37,6 +39,8 @@ export interface FederatedProjectAssignee {
 export interface FederatedProject {
   /** Project-Ops project id (the app's; opaque to Customer-Ops). */
   id: string;
+  /** Which Customer-Ops lookup returned this project. */
+  matchedBy: ProjectMatchSource;
   /** Human project number, e.g. "P-00085". */
   projectNumber: string;
   /** Project title/subject. */

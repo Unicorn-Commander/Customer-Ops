@@ -36,10 +36,13 @@ export interface FederationContext {
   entitlements: string[];
 }
 
-/** How to resolve which projects belong to a customer. Project-Ops matches by
- *  free-text across client + organization name, so we hand it the customer's
- *  federated org name (preferred) and contact display name (fallback). */
+/** How to resolve which projects belong to a customer. Exact relationship ids
+ *  are preferred; the federated org/contact names remain the safe fallback. */
 export interface ProjectLookup {
+  /** Customer-Ops relationship id, carried by Project-Ops on the project. */
+  customerOpsCustomerId?: string | null;
+  /** Contact-Ops contact id, carried by Project-Ops on the project. */
+  contactOpsContactId?: string | null;
   /** The customer contact's current organization name (preferred match key). */
   orgName: string | null;
   /** The customer contact's display name (fallback match key). */
@@ -64,10 +67,10 @@ export abstract class ProjectOpsPort {
 
   /**
    * Read the projects Project-Ops is delivering for this customer (its native
-   * `search_projects`, matched on the customer's org / contact name). Returns []
-   * when not configured, when there is no usable match key, or on any
-   * transport/application failure (the service decides how to surface that).
-   * Never throws — federation is best-effort by design.
+   * `search_projects`, exact relationship ids first, then org/contact name).
+   * Returns [] when not configured, when there is no usable match key, or on any
+   * transport/application failure. Never throws — federation is best-effort by
+   * design.
    */
   abstract listProjectsForContact(
     ctx: FederationContext,
