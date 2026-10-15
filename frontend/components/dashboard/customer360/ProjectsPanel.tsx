@@ -86,6 +86,12 @@ export function ProjectsPanel({ panel }: { panel: ProjectPanelData }) {
                         {p.assignedTo.displayName}
                       </span>
                     )}
+                    <span
+                      className="text-[10px] font-medium text-tertiary"
+                      title={p.matchedBy === 'name' ? 'Matched by project/client name' : 'Linked by relationship id'}
+                    >
+                      {p.matchedBy === 'name' ? 'matched by name' : 'linked by id'}
+                    </span>
                   </span>
                 }
                 trailing={<StatusPill status={s} />}

@@ -329,10 +329,12 @@ export type ProjectStatus =
   | 'ARCHIVED'
   | 'ON_HOLD';
 export type ProjectPriority = 'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT';
+export type ProjectMatchSource = 'customerOpsCustomerId' | 'contactOpsContactId' | 'name';
 
 /** A federated Project-Ops project (delivery header; no tasks copied here). */
 export interface ProjectItem {
   id: string;
+  matchedBy: ProjectMatchSource;
   projectNumber: string; // 'P-00085'
   title: string;
   status: ProjectStatus;
@@ -346,8 +348,9 @@ export interface ProjectItem {
 /**
  * The customer-360 project panel: the customer's delivery projects, FEDERATED
  * from Project-Ops (read-only delivery signal; never copied — Customer-Ops holds
- * no project or task). Reads are viewer-level, so the only affordance is
- * `configured` (connect Project-Ops).
+ * no project or task). `matchedBy` explains the read-time relationship match;
+ * reads are viewer-level, so the only affordance is `configured` (connect
+ * Project-Ops).
  */
 export interface ProjectPanel {
   federated: boolean;

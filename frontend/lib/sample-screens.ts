@@ -799,6 +799,7 @@ export const SAMPLE_360: Customer360 = {
     projects: [
       {
         id: 'proj-1',
+        matchedBy: 'customerOpsCustomerId',
         projectNumber: 'P-00412',
         title: 'AR automation rollout',
         status: 'IN_PROGRESS',
@@ -810,6 +811,7 @@ export const SAMPLE_360: Customer360 = {
       },
       {
         id: 'proj-2',
+        matchedBy: 'contactOpsContactId',
         projectNumber: 'P-00418',
         title: 'Remodeling-AR benchmark deck',
         status: 'UNDER_REVIEW',
@@ -821,6 +823,7 @@ export const SAMPLE_360: Customer360 = {
       },
       {
         id: 'proj-3',
+        matchedBy: 'name',
         projectNumber: 'P-00377',
         title: 'Discovery & SOW',
         status: 'COMPLETED',
