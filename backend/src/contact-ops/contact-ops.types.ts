@@ -119,6 +119,10 @@ export interface ContactIdentityInput {
   /** The source app's stable id for this lead (Contact-Ops idempotency hint). */
   sourceDedupKey: string;
   displayName?: string | null;
+  /** Structured name parts (CO-expose-fields) — passed through to Contact-Ops. */
+  givenName?: string | null;
+  familyName?: string | null;
+  nicknames?: string[];
   email?: string | null;
   phone?: string | null;
   orgName?: string | null;

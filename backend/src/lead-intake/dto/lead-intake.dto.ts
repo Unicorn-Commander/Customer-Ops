@@ -12,6 +12,7 @@
  */
 
 import {
+  ArrayMaxSize,
   IsArray,
   IsEnum,
   IsInt,
@@ -67,6 +68,23 @@ export class IngestLeadDto {
   @IsString()
   @MaxLength(300)
   displayName?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  givenName?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  familyName?: string;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  @MaxLength(64, { each: true })
+  @ArrayMaxSize(10)
+  nicknames?: string[];
 
   @IsOptional()
   @IsString()

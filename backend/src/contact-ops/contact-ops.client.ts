@@ -538,6 +538,9 @@ export class ContactOpsClient extends ContactOpsPort {
 
     const args: Record<string, unknown> = { match_by: matchBy };
     if (identity.displayName) args['display_name'] = identity.displayName;
+    if (identity.givenName) args['given_name'] = identity.givenName;
+    if (identity.familyName) args['family_name'] = identity.familyName;
+    if (identity.nicknames && identity.nicknames.length) args['nicknames'] = identity.nicknames;
     if (identity.email) args['emails'] = [{ address: identity.email, is_primary: true }];
     if (identity.phone) args['phones'] = [{ e164: identity.phone, is_primary: true }];
     if (identity.tags && identity.tags.length) args['initial_tags'] = identity.tags;

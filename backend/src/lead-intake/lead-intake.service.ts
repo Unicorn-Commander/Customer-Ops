@@ -178,6 +178,15 @@ export class LeadIntakeService extends LeadLabelResolver {
     ucUid: string,
   ): Promise<LeadIntake> {
     const workspaceId = await this.boundWorkspaceId(tx);
+    // Fold the structured name fields (CO-expose-fields) into the verbatim
+    // envelope so they survive staging + replay WITHOUT new LeadIntake columns
+    // (no migration for this task) and can be replayed into Contact-Ops.
+    const envelope = {
+      ...(dto.rawPayload ?? {}),
+      ...(dto.givenName ? { given_name: dto.givenName } : {}),
+      ...(dto.familyName ? { family_name: dto.familyName } : {}),
+      ...(dto.nicknames ? { nicknames: dto.nicknames } : {}),
+    };
     const staged = {
       displayName: dto.displayName?.trim() || null,
       email: dto.email?.trim() || null,
@@ -190,7 +199,9 @@ export class LeadIntakeService extends LeadLabelResolver {
       priority: dto.priority ?? undefined,
       ownerUserKey: dto.ownerUserKey?.trim() || null,
       notes: dto.notes?.trim() || null,
-      rawPayload: (dto.rawPayload ?? undefined) as Prisma.InputJsonValue | undefined,
+      rawPayload: (Object.keys(envelope).length ? envelope : undefined) as
+        | Prisma.InputJsonValue
+        | undefined,
     };
     return tx.leadIntake.upsert({
       where: {
@@ -811,10 +822,17 @@ export class LeadIntakeService extends LeadLabelResolver {
 
   /** The intake's identity, shaped for the Contact-Ops upsert. */
   private toIdentity(intake: LeadIntake): ContactIdentityInput {
+    const envelope = (intake.rawPayload ?? {}) as Record<string, unknown>;
+    const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : null);
+    const strArr = (v: unknown): string[] =>
+      Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
     return {
       source: intake.source,
       sourceDedupKey: intake.sourceDedupKey,
       displayName: intake.displayName,
+      givenName: str(envelope['given_name']),
+      familyName: str(envelope['family_name']),
+      nicknames: strArr(envelope['nicknames']),
       email: intake.email,
       phone: intake.phone,
       orgName: intake.orgName,
