@@ -416,14 +416,17 @@ describe('LeadIntakeService — ingest_lead keystone', () => {
       WS,
     );
 
-    expect(customers).toHaveLength(1);
-    expect(customers[0]).toMatchObject({ id: 'cust-existing', contactId: 'co-existing' });
-    expect(tx.customer.delete).toHaveBeenCalledWith({ where: { id: 'cust-old' } });
-    expect(tx.customerActivity.updateMany).toHaveBeenCalledWith({
-      where: { customerId: 'cust-old' },
-      data: { customerId: 'cust-existing' },
-    });
-    expect(activities.every((activity) => activity.customerId === 'cust-existing')).toBe(true);
+    // Both relationships survive: the old one may own quotes (ON DELETE RESTRICT)
+    // and invoice / outreach / email links (CASCADE), so nothing is deleted or
+    // silently re-parented. The intake points at the canonical row and both rows
+    // carry a visible merge-needed note for an operator.
+    expect(customers).toHaveLength(2);
+    expect(customers.map((c) => c.id).sort()).toEqual(['cust-existing', 'cust-old']);
+    expect(tx.customer.delete).not.toHaveBeenCalled();
+    expect(tx.customerActivity.updateMany).not.toHaveBeenCalled();
+    const notes = activities.filter((activity) => activity.kind === CustomerActivityKind.NOTE);
+    expect(notes.map((n) => n.customerId).sort()).toEqual(['cust-existing', 'cust-old']);
+    expect(notes[0].body).toContain('MERGE NEEDED');
     expect(result.customerId).toBe('cust-existing');
   });
 

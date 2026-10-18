@@ -371,15 +371,16 @@ export class LeadIntakeService extends LeadLabelResolver {
     const existing = await tx.customer.findFirst({ where: { contactId } });
 
     let customer = existing;
+    let repointed = false;
+    let mergeNeededFrom: string | null = null;
     if (existing && existingCustomerId && existing.id !== existingCustomerId) {
-      // The refreshed canonical id is already projected locally. Merge the old
-      // relationship's activity trail into that canonical projection before
-      // deleting the stale row, matching provisional reconciliation semantics.
-      await tx.customerActivity.updateMany({
-        where: { customerId: existingCustomerId },
-        data: { customerId: existing.id },
-      });
-      await tx.customer.delete({ where: { id: existingCustomerId } });
+      // The refreshed canonical id is already projected locally AND the intake
+      // already had a relationship of its own. Never delete the old row here:
+      // quotes reference it with ON DELETE RESTRICT (the transaction would
+      // throw) and invoice / outreach / email links cascade (silent loss).
+      // Keep both rows, point the intake at the canonical one, and leave a
+      // visible merge-needed note on each so an operator merges on purpose.
+      mergeNeededFrom = existingCustomerId;
     }
     if (!customer && existingCustomerId) {
       // A resolved re-push may receive a refreshed canonical id. Re-point the
@@ -390,6 +391,7 @@ export class LeadIntakeService extends LeadLabelResolver {
         where: { id: existingCustomerId },
         data: { contactId },
       });
+      repointed = true;
     }
     if (!customer) {
       customer = await tx.customer.create({
@@ -406,33 +408,53 @@ export class LeadIntakeService extends LeadLabelResolver {
           lastStageChangeAt: new Date(),
         },
       });
-    } else if (existing) {
-      // Re-ingest of a known contact: enrich gently, never downgrade the stage.
-      // Fill an unset owner / value / next-action; don't overwrite operator edits.
+    } else {
+      // Re-ingest of a known contact (or a re-pointed relationship): enrich
+      // gently, never downgrade the stage. Fill an unset owner / value; don't
+      // overwrite operator edits.
       const data: Prisma.CustomerUpdateInput = {};
-      if (!existing.ownerUserKey && intake.ownerUserKey) data.ownerUserKey = intake.ownerUserKey;
-      if (existing.expectedValue == null && intake.expectedValue != null) {
+      if (!customer.ownerUserKey && intake.ownerUserKey) data.ownerUserKey = intake.ownerUserKey;
+      if (customer.expectedValue == null && intake.expectedValue != null) {
         data.expectedValue = intake.expectedValue;
       }
       if (Object.keys(data).length) {
-        customer = await tx.customer.update({ where: { id: existing.id }, data });
+        customer = await tx.customer.update({ where: { id: customer.id }, data });
       }
     }
 
+    const known = Boolean(existing) || repointed;
     await tx.customerActivity.create({
       data: {
         workspaceId,
         customerId: customer!.id,
         kind: CustomerActivityKind.INGESTED,
-        toStage: existing ? undefined : RelationshipStage.LEAD,
+        toStage: known ? undefined : RelationshipStage.LEAD,
         body:
           `Ingested from ${intake.source} (${intake.sourceDedupKey}) via ${via}` +
           `${isProvisionalContactId(contactId) ? ' [provisional identity]' : ''} → contact ${contactId}` +
-          `${existing ? ' — enriched existing relationship' : ' — new lead'}` +
+          `${repointed ? ' — re-pointed existing relationship to the refreshed contact id' : known ? ' — enriched existing relationship' : ' — new lead'}` +
           (intake.tags.length ? ` · tags: ${intake.tags.join(', ')}` : ''),
         actorUcUid: ucUid || null,
       },
     });
+
+    if (mergeNeededFrom) {
+      const note =
+        `MERGE NEEDED: re-push of ${intake.source} (${intake.sourceDedupKey}) resolved to contact ${contactId}, ` +
+        `which already has relationship ${customer!.id}; relationship ${mergeNeededFrom} keeps its own history ` +
+        `(quotes, invoices, outreach, email links) until an operator merges them.`;
+      for (const id of [customer!.id, mergeNeededFrom]) {
+        await tx.customerActivity.create({
+          data: {
+            workspaceId,
+            customerId: id,
+            kind: CustomerActivityKind.NOTE,
+            body: note,
+            actorUcUid: ucUid || null,
+          },
+        });
+      }
+    }
 
     return customer!;
   }
