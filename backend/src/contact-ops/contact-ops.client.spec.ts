@@ -261,18 +261,16 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
     });
 
     it('get_person: defaults optional structured collections when Contact-Ops omits them', async () => {
-      global.fetch = jest
-        .fn()
-        .mockResolvedValue(
-          jsonResponse(
-            rpcOk({
-              person_id: 'p-bare',
-              display_name: 'Bare',
-              kind: 'individual',
-              status: 'active',
-            }),
-          ),
-        ) as any;
+      global.fetch = jest.fn().mockResolvedValue(
+        jsonResponse(
+          rpcOk({
+            person_id: 'p-bare',
+            display_name: 'Bare',
+            kind: 'individual',
+            status: 'active',
+          }),
+        ),
+      ) as any;
       const client = new ContactOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
 
       const contact = await client.getContact(CTX, 'p-bare');
@@ -316,18 +314,16 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
     });
 
     it('get_person: defaults lifecycle fields to null when Contact-Ops omits them', async () => {
-      global.fetch = jest
-        .fn()
-        .mockResolvedValue(
-          jsonResponse(
-            rpcOk({
-              person_id: 'p-live',
-              display_name: 'Live',
-              kind: 'individual',
-              status: 'active',
-            }),
-          ),
-        ) as any;
+      global.fetch = jest.fn().mockResolvedValue(
+        jsonResponse(
+          rpcOk({
+            person_id: 'p-live',
+            display_name: 'Live',
+            kind: 'individual',
+            status: 'active',
+          }),
+        ),
+      ) as any;
       const client = new ContactOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
 
       const contact = await client.getContact(CTX, 'p-live');

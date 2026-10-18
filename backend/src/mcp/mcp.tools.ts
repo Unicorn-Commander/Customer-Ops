@@ -14,6 +14,7 @@
  *   - list_customers      — relationships filtered by stage/priority/owner.
  *   - get_customer_360    — relationship + timeline + FEDERATED contact + invoices.
  *   - pipeline_board      — relationships bucketed by funnel stage.
+ *   - update_customer      — patch relationship-owned fields.
  *   - transition_customer_stage — move a relationship through the funnel.
  *   - add_customer_note   — append a note to the relationship timeline.
  *
@@ -45,7 +46,7 @@ import { MembershipService } from '../common/workspace/membership.service';
 import { listMyWorkspaces, MyWorkspace } from '../common/workspace/list-my-workspaces';
 import { tenancyEnabled } from '../common/workspace/feature-flags';
 import { CustomersService } from '../customers/customers.service';
-import { CreateInvoiceDto, EngagementKind } from '../customers/dto/customer.dto';
+import { CreateInvoiceDto, EngagementKind, UpdateCustomerDto } from '../customers/dto/customer.dto';
 import { LeadTriageAgent } from '../agents/lead-triage.agent';
 import { FollowUpDrafterAgent } from '../agents/follow-up-drafter.agent';
 import { CollectionsNudgeAgent } from '../agents/collections-nudge.agent';
@@ -142,6 +143,33 @@ export class CustomerOpsTools {
       { body: args.body },
       args.workspace_id ?? null,
     );
+  }
+
+  /** Patch the relationship fields exposed by the REST PATCH DTO. */
+  async updateCustomer(
+    user: User,
+    args: {
+      customer_id: string;
+      workspace_id?: string;
+      priority?: RelationshipPriority;
+      source?: string;
+      notes?: string;
+      owner_user_key?: string;
+      expected_value?: string;
+      currency?: string;
+      next_action_at?: string;
+    },
+  ) {
+    const dto: UpdateCustomerDto = {
+      priority: args.priority,
+      source: args.source,
+      notes: args.notes,
+      ownerUserKey: args.owner_user_key,
+      expectedValue: args.expected_value,
+      currency: args.currency,
+      nextActionAt: args.next_action_at,
+    };
+    return this.customers.updateForUser(user, args.customer_id, dto, args.workspace_id ?? null);
   }
 
   // ── Phase 3 invoicing tools (delegate to CustomersService → Accounting-Ops) ──

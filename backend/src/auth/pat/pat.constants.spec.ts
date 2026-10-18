@@ -38,6 +38,7 @@ const REGISTERED_MCP_TOOLS = [
   'list_customers',
   'get_customer_360',
   'pipeline_board',
+  'update_customer',
   'transition_customer_stage',
   'add_customer_note',
   'list_customer_invoices',

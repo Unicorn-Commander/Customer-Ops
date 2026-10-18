@@ -107,6 +107,7 @@ export const MCP_TOOL_SCOPE_MAP: Record<string, PatScope> = {
   list_customer_email: 'read:customers',
   list_customer_meetings: 'read:customers',
   // write:customers — relationship + federated-action mutations
+  update_customer: 'write:customers',
   transition_customer_stage: 'write:customers',
   create_customer_invoice: 'write:customers',
   start_customer_campaign: 'write:customers',

@@ -21,7 +21,11 @@ import { CollectionsNudgeAgent } from '../agents/collections-nudge.agent';
  * never the downstream behavior (proven in the service specs).
  */
 const WS = '0190a000-7e57-7000-8000-00000000c007';
-const aaron = { id: 'local-aaron', email: 'aaron@magicunicorn.tech', keycloakId: 'kc-aaron' } as User;
+const aaron = {
+  id: 'local-aaron',
+  email: 'aaron@magicunicorn.tech',
+  keycloakId: 'kc-aaron',
+} as User;
 
 /** A sentinel each delegate returns, so we can assert the tool returns it verbatim. */
 const SENTINEL = { ok: true, sentinel: 'passthrough' };
@@ -33,6 +37,7 @@ function makeTools() {
     listForUser: jest.fn().mockResolvedValue(SENTINEL),
     customer360ForUser: jest.fn().mockResolvedValue(SENTINEL),
     pipelineForUser: jest.fn().mockResolvedValue(SENTINEL),
+    updateForUser: jest.fn().mockResolvedValue(SENTINEL),
     transitionForUser: jest.fn().mockResolvedValue(SENTINEL),
     addNoteForUser: jest.fn().mockResolvedValue(SENTINEL),
     invoicesForUser: jest.fn().mockResolvedValue(SENTINEL),
@@ -54,11 +59,24 @@ function makeTools() {
   } as unknown as jest.Mocked<LeadIntakeService>;
 
   const membership = {} as unknown as MembershipService;
-  const leadTriage = { triage: jest.fn().mockResolvedValue(SENTINEL) } as unknown as jest.Mocked<LeadTriageAgent>;
-  const followUp = { draftFollowUp: jest.fn().mockResolvedValue(SENTINEL) } as unknown as jest.Mocked<FollowUpDrafterAgent>;
-  const collections = { draftNudge: jest.fn().mockResolvedValue(SENTINEL) } as unknown as jest.Mocked<CollectionsNudgeAgent>;
+  const leadTriage = {
+    triage: jest.fn().mockResolvedValue(SENTINEL),
+  } as unknown as jest.Mocked<LeadTriageAgent>;
+  const followUp = {
+    draftFollowUp: jest.fn().mockResolvedValue(SENTINEL),
+  } as unknown as jest.Mocked<FollowUpDrafterAgent>;
+  const collections = {
+    draftNudge: jest.fn().mockResolvedValue(SENTINEL),
+  } as unknown as jest.Mocked<CollectionsNudgeAgent>;
 
-  const tools = new CustomerOpsTools(membership, customers, leadTriage, followUp, collections, leads);
+  const tools = new CustomerOpsTools(
+    membership,
+    customers,
+    leadTriage,
+    followUp,
+    collections,
+    leads,
+  );
   return { tools, customers, leads, leadTriage, followUp, collections };
 }
 
@@ -116,10 +134,16 @@ describe('CustomerOpsTools — MCP arg → DTO delegation mapping', () => {
       });
 
       await ctx.tools.draftCollectionsNudge(aaron, { customer_id: 'cust-9' });
-      expect(ctx.collections.draftNudge).toHaveBeenLastCalledWith(aaron, 'cust-9', null, 'bundled', {
-        stageDraft: undefined,
-        idempotencyKey: undefined,
-      });
+      expect(ctx.collections.draftNudge).toHaveBeenLastCalledWith(
+        aaron,
+        'cust-9',
+        null,
+        'bundled',
+        {
+          stageDraft: undefined,
+          idempotencyKey: undefined,
+        },
+      );
     });
 
     it('draftCollectionsNudge forwards stage_draft + idempotency_key to the agent', async () => {
@@ -159,7 +183,14 @@ describe('CustomerOpsTools — MCP arg → DTO delegation mapping', () => {
       });
       expect(customers.listForUser).toHaveBeenCalledWith(
         aaron,
-        { search: 'Contosochem', stage: 'PROSPECT', ownerUserKey: 'rep-7', includeLost: true, withContacts: false, limit: 25 },
+        {
+          search: 'Contosochem',
+          stage: 'PROSPECT',
+          ownerUserKey: 'rep-7',
+          includeLost: true,
+          withContacts: false,
+          limit: 25,
+        },
         WS,
       );
     });
@@ -210,7 +241,44 @@ describe('CustomerOpsTools — MCP arg → DTO delegation mapping', () => {
     it('addNote maps body into AddNoteDto and defaults the workspace to null', async () => {
       const { tools, customers } = makeTools();
       await tools.addNote(aaron, { customer_id: 'cust-1', body: 'called them' });
-      expect(customers.addNoteForUser).toHaveBeenCalledWith(aaron, 'cust-1', { body: 'called them' }, null);
+      expect(customers.addNoteForUser).toHaveBeenCalledWith(
+        aaron,
+        'cust-1',
+        { body: 'called them' },
+        null,
+      );
+    });
+  });
+
+  describe('updateCustomer — REST PATCH DTO remap', () => {
+    it('maps the complete relationship PATCH payload and workspace address', async () => {
+      const { tools, customers } = makeTools();
+      await tools.updateCustomer(aaron, {
+        customer_id: 'cust-1',
+        workspace_id: WS,
+        priority: 'HIGH' as any,
+        source: 'northwind',
+        notes: 'follow up tomorrow',
+        owner_user_key: 'rep-7',
+        expected_value: '1250.50',
+        currency: 'USD',
+        next_action_at: '2026-10-20T15:30:00.000Z',
+      });
+
+      expect(customers.updateForUser).toHaveBeenCalledWith(
+        aaron,
+        'cust-1',
+        {
+          priority: 'HIGH',
+          source: 'northwind',
+          notes: 'follow up tomorrow',
+          ownerUserKey: 'rep-7',
+          expectedValue: '1250.50',
+          currency: 'USD',
+          nextActionAt: '2026-10-20T15:30:00.000Z',
+        },
+        WS,
+      );
     });
   });
 
@@ -383,7 +451,12 @@ describe('CustomerOpsTools — MCP arg → DTO delegation mapping', () => {
       expect(customers.recordEngagementForUser).toHaveBeenCalledWith(
         aaron,
         'cust-1',
-        { kind: 'replied', source: 'email-ops', externalRef: 'msg-7', detail: 'replied to the proposal' },
+        {
+          kind: 'replied',
+          source: 'email-ops',
+          externalRef: 'msg-7',
+          detail: 'replied to the proposal',
+        },
         WS,
       );
     });
@@ -467,7 +540,11 @@ describe('CustomerOpsTools — MCP arg → DTO delegation mapping', () => {
 
     it('resolvePendingLeads maps limit/scope into ResolvePendingDto', async () => {
       const { tools, leads } = makeTools();
-      await tools.resolvePendingLeads(aaron, { workspace_id: WS, limit: 25, scope: 'pending_and_failed' });
+      await tools.resolvePendingLeads(aaron, {
+        workspace_id: WS,
+        limit: 25,
+        scope: 'pending_and_failed',
+      });
       expect(leads.resolvePendingForUser).toHaveBeenCalledWith(
         aaron,
         { limit: 25, scope: 'pending_and_failed' },

@@ -160,7 +160,7 @@ export class McpService {
           'relationship + the FEDERATED Contact-Ops contact + Accounting-Ops ' +
           'invoices + Outreach campaigns/touches + Email-Ops threads + Meeting-Ops ' +
           'conversation signal), view the pipeline board, move a relationship ' +
-          'through the funnel, and add timeline notes. Invoicing tools federate to ' +
+          'through the funnel, update relationship fields, and add timeline notes. Invoicing tools federate to ' +
           'Accounting-Ops (the AR engine / ledger). Outreach tools federate to the ' +
           'Outreach app (Listmonk + Postiz). Email tools federate to the Email-Ops ' +
           'app (Stalwart): list mailbox threads, send/draft an email. The meeting ' +
@@ -336,6 +336,33 @@ export class McpService {
         },
       },
       async (args: any) => wrap(await tools.addNote(user, args)),
+    );
+
+    server.registerTool(
+      'update_customer',
+      {
+        title: 'Update relationship',
+        description:
+          'Patch the relationship-owned fields exposed by the REST customer PATCH: ' +
+          'priority, source, notes, owner_user_key, expected_value, currency, and ' +
+          'next_action_at. This does not change funnel stage or federated Contact-Ops ' +
+          'contact fields. Requires a member workspace role and write:customers.',
+        inputSchema: {
+          customer_id: z.string(),
+          workspace_id: z.string().optional(),
+          priority: PRIORITY.optional(),
+          source: z.string().max(120).optional(),
+          notes: z.string().max(4000).optional(),
+          owner_user_key: z.string().max(200).optional(),
+          expected_value: z
+            .string()
+            .regex(/^-?\d{1,16}(\.\d{1,4})?$/)
+            .optional(),
+          currency: z.string().max(8).optional(),
+          next_action_at: z.string().max(40).optional(),
+        },
+      },
+      async (args: any) => wrap(await tools.updateCustomer(user, args)),
     );
 
     // ── Phase 3 invoicing tools (federate to Accounting-Ops) ──

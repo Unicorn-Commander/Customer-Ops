@@ -1,11 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import {
-  CustomerActivityKind,
-  LeadIntakeStatus,
-  RelationshipStage,
-  User,
-} from '@prisma/client';
+import { CustomerActivityKind, LeadIntakeStatus, RelationshipStage, User } from '@prisma/client';
 import { LeadIntakeService } from './lead-intake.service';
 import { WorkspaceContextService } from '../common/workspace/workspace-context.service';
 import { ContactOpsPort } from '../contact-ops/contact-ops.port';
@@ -79,8 +74,8 @@ function makeTx(opts?: { existingCustomer?: any }) {
       groupBy: jest.fn(async () => []),
     },
     customer: {
-      findFirst: jest.fn(async ({ where }: any) =>
-        customers.find((c) => c.contactId === where.contactId) ?? null,
+      findFirst: jest.fn(
+        async ({ where }: any) => customers.find((c) => c.contactId === where.contactId) ?? null,
       ),
       create: jest.fn(async ({ data }: any) => {
         const row = {
@@ -219,7 +214,9 @@ describe('LeadIntakeService — ingest_lead keystone', () => {
 
   it('resolves via a Contact-Ops upsert to the canonical person_id', async () => {
     const { tx, customers } = makeTx();
-    const upsert = jest.fn().mockResolvedValue({ contactId: 'co-canon-99', created: true, etag: 'e1' });
+    const upsert = jest
+      .fn()
+      .mockResolvedValue({ contactId: 'co-canon-99', created: true, etag: 'e1' });
     const { svc } = makeService({ tx, contact: { upsertContact: upsert } });
 
     const res = await svc.ingestForUser(
@@ -331,7 +328,10 @@ describe('LeadIntakeService — ingest_lead keystone', () => {
   it('mintProvisional is deterministic on email (same person ⇒ same prov id)', async () => {
     const run = async (dedup: string) => {
       const { tx } = makeTx();
-      const { svc } = makeService({ tx, contact: { upsertContact: jest.fn().mockResolvedValue(null) } });
+      const { svc } = makeService({
+        tx,
+        contact: { upsertContact: jest.fn().mockResolvedValue(null) },
+      });
       const res = await svc.ingestForUser(
         aaron,
         { source: 'northwind', sourceDedupKey: dedup, email: 'same@acme.test' },
@@ -389,8 +389,8 @@ describe('LeadIntakeService — resolvePending pass B (provisional → canonical
         }),
       },
       customer: {
-        findFirst: jest.fn(async ({ where }: any) =>
-          customers.find((c) => c.contactId === where.contactId) ?? null,
+        findFirst: jest.fn(
+          async ({ where }: any) => customers.find((c) => c.contactId === where.contactId) ?? null,
         ),
         update: jest.fn(async ({ where, data }: any) => {
           calls.customerUpdate.push({ where, data });
@@ -478,7 +478,12 @@ describe('LeadIntakeService — resolvePending pass B (provisional → canonical
   it('(c) MERGE: a DISTINCT canonical relationship already exists → move activities, delete the provisional, re-point the intake', async () => {
     // A canonical customer already lives on the new id (id 'cust-canon'), distinct
     // from the provisional projection ('cust-prov') → the destructive merge branch.
-    const canonical = { id: 'cust-canon', workspaceId: WS, contactId: 'co-canon-1', stage: RelationshipStage.PROSPECT };
+    const canonical = {
+      id: 'cust-canon',
+      workspaceId: WS,
+      contactId: 'co-canon-1',
+      stage: RelationshipStage.PROSPECT,
+    };
     const { tx, calls } = makePassBTx({ intake: provIntake(), canonicalCustomer: canonical });
     const upsert = jest.fn().mockResolvedValue({ contactId: 'co-canon-1' });
     const { svc } = makeService({
@@ -531,8 +536,16 @@ describe('LeadIntakeService — resolvePending pass B (provisional → canonical
     // Edge: a canonical row exists on the new id but it IS intake.customerId (the
     // findFirst returned our own projection). The merge guard (canonical.id !==
     // intake.customerId) is false → the rename branch runs, no destructive move.
-    const sameAsProvisional = { id: 'cust-prov', workspaceId: WS, contactId: 'co-canon-1', stage: RelationshipStage.LEAD };
-    const { tx, calls } = makePassBTx({ intake: provIntake(), canonicalCustomer: sameAsProvisional });
+    const sameAsProvisional = {
+      id: 'cust-prov',
+      workspaceId: WS,
+      contactId: 'co-canon-1',
+      stage: RelationshipStage.LEAD,
+    };
+    const { tx, calls } = makePassBTx({
+      intake: provIntake(),
+      canonicalCustomer: sameAsProvisional,
+    });
     const upsert = jest.fn().mockResolvedValue({ contactId: 'co-canon-1' });
     const { svc } = makeService({
       tx,
@@ -551,20 +564,34 @@ describe('LeadIntakeService — resolvePending pass B (provisional → canonical
   });
 });
 
-
 describe('structured names through intake staging', () => {
   it('preserves explicit names for Contact-Ops resolution', async () => {
     const { tx, store } = makeTx();
     const { svc, contact } = makeService({ tx });
-    await svc.ingestForUser(aaron, {
-      source: 'synthetic', sourceDedupKey: 'names', displayName: 'Synthetic Contact',
-      givenName: 'Synthetic', familyName: 'Contact', nicknames: ['Example'],
-    }, WS);
+    await svc.ingestForUser(
+      aaron,
+      {
+        source: 'synthetic',
+        sourceDedupKey: 'names',
+        displayName: 'Synthetic Contact',
+        givenName: 'Synthetic',
+        familyName: 'Contact',
+        nicknames: ['Example'],
+      },
+      WS,
+    );
     expect(store.intake.rawPayload).toMatchObject({
-      given_name: 'Synthetic', family_name: 'Contact', nicknames: ['Example'],
+      given_name: 'Synthetic',
+      family_name: 'Contact',
+      nicknames: ['Example'],
     });
-    expect(contact.upsertContact).toHaveBeenCalledWith({ ucUid: UC_UID, workspaceId: WS }, expect.objectContaining({
-      givenName: 'Synthetic', familyName: 'Contact', nicknames: ['Example'],
-    }));
+    expect(contact.upsertContact).toHaveBeenCalledWith(
+      { ucUid: UC_UID, workspaceId: WS },
+      expect.objectContaining({
+        givenName: 'Synthetic',
+        familyName: 'Contact',
+        nicknames: ['Example'],
+      }),
+    );
   });
 });
