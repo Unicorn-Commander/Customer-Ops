@@ -149,7 +149,7 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
       expect(contact?.phones[0].e164).toBe('+15551234567');
     });
 
-    it('upsertContact: passes given_name/family_name/nicknames through to upsert_person', async () => {
+    it('upsertContact: sends only contract fields, including initial_tags', async () => {
       const fetchSpy = jest
         .fn()
         .mockResolvedValue(jsonResponse(rpcOk({ person_id: 'p3', created: true, etag: 'W/"4"' })));
@@ -164,6 +164,9 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
         familyName: 'Dude',
         nicknames: ['Diesel'],
         email: 'diesel@x.com',
+        phone: '+15551234567',
+        orgName: 'Acme Exteriors',
+        tags: ['james-sdr', 'contractor'],
       });
 
       expect(result?.contactId).toBe('p3');
@@ -174,7 +177,11 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
         family_name: 'Dude',
         nicknames: ['Diesel'],
         emails: [{ address: 'diesel@x.com', is_primary: true }],
+        phones: [{ e164: '+15551234567', is_primary: true }],
+        initial_tags: ['james-sdr', 'contractor'],
       });
+      expect(body.params.arguments).not.toHaveProperty('org_name');
+      expect(body.params.arguments).not.toHaveProperty('organization');
     });
 
     it('get_person: maps structured names, nicknames, handles and links', async () => {
@@ -254,18 +261,16 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
     });
 
     it('get_person: defaults optional structured collections when Contact-Ops omits them', async () => {
-      global.fetch = jest
-        .fn()
-        .mockResolvedValue(
-          jsonResponse(
-            rpcOk({
-              person_id: 'p-bare',
-              display_name: 'Bare',
-              kind: 'individual',
-              status: 'active',
-            }),
-          ),
-        ) as any;
+      global.fetch = jest.fn().mockResolvedValue(
+        jsonResponse(
+          rpcOk({
+            person_id: 'p-bare',
+            display_name: 'Bare',
+            kind: 'individual',
+            status: 'active',
+          }),
+        ),
+      ) as any;
       const client = new ContactOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
 
       const contact = await client.getContact(CTX, 'p-bare');
@@ -309,18 +314,16 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
     });
 
     it('get_person: defaults lifecycle fields to null when Contact-Ops omits them', async () => {
-      global.fetch = jest
-        .fn()
-        .mockResolvedValue(
-          jsonResponse(
-            rpcOk({
-              person_id: 'p-live',
-              display_name: 'Live',
-              kind: 'individual',
-              status: 'active',
-            }),
-          ),
-        ) as any;
+      global.fetch = jest.fn().mockResolvedValue(
+        jsonResponse(
+          rpcOk({
+            person_id: 'p-live',
+            display_name: 'Live',
+            kind: 'individual',
+            status: 'active',
+          }),
+        ),
+      ) as any;
       const client = new ContactOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
 
       const contact = await client.getContact(CTX, 'p-live');

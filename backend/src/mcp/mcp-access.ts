@@ -88,6 +88,7 @@ export const MCP_TOOL_MIN_ROLE: Record<string, WorkspaceRole> = {
   add_quote_attachment: WorkspaceRole.MEMBER,
 
   // Relationship + federated-action mutations.
+  update_customer: WorkspaceRole.MEMBER,
   transition_customer_stage: WorkspaceRole.MEMBER,
   add_customer_note: WorkspaceRole.MEMBER,
   create_customer_invoice: WorkspaceRole.MEMBER,

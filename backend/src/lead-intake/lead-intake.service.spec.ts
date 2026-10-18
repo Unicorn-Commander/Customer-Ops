@@ -1,11 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import {
-  CustomerActivityKind,
-  LeadIntakeStatus,
-  RelationshipStage,
-  User,
-} from '@prisma/client';
+import { CustomerActivityKind, LeadIntakeStatus, RelationshipStage, User } from '@prisma/client';
 import { LeadIntakeService } from './lead-intake.service';
 import { WorkspaceContextService } from '../common/workspace/workspace-context.service';
 import { ContactOpsPort } from '../contact-ops/contact-ops.port';
@@ -79,8 +74,8 @@ function makeTx(opts?: { existingCustomer?: any }) {
       groupBy: jest.fn(async () => []),
     },
     customer: {
-      findFirst: jest.fn(async ({ where }: any) =>
-        customers.find((c) => c.contactId === where.contactId) ?? null,
+      findFirst: jest.fn(
+        async ({ where }: any) => customers.find((c) => c.contactId === where.contactId) ?? null,
       ),
       create: jest.fn(async ({ data }: any) => {
         const row = {
@@ -99,7 +94,11 @@ function makeTx(opts?: { existingCustomer?: any }) {
         if (idx >= 0) customers[idx] = merged;
         return merged;
       }),
-      delete: jest.fn(async () => ({})),
+      delete: jest.fn(async ({ where }: any) => {
+        const idx = customers.findIndex((c) => c.id === where.id);
+        if (idx >= 0) customers.splice(idx, 1);
+        return {};
+      }),
     },
     customerActivity: {
       create: jest.fn(async ({ data }: any) => {
@@ -107,7 +106,16 @@ function makeTx(opts?: { existingCustomer?: any }) {
         activities.push(row);
         return row;
       }),
-      updateMany: jest.fn(async () => ({ count: 0 })),
+      updateMany: jest.fn(async ({ where, data }: any) => {
+        let count = 0;
+        for (const activity of activities) {
+          if (activity.customerId === where.customerId) {
+            Object.assign(activity, data);
+            count += 1;
+          }
+        }
+        return { count };
+      }),
     },
   };
   return { tx, store, activities, customers };
@@ -219,7 +227,9 @@ describe('LeadIntakeService — ingest_lead keystone', () => {
 
   it('resolves via a Contact-Ops upsert to the canonical person_id', async () => {
     const { tx, customers } = makeTx();
-    const upsert = jest.fn().mockResolvedValue({ contactId: 'co-canon-99', created: true, etag: 'e1' });
+    const upsert = jest
+      .fn()
+      .mockResolvedValue({ contactId: 'co-canon-99', created: true, etag: 'e1' });
     const { svc } = makeService({ tx, contact: { upsertContact: upsert } });
 
     const res = await svc.ingestForUser(
@@ -264,10 +274,166 @@ describe('LeadIntakeService — ingest_lead keystone', () => {
     expect(activities.filter((a) => a.kind === CustomerActivityKind.INGESTED)).toHaveLength(1);
   });
 
+  it('re-pushes a RESOLVED intake through Contact-Ops without a second relationship or stage change', async () => {
+    const { tx, store, customers } = makeTx();
+    const upsert = jest.fn().mockResolvedValue({
+      contactId: 'co-repush-1',
+      created: false,
+      etag: 'e2',
+    });
+    const { svc } = makeService({ tx, contact: { upsertContact: upsert } });
+
+    await svc.ingestForUser(
+      aaron,
+      {
+        source: 'northwind',
+        sourceDedupKey: 'same-lead',
+        displayName: 'Before Name',
+        email: 'before@acme.test',
+        orgName: 'Before Co',
+        tags: ['old-tag'],
+      },
+      WS,
+    );
+    customers[0].stage = RelationshipStage.CUSTOMER;
+
+    const result = await svc.ingestForUser(
+      aaron,
+      {
+        source: 'northwind',
+        sourceDedupKey: 'same-lead',
+        displayName: 'Refreshed Name',
+        email: 'after@acme.test',
+        phone: '+15551234567',
+        orgName: 'After Co',
+        tags: ['new-tag'],
+      },
+      WS,
+    );
+
+    expect(upsert).toHaveBeenCalledTimes(2);
+    expect(upsert.mock.calls[1][1]).toMatchObject({
+      displayName: 'Refreshed Name',
+      email: 'after@acme.test',
+      phone: '+15551234567',
+      orgName: 'After Co',
+      tags: ['new-tag'],
+      source: 'northwind',
+      sourceDedupKey: 'same-lead',
+    });
+    expect(store.intake).toMatchObject({
+      displayName: 'Refreshed Name',
+      email: 'after@acme.test',
+      phone: '+15551234567',
+      orgName: 'After Co',
+      tags: ['new-tag'],
+      status: LeadIntakeStatus.RESOLVED,
+    });
+    expect(customers).toHaveLength(1);
+    expect(customers[0]).toMatchObject({
+      id: 'cust-1',
+      contactId: 'co-repush-1',
+      stage: RelationshipStage.CUSTOMER,
+    });
+    expect(result.customerId).toBe('cust-1');
+  });
+
+  it('re-pushes a refreshed canonical id by re-pointing the existing relationship in place', async () => {
+    const { tx, customers } = makeTx();
+    const upsert = jest
+      .fn()
+      .mockResolvedValueOnce({ contactId: 'co-repoint-before', created: true, etag: 'e1' })
+      .mockResolvedValueOnce({ contactId: 'co-repoint-after', created: true, etag: 'e2' });
+    const { svc } = makeService({ tx, contact: { upsertContact: upsert } });
+
+    await svc.ingestForUser(
+      aaron,
+      {
+        source: 'northwind',
+        sourceDedupKey: 'repointed-lead',
+        displayName: 'Repointed Lead',
+        email: 'repointed@acme.test',
+      },
+      WS,
+    );
+    customers[0].stage = RelationshipStage.CUSTOMER;
+
+    const result = await svc.ingestForUser(
+      aaron,
+      {
+        source: 'northwind',
+        sourceDedupKey: 'repointed-lead',
+        displayName: 'Repointed Lead Updated',
+        email: 'repointed-new@acme.test',
+      },
+      WS,
+    );
+
+    expect(customers).toHaveLength(1);
+    expect(customers[0]).toMatchObject({
+      id: 'cust-1',
+      contactId: 'co-repoint-after',
+      stage: RelationshipStage.CUSTOMER,
+    });
+    expect(result.customerId).toBe('cust-1');
+  });
+
+  it('merges a re-push into an already-projected canonical relationship', async () => {
+    const oldCustomer = {
+      id: 'cust-old',
+      workspaceId: WS,
+      contactId: 'co-old',
+      stage: RelationshipStage.CUSTOMER,
+      ownerUserKey: null,
+      expectedValue: null,
+      isLost: false,
+    };
+    const { tx, customers, activities } = makeTx({ existingCustomer: oldCustomer });
+    const upsert = jest
+      .fn()
+      .mockResolvedValueOnce({ contactId: 'co-old', created: false, etag: 'e1' })
+      .mockResolvedValueOnce({ contactId: 'co-existing', created: false, etag: 'e2' });
+    const { svc } = makeService({ tx, contact: { upsertContact: upsert } });
+
+    await svc.ingestForUser(
+      aaron,
+      { source: 'northwind', sourceDedupKey: 'merge-lead', email: 'old@acme.test' },
+      WS,
+    );
+    customers.push({
+      id: 'cust-existing',
+      workspaceId: WS,
+      contactId: 'co-existing',
+      stage: RelationshipStage.LEAD,
+      ownerUserKey: null,
+      expectedValue: null,
+      isLost: false,
+    });
+
+    const result = await svc.ingestForUser(
+      aaron,
+      { source: 'northwind', sourceDedupKey: 'merge-lead', email: 'new@acme.test' },
+      WS,
+    );
+
+    expect(customers).toHaveLength(1);
+    expect(customers[0]).toMatchObject({ id: 'cust-existing', contactId: 'co-existing' });
+    expect(tx.customer.delete).toHaveBeenCalledWith({ where: { id: 'cust-old' } });
+    expect(tx.customerActivity.updateMany).toHaveBeenCalledWith({
+      where: { customerId: 'cust-old' },
+      data: { customerId: 'cust-existing' },
+    });
+    expect(activities.every((activity) => activity.customerId === 'cust-existing')).toBe(true);
+    expect(result.customerId).toBe('cust-existing');
+  });
+
   it('mintProvisional is deterministic on email (same person ⇒ same prov id)', async () => {
     const run = async (dedup: string) => {
       const { tx } = makeTx();
-      const { svc } = makeService({ tx, contact: { upsertContact: jest.fn().mockResolvedValue(null) } });
+      const { svc } = makeService({
+        tx,
+        contact: { upsertContact: jest.fn().mockResolvedValue(null) },
+      });
       const res = await svc.ingestForUser(
         aaron,
         { source: 'northwind', sourceDedupKey: dedup, email: 'same@acme.test' },
@@ -325,8 +491,8 @@ describe('LeadIntakeService — resolvePending pass B (provisional → canonical
         }),
       },
       customer: {
-        findFirst: jest.fn(async ({ where }: any) =>
-          customers.find((c) => c.contactId === where.contactId) ?? null,
+        findFirst: jest.fn(
+          async ({ where }: any) => customers.find((c) => c.contactId === where.contactId) ?? null,
         ),
         update: jest.fn(async ({ where, data }: any) => {
           calls.customerUpdate.push({ where, data });
@@ -414,7 +580,12 @@ describe('LeadIntakeService — resolvePending pass B (provisional → canonical
   it('(c) MERGE: a DISTINCT canonical relationship already exists → move activities, delete the provisional, re-point the intake', async () => {
     // A canonical customer already lives on the new id (id 'cust-canon'), distinct
     // from the provisional projection ('cust-prov') → the destructive merge branch.
-    const canonical = { id: 'cust-canon', workspaceId: WS, contactId: 'co-canon-1', stage: RelationshipStage.PROSPECT };
+    const canonical = {
+      id: 'cust-canon',
+      workspaceId: WS,
+      contactId: 'co-canon-1',
+      stage: RelationshipStage.PROSPECT,
+    };
     const { tx, calls } = makePassBTx({ intake: provIntake(), canonicalCustomer: canonical });
     const upsert = jest.fn().mockResolvedValue({ contactId: 'co-canon-1' });
     const { svc } = makeService({
@@ -467,8 +638,16 @@ describe('LeadIntakeService — resolvePending pass B (provisional → canonical
     // Edge: a canonical row exists on the new id but it IS intake.customerId (the
     // findFirst returned our own projection). The merge guard (canonical.id !==
     // intake.customerId) is false → the rename branch runs, no destructive move.
-    const sameAsProvisional = { id: 'cust-prov', workspaceId: WS, contactId: 'co-canon-1', stage: RelationshipStage.LEAD };
-    const { tx, calls } = makePassBTx({ intake: provIntake(), canonicalCustomer: sameAsProvisional });
+    const sameAsProvisional = {
+      id: 'cust-prov',
+      workspaceId: WS,
+      contactId: 'co-canon-1',
+      stage: RelationshipStage.LEAD,
+    };
+    const { tx, calls } = makePassBTx({
+      intake: provIntake(),
+      canonicalCustomer: sameAsProvisional,
+    });
     const upsert = jest.fn().mockResolvedValue({ contactId: 'co-canon-1' });
     const { svc } = makeService({
       tx,
@@ -487,20 +666,34 @@ describe('LeadIntakeService — resolvePending pass B (provisional → canonical
   });
 });
 
-
 describe('structured names through intake staging', () => {
   it('preserves explicit names for Contact-Ops resolution', async () => {
     const { tx, store } = makeTx();
     const { svc, contact } = makeService({ tx });
-    await svc.ingestForUser(aaron, {
-      source: 'synthetic', sourceDedupKey: 'names', displayName: 'Synthetic Contact',
-      givenName: 'Synthetic', familyName: 'Contact', nicknames: ['Example'],
-    }, WS);
+    await svc.ingestForUser(
+      aaron,
+      {
+        source: 'synthetic',
+        sourceDedupKey: 'names',
+        displayName: 'Synthetic Contact',
+        givenName: 'Synthetic',
+        familyName: 'Contact',
+        nicknames: ['Example'],
+      },
+      WS,
+    );
     expect(store.intake.rawPayload).toMatchObject({
-      given_name: 'Synthetic', family_name: 'Contact', nicknames: ['Example'],
+      given_name: 'Synthetic',
+      family_name: 'Contact',
+      nicknames: ['Example'],
     });
-    expect(contact.upsertContact).toHaveBeenCalledWith({ ucUid: UC_UID, workspaceId: WS }, expect.objectContaining({
-      givenName: 'Synthetic', familyName: 'Contact', nicknames: ['Example'],
-    }));
+    expect(contact.upsertContact).toHaveBeenCalledWith(
+      { ucUid: UC_UID, workspaceId: WS },
+      expect.objectContaining({
+        givenName: 'Synthetic',
+        familyName: 'Contact',
+        nicknames: ['Example'],
+      }),
+    );
   });
 });

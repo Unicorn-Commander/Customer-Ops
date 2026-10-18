@@ -143,8 +143,10 @@ export class LeadIntakeService extends LeadLabelResolver {
       requestedWorkspaceId,
     );
 
-    // 2) Resolve inline when still open (PENDING/FAILED). An already-RESOLVED
-    //    re-push just refreshed the buffer — leave its projection untouched.
+    // 2) Resolve inline when still open (PENDING/FAILED), or re-run the
+    //    Contact-Ops upsert for a RESOLVED re-push. The intake tuple remains
+    //    idempotent; projection upsert preserves an existing relationship's
+    //    stage and customer id.
     let outcome: ResolveOutcome = {
       resolved: intake.status === LeadIntakeStatus.RESOLVED,
       contactId: intake.resolvedContactId ?? undefined,
@@ -153,7 +155,11 @@ export class LeadIntakeService extends LeadLabelResolver {
       detail: intake.statusDetail ?? 'already resolved',
     };
     let current = intake;
-    if (intake.status === LeadIntakeStatus.PENDING || intake.status === LeadIntakeStatus.FAILED) {
+    if (
+      intake.status === LeadIntakeStatus.PENDING ||
+      intake.status === LeadIntakeStatus.FAILED ||
+      intake.status === LeadIntakeStatus.RESOLVED
+    ) {
       const r = await this.resolveOne(user, intake, explicitContactId, requestedWorkspaceId);
       outcome = r.outcome;
       current = r.intake;
@@ -239,6 +245,8 @@ export class LeadIntakeService extends LeadLabelResolver {
     let contactId: string | null = null;
     let provisional = false;
     let via: ResolveOutcome['via'] = undefined;
+    const wasResolved =
+      intake.status === LeadIntakeStatus.RESOLVED && Boolean(intake.resolvedContactId);
 
     // (a) explicit contactId — the end-state path, no external call.
     if (explicitContactId) {
@@ -254,6 +262,29 @@ export class LeadIntakeService extends LeadLabelResolver {
       if (upserted) {
         contactId = upserted.contactId;
         via = 'contact-ops';
+      } else if (wasResolved) {
+        // A re-push must not mint a second provisional id or relationship just
+        // because Contact-Ops is temporarily unavailable. The staged payload is
+        // already refreshed; retain the last successful resolution and let the
+        // normal reconciliation path retry Contact-Ops later.
+        const existingContactId = intake.resolvedContactId!;
+        const existingVia: NonNullable<ResolveOutcome['via']> = intake.provisional
+          ? 'provisional'
+          : 'contact-ops';
+        const detail =
+          'Contact-Ops did not resolve the re-push; retained the existing contact ' +
+          `${existingContactId} and relationship projection.`;
+        return {
+          intake,
+          outcome: {
+            resolved: true,
+            contactId: existingContactId,
+            provisional: intake.provisional,
+            customerId: intake.customerId ?? undefined,
+            via: existingVia,
+            detail,
+          },
+        };
       } else if (this.provisionalEnabled) {
         // (c) provisional fallback — deterministic from the strongest identity key.
         contactId = this.mintProvisional(fedCtx.workspaceId, intake);
@@ -285,7 +316,14 @@ export class LeadIntakeService extends LeadLabelResolver {
     const { intake: updated, customerId } = await this.workspaces.runForUser(
       user,
       async (tx) => {
-        const customer = await this.upsertProjectionInTx(tx, resolvedId, intake, ucUid, via!);
+        const customer = await this.upsertProjectionInTx(
+          tx,
+          resolvedId,
+          intake,
+          ucUid,
+          via!,
+          intake.status === LeadIntakeStatus.RESOLVED ? intake.customerId : null,
+        );
         const updatedIntake = await tx.leadIntake.update({
           where: { id: intake.id },
           data: {
@@ -327,12 +365,33 @@ export class LeadIntakeService extends LeadLabelResolver {
     intake: LeadIntake,
     ucUid: string,
     via: NonNullable<ResolveOutcome['via']>,
+    existingCustomerId?: string | null,
   ) {
     const workspaceId = await this.boundWorkspaceId(tx);
     const existing = await tx.customer.findFirst({ where: { contactId } });
 
     let customer = existing;
-    if (!existing) {
+    if (existing && existingCustomerId && existing.id !== existingCustomerId) {
+      // The refreshed canonical id is already projected locally. Merge the old
+      // relationship's activity trail into that canonical projection before
+      // deleting the stale row, matching provisional reconciliation semantics.
+      await tx.customerActivity.updateMany({
+        where: { customerId: existingCustomerId },
+        data: { customerId: existing.id },
+      });
+      await tx.customer.delete({ where: { id: existingCustomerId } });
+    }
+    if (!customer && existingCustomerId) {
+      // A resolved re-push may receive a refreshed canonical id. Re-point the
+      // existing relationship in place when that id is not already claimed;
+      // this preserves the relationship id and stage instead of creating a
+      // second Customer row.
+      customer = await tx.customer.update({
+        where: { id: existingCustomerId },
+        data: { contactId },
+      });
+    }
+    if (!customer) {
       customer = await tx.customer.create({
         data: {
           workspaceId,
@@ -347,7 +406,7 @@ export class LeadIntakeService extends LeadLabelResolver {
           lastStageChangeAt: new Date(),
         },
       });
-    } else {
+    } else if (existing) {
       // Re-ingest of a known contact: enrich gently, never downgrade the stage.
       // Fill an unset owner / value / next-action; don't overwrite operator edits.
       const data: Prisma.CustomerUpdateInput = {};
