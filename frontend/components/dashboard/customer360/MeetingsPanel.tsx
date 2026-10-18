@@ -3,12 +3,16 @@
 import { Video, ListChecks, CornerDownRight, Clock, CheckCircle2 } from 'lucide-react';
 import { Badge, cn } from '@/components/ui';
 import { meetingStatusLabel, type MeetingPanel as MeetingPanelData } from '@/lib/customers';
+import { formatDateOnly } from '@/lib/date-only';
 import { ConnectNotice, EmptyRow, ListRow, PanelSection, SourceTag, StatusPill } from './shared';
 
 function fmtDate(iso: string | null): string {
   if (!iso) return '—';
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? '—' : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+function fmtDateOnly(iso: string | null): string {
+  return formatDateOnly(iso, { month: 'short', day: 'numeric', year: 'numeric' }) ?? '—';
 }
 function fmtDuration(seconds: number | null): string | null {
   if (!seconds || seconds <= 0) return null;
@@ -128,7 +132,7 @@ export function MeetingsPanel({ panel }: { panel: MeetingPanelData }) {
                           <p className="mt-0.5 text-[11px] text-muted">
                             {a.assigneeLabel ?? ''}
                             {a.assigneeLabel && a.dueAt ? ' · ' : ''}
-                            {a.dueAt ? `due ${fmtDate(a.dueAt)}` : ''}
+                            {a.dueAt ? `due ${fmtDateOnly(a.dueAt)}` : ''}
                           </p>
                         )}
                       </div>

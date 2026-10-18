@@ -3,12 +3,11 @@
 import { ListChecks, Clock, Users } from 'lucide-react';
 import { cn } from '@/components/ui';
 import { projectStatusLabel, type ProjectPanel as ProjectPanelData, type ProjectPriority } from '@/lib/customers';
+import { formatDateOnly } from '@/lib/date-only';
 import { ConnectNotice, EmptyRow, ListRow, PanelSection, SourceTag, StatusPill } from './shared';
 
 function fmtDate(iso: string | null): string | null {
-  if (!iso) return null;
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? null : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+  return formatDateOnly(iso, { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 /* Project priority → a tinted, dotted token. Mirrors shared.tsx PRIORITY_META,
