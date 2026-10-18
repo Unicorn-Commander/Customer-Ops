@@ -264,6 +264,70 @@ describe('LeadIntakeService — ingest_lead keystone', () => {
     expect(activities.filter((a) => a.kind === CustomerActivityKind.INGESTED)).toHaveLength(1);
   });
 
+  it('re-pushes a RESOLVED intake through Contact-Ops without a second relationship or stage change', async () => {
+    const { tx, store, customers } = makeTx();
+    const upsert = jest.fn().mockResolvedValue({
+      contactId: 'co-repush-1',
+      created: false,
+      etag: 'e2',
+    });
+    const { svc } = makeService({ tx, contact: { upsertContact: upsert } });
+
+    await svc.ingestForUser(
+      aaron,
+      {
+        source: 'northwind',
+        sourceDedupKey: 'same-lead',
+        displayName: 'Before Name',
+        email: 'before@acme.test',
+        orgName: 'Before Co',
+        tags: ['old-tag'],
+      },
+      WS,
+    );
+    customers[0].stage = RelationshipStage.CUSTOMER;
+
+    const result = await svc.ingestForUser(
+      aaron,
+      {
+        source: 'northwind',
+        sourceDedupKey: 'same-lead',
+        displayName: 'Refreshed Name',
+        email: 'after@acme.test',
+        phone: '+15551234567',
+        orgName: 'After Co',
+        tags: ['new-tag'],
+      },
+      WS,
+    );
+
+    expect(upsert).toHaveBeenCalledTimes(2);
+    expect(upsert.mock.calls[1][1]).toMatchObject({
+      displayName: 'Refreshed Name',
+      email: 'after@acme.test',
+      phone: '+15551234567',
+      orgName: 'After Co',
+      tags: ['new-tag'],
+      source: 'northwind',
+      sourceDedupKey: 'same-lead',
+    });
+    expect(store.intake).toMatchObject({
+      displayName: 'Refreshed Name',
+      email: 'after@acme.test',
+      phone: '+15551234567',
+      orgName: 'After Co',
+      tags: ['new-tag'],
+      status: LeadIntakeStatus.RESOLVED,
+    });
+    expect(customers).toHaveLength(1);
+    expect(customers[0]).toMatchObject({
+      id: 'cust-1',
+      contactId: 'co-repush-1',
+      stage: RelationshipStage.CUSTOMER,
+    });
+    expect(result.customerId).toBe('cust-1');
+  });
+
   it('mintProvisional is deterministic on email (same person ⇒ same prov id)', async () => {
     const run = async (dedup: string) => {
       const { tx } = makeTx();

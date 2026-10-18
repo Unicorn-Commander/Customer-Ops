@@ -549,8 +549,10 @@ export class ContactOpsClient extends ContactOpsPort {
   /** Map a Customer-Ops identity push to Contact-Ops' canonical person shape.
    *  Isolated so the P-00059 contract is a one-method change (see upsertContact). */
   private toIngestArgs(identity: ContactIdentityInput): Record<string, unknown> {
-    // CO `upsert_person`: `match_by` (the dedup identifiers it idempotently keys
-    // on) + a flat person shape (display_name, emails[], phones[], initial_tags).
+    // CO `upsert_person`: `match_by` (the natural-key identifiers it idempotently
+    // keys on) + its flat person shape. The current CO schema has no organization
+    // or employment field on this tool, so orgName remains in the intake buffer
+    // and must not be serialized under an invented key here.
     const matchBy: Array<{ namespace: string; value: string }> = [];
     if (identity.email) matchBy.push({ namespace: 'email', value: identity.email });
     if (identity.phone) matchBy.push({ namespace: 'phone', value: identity.phone });
@@ -562,6 +564,9 @@ export class ContactOpsClient extends ContactOpsPort {
     if (identity.nicknames && identity.nicknames.length) args['nicknames'] = identity.nicknames;
     if (identity.email) args['emails'] = [{ address: identity.email, is_primary: true }];
     if (identity.phone) args['phones'] = [{ e164: identity.phone, is_primary: true }];
+    // `initial_tags` is the exact CO field. CO's existing-person behavior is
+    // intentionally left to that owning app; Customer-Ops does not call a
+    // second tag mutation to work around it.
     if (identity.tags && identity.tags.length) args['initial_tags'] = identity.tags;
     return args;
   }
