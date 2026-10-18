@@ -94,7 +94,11 @@ function makeTx(opts?: { existingCustomer?: any }) {
         if (idx >= 0) customers[idx] = merged;
         return merged;
       }),
-      delete: jest.fn(async () => ({})),
+      delete: jest.fn(async ({ where }: any) => {
+        const idx = customers.findIndex((c) => c.id === where.id);
+        if (idx >= 0) customers.splice(idx, 1);
+        return {};
+      }),
     },
     customerActivity: {
       create: jest.fn(async ({ data }: any) => {
@@ -102,7 +106,16 @@ function makeTx(opts?: { existingCustomer?: any }) {
         activities.push(row);
         return row;
       }),
-      updateMany: jest.fn(async () => ({ count: 0 })),
+      updateMany: jest.fn(async ({ where, data }: any) => {
+        let count = 0;
+        for (const activity of activities) {
+          if (activity.customerId === where.customerId) {
+            Object.assign(activity, data);
+            count += 1;
+          }
+        }
+        return { count };
+      }),
     },
   };
   return { tx, store, activities, customers };
@@ -323,6 +336,95 @@ describe('LeadIntakeService — ingest_lead keystone', () => {
       stage: RelationshipStage.CUSTOMER,
     });
     expect(result.customerId).toBe('cust-1');
+  });
+
+  it('re-pushes a refreshed canonical id by re-pointing the existing relationship in place', async () => {
+    const { tx, customers } = makeTx();
+    const upsert = jest
+      .fn()
+      .mockResolvedValueOnce({ contactId: 'co-repoint-before', created: true, etag: 'e1' })
+      .mockResolvedValueOnce({ contactId: 'co-repoint-after', created: true, etag: 'e2' });
+    const { svc } = makeService({ tx, contact: { upsertContact: upsert } });
+
+    await svc.ingestForUser(
+      aaron,
+      {
+        source: 'northwind',
+        sourceDedupKey: 'repointed-lead',
+        displayName: 'Repointed Lead',
+        email: 'repointed@acme.test',
+      },
+      WS,
+    );
+    customers[0].stage = RelationshipStage.CUSTOMER;
+
+    const result = await svc.ingestForUser(
+      aaron,
+      {
+        source: 'northwind',
+        sourceDedupKey: 'repointed-lead',
+        displayName: 'Repointed Lead Updated',
+        email: 'repointed-new@acme.test',
+      },
+      WS,
+    );
+
+    expect(customers).toHaveLength(1);
+    expect(customers[0]).toMatchObject({
+      id: 'cust-1',
+      contactId: 'co-repoint-after',
+      stage: RelationshipStage.CUSTOMER,
+    });
+    expect(result.customerId).toBe('cust-1');
+  });
+
+  it('merges a re-push into an already-projected canonical relationship', async () => {
+    const oldCustomer = {
+      id: 'cust-old',
+      workspaceId: WS,
+      contactId: 'co-old',
+      stage: RelationshipStage.CUSTOMER,
+      ownerUserKey: null,
+      expectedValue: null,
+      isLost: false,
+    };
+    const { tx, customers, activities } = makeTx({ existingCustomer: oldCustomer });
+    const upsert = jest
+      .fn()
+      .mockResolvedValueOnce({ contactId: 'co-old', created: false, etag: 'e1' })
+      .mockResolvedValueOnce({ contactId: 'co-existing', created: false, etag: 'e2' });
+    const { svc } = makeService({ tx, contact: { upsertContact: upsert } });
+
+    await svc.ingestForUser(
+      aaron,
+      { source: 'northwind', sourceDedupKey: 'merge-lead', email: 'old@acme.test' },
+      WS,
+    );
+    customers.push({
+      id: 'cust-existing',
+      workspaceId: WS,
+      contactId: 'co-existing',
+      stage: RelationshipStage.LEAD,
+      ownerUserKey: null,
+      expectedValue: null,
+      isLost: false,
+    });
+
+    const result = await svc.ingestForUser(
+      aaron,
+      { source: 'northwind', sourceDedupKey: 'merge-lead', email: 'new@acme.test' },
+      WS,
+    );
+
+    expect(customers).toHaveLength(1);
+    expect(customers[0]).toMatchObject({ id: 'cust-existing', contactId: 'co-existing' });
+    expect(tx.customer.delete).toHaveBeenCalledWith({ where: { id: 'cust-old' } });
+    expect(tx.customerActivity.updateMany).toHaveBeenCalledWith({
+      where: { customerId: 'cust-old' },
+      data: { customerId: 'cust-existing' },
+    });
+    expect(activities.every((activity) => activity.customerId === 'cust-existing')).toBe(true);
+    expect(result.customerId).toBe('cust-existing');
   });
 
   it('mintProvisional is deterministic on email (same person ⇒ same prov id)', async () => {

@@ -316,7 +316,14 @@ export class LeadIntakeService extends LeadLabelResolver {
     const { intake: updated, customerId } = await this.workspaces.runForUser(
       user,
       async (tx) => {
-        const customer = await this.upsertProjectionInTx(tx, resolvedId, intake, ucUid, via!);
+        const customer = await this.upsertProjectionInTx(
+          tx,
+          resolvedId,
+          intake,
+          ucUid,
+          via!,
+          intake.status === LeadIntakeStatus.RESOLVED ? intake.customerId : null,
+        );
         const updatedIntake = await tx.leadIntake.update({
           where: { id: intake.id },
           data: {
@@ -358,12 +365,33 @@ export class LeadIntakeService extends LeadLabelResolver {
     intake: LeadIntake,
     ucUid: string,
     via: NonNullable<ResolveOutcome['via']>,
+    existingCustomerId?: string | null,
   ) {
     const workspaceId = await this.boundWorkspaceId(tx);
     const existing = await tx.customer.findFirst({ where: { contactId } });
 
     let customer = existing;
-    if (!existing) {
+    if (existing && existingCustomerId && existing.id !== existingCustomerId) {
+      // The refreshed canonical id is already projected locally. Merge the old
+      // relationship's activity trail into that canonical projection before
+      // deleting the stale row, matching provisional reconciliation semantics.
+      await tx.customerActivity.updateMany({
+        where: { customerId: existingCustomerId },
+        data: { customerId: existing.id },
+      });
+      await tx.customer.delete({ where: { id: existingCustomerId } });
+    }
+    if (!customer && existingCustomerId) {
+      // A resolved re-push may receive a refreshed canonical id. Re-point the
+      // existing relationship in place when that id is not already claimed;
+      // this preserves the relationship id and stage instead of creating a
+      // second Customer row.
+      customer = await tx.customer.update({
+        where: { id: existingCustomerId },
+        data: { contactId },
+      });
+    }
+    if (!customer) {
       customer = await tx.customer.create({
         data: {
           workspaceId,
@@ -378,7 +406,7 @@ export class LeadIntakeService extends LeadLabelResolver {
           lastStageChangeAt: new Date(),
         },
       });
-    } else {
+    } else if (existing) {
       // Re-ingest of a known contact: enrich gently, never downgrade the stage.
       // Fill an unset owner / value / next-action; don't overwrite operator edits.
       const data: Prisma.CustomerUpdateInput = {};
