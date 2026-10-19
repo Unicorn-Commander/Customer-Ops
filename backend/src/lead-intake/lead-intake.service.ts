@@ -60,17 +60,19 @@ type AuthedUser = User & Partial<WithWorkspaceClaim>;
 
 /**
  * Keep organization domains useful for business leads without maintaining a
- * provider allowlist. The label-prefix rule covers the requested free-mail
- * families (including common family aliases such as protonmail and ymail).
+ * provider allowlist. A domain is treated as free mail only when a known
+ * free-mail provider is the REGISTRABLE (second-level) label — mail.yahoo.com,
+ * yahoo.co.uk, me.com, proton.me, pm.me — never when the word merely appears
+ * as a TLD or an unrelated label (acme.me, studio.live, mac.example.com stay).
  */
-const FREE_MAIL_DOMAIN_FAMILY_RE =
-  /(?:^|\.)(?:gmail|googlemail|yahoo|ymail|outlook|hotmail|live|msn|icloud|me|mac|aol|proton(?:mail)?)(?:\.|$)/i;
+const FREE_MAIL_HOST_RE =
+  /^(?:[^.\s]+\.)*(?:gmail|googlemail|yahoo|ymail|rocketmail|outlook|hotmail|live|msn|icloud|me|mac|aol|proton|protonmail|pm)\.(?:com|net|org|me|co\.[a-z]{2}|com\.[a-z]{2}|[a-z]{2})$/i;
 
 function organizationDomainFromEmail(email: string | null): string | undefined {
   const match = email?.trim().match(/^[^@\s]+@([^@\s]+)$/);
   if (!match) return undefined;
   const domain = match[1].toLowerCase();
-  return FREE_MAIL_DOMAIN_FAMILY_RE.test(domain) ? undefined : domain;
+  return FREE_MAIL_HOST_RE.test(domain) ? undefined : domain;
 }
 
 /** The serialized intake shape returned on the wire (Decimal → string). */

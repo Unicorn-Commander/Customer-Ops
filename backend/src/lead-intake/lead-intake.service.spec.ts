@@ -292,6 +292,66 @@ describe('LeadIntakeService — ingest_lead keystone', () => {
     expect(upsert.mock.calls[0][1].organization).not.toHaveProperty('domain');
   });
 
+  it.each([
+    ['acme.me', 'acme.me'],
+    ['studio.live', 'studio.live'],
+    ['mac.example.com', 'mac.example.com'],
+    ['livewire.com', 'livewire.com'],
+  ])(
+    'keeps a business domain whose TLD or label merely resembles a free-mail word (%s)',
+    async (host, expected) => {
+      const { tx } = makeTx();
+      const upsert = jest
+        .fn()
+        .mockResolvedValue({ contactId: 'co-org-3', created: true, etag: 'e1' });
+      const { svc } = makeService({ tx, contact: { upsertContact: upsert } });
+
+      await svc.ingestForUser(
+        aaron,
+        {
+          source: 'loopnet',
+          sourceDedupKey: `LN-ORG-${host}`,
+          email: `owner@${host}`,
+          orgName: 'Acme Exteriors',
+        },
+        WS,
+      );
+
+      expect(upsert.mock.calls[0][1]).toMatchObject({
+        organization: { name: 'Acme Exteriors', domain: expected },
+      });
+    },
+  );
+
+  it.each([
+    'me.com',
+    'mail.yahoo.com',
+    'yahoo.co.uk',
+    'proton.me',
+    'pm.me',
+    'outlook.de',
+    'live.com',
+  ])('omits the domain for a free-mail provider at the registrable label (%s)', async (host) => {
+    const { tx } = makeTx();
+    const upsert = jest
+      .fn()
+      .mockResolvedValue({ contactId: 'co-org-4', created: true, etag: 'e1' });
+    const { svc } = makeService({ tx, contact: { upsertContact: upsert } });
+
+    await svc.ingestForUser(
+      aaron,
+      {
+        source: 'loopnet',
+        sourceDedupKey: `LN-ORG-F-${host}`,
+        email: `someone@${host}`,
+        orgName: 'Acme Exteriors',
+      },
+      WS,
+    );
+
+    expect(upsert.mock.calls[0][1].organization).not.toHaveProperty('domain');
+  });
+
   it('omits the organization key when the lead has no company', async () => {
     const { tx } = makeTx();
     const upsert = jest
