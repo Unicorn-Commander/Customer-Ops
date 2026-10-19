@@ -58,6 +58,21 @@ import {
 
 type AuthedUser = User & Partial<WithWorkspaceClaim>;
 
+/**
+ * Keep organization domains useful for business leads without maintaining a
+ * provider allowlist. The label-prefix rule covers the requested free-mail
+ * families (including common family aliases such as protonmail and ymail).
+ */
+const FREE_MAIL_DOMAIN_FAMILY_RE =
+  /(?:^|\.)(?:gmail|googlemail|yahoo|ymail|outlook|hotmail|live|msn|icloud|me|mac|aol|proton(?:mail)?)(?:\.|$)/i;
+
+function organizationDomainFromEmail(email: string | null): string | undefined {
+  const match = email?.trim().match(/^[^@\s]+@([^@\s]+)$/);
+  if (!match) return undefined;
+  const domain = match[1].toLowerCase();
+  return FREE_MAIL_DOMAIN_FAMILY_RE.test(domain) ? undefined : domain;
+}
+
 /** The serialized intake shape returned on the wire (Decimal → string). */
 export interface SerializedIntake {
   id: string;
@@ -907,6 +922,10 @@ export class LeadIntakeService extends LeadLabelResolver {
     const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : null);
     const strArr = (v: unknown): string[] =>
       Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+    const organizationName = intake.orgName?.trim();
+    const organizationDomain = organizationName
+      ? organizationDomainFromEmail(intake.email)
+      : undefined;
     return {
       source: intake.source,
       sourceDedupKey: intake.sourceDedupKey,
@@ -917,6 +936,14 @@ export class LeadIntakeService extends LeadLabelResolver {
       email: intake.email,
       phone: intake.phone,
       orgName: intake.orgName,
+      ...(organizationName
+        ? {
+            organization: {
+              name: organizationName,
+              ...(organizationDomain ? { domain: organizationDomain } : {}),
+            },
+          }
+        : {}),
       tags: intake.tags,
     };
   }

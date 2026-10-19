@@ -245,6 +245,73 @@ describe('LeadIntakeService — ingest_lead keystone', () => {
     expect(customers[0].contactId).toBe('co-canon-99');
   });
 
+  it('passes a company and eligible email domain in the Contact-Ops organization', async () => {
+    const { tx } = makeTx();
+    const upsert = jest
+      .fn()
+      .mockResolvedValue({ contactId: 'co-org-1', created: true, etag: 'e1' });
+    const { svc } = makeService({ tx, contact: { upsertContact: upsert } });
+
+    await svc.ingestForUser(
+      aaron,
+      {
+        source: 'loopnet',
+        sourceDedupKey: 'LN-ORG-1',
+        email: 'broker@Acme.Example',
+        orgName: 'Acme Exteriors',
+      },
+      WS,
+    );
+
+    expect(upsert.mock.calls[0][1]).toMatchObject({
+      organization: { name: 'Acme Exteriors', domain: 'acme.example' },
+    });
+  });
+
+  it('omits a free-mail domain while retaining the company name', async () => {
+    const { tx } = makeTx();
+    const upsert = jest
+      .fn()
+      .mockResolvedValue({ contactId: 'co-org-2', created: true, etag: 'e1' });
+    const { svc } = makeService({ tx, contact: { upsertContact: upsert } });
+
+    await svc.ingestForUser(
+      aaron,
+      {
+        source: 'loopnet',
+        sourceDedupKey: 'LN-ORG-2',
+        email: 'person21@example.com',
+        orgName: 'Acme Exteriors',
+      },
+      WS,
+    );
+
+    expect(upsert.mock.calls[0][1]).toMatchObject({
+      organization: { name: 'Acme Exteriors' },
+    });
+    expect(upsert.mock.calls[0][1].organization).not.toHaveProperty('domain');
+  });
+
+  it('omits the organization key when the lead has no company', async () => {
+    const { tx } = makeTx();
+    const upsert = jest
+      .fn()
+      .mockResolvedValue({ contactId: 'co-org-3', created: true, etag: 'e1' });
+    const { svc } = makeService({ tx, contact: { upsertContact: upsert } });
+
+    await svc.ingestForUser(
+      aaron,
+      {
+        source: 'loopnet',
+        sourceDedupKey: 'LN-ORG-3',
+        email: 'broker@acme.example',
+      },
+      WS,
+    );
+
+    expect(upsert.mock.calls[0][1]).not.toHaveProperty('organization');
+  });
+
   it('NO-DOWNGRADE: re-ingesting a known CUSTOMER never drops it back to LEAD', async () => {
     const existing = {
       id: 'cust-existing',

@@ -146,6 +146,14 @@ export interface FederatedContactPage {
   nextCursor: string | null;
 }
 
+/** Organization details Customer-Ops may pass to Contact-Ops on an upsert. */
+export interface ContactOrganizationInput {
+  name: string;
+  role?: string;
+  title?: string;
+  domain?: string;
+}
+
 /**
  * The identity Customer-Ops pushes to Contact-Ops when a lead graduates (the
  * `ingest_lead` keystone → the CONTACT-OPS-INGEST-CONTRACT.md "/ingest" /
@@ -170,7 +178,10 @@ export interface ContactIdentityInput {
   nicknames?: string[];
   email?: string | null;
   phone?: string | null;
+  /** Legacy intake company field, retained for the staged lead projection. */
   orgName?: string | null;
+  /** The Contact-Ops organization object, omitted when the lead has no company. */
+  organization?: ContactOrganizationInput;
   /** The rollup tag(s) to attach to the person (e.g. ['lead', 'northwind']). */
   tags?: string[];
 }
