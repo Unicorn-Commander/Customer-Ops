@@ -165,7 +165,7 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
         nicknames: ['Diesel'],
         email: 'diesel@x.com',
         phone: '+15551234567',
-        orgName: 'Acme Exteriors',
+        organization: { name: 'Acme Exteriors', domain: 'x.com' },
         tags: ['james-sdr', 'contractor'],
       });
 
@@ -178,9 +178,45 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
         nicknames: ['Diesel'],
         emails: [{ address: 'diesel@x.com', is_primary: true }],
         phones: [{ e164: '+15551234567', is_primary: true }],
+        organization: { name: 'Acme Exteriors', domain: 'x.com' },
         initial_tags: ['james-sdr', 'contractor'],
       });
       expect(body.params.arguments).not.toHaveProperty('org_name');
+    });
+
+    it('upsertContact: preserves an organization without a free-mail domain', async () => {
+      const fetchSpy = jest
+        .fn()
+        .mockResolvedValue(jsonResponse(rpcOk({ person_id: 'p-free-mail', created: true })));
+      global.fetch = fetchSpy as any;
+      const client = new ContactOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
+
+      await client.upsertContact(CTX, {
+        source: 'northwind',
+        sourceDedupKey: 'lead-free-mail',
+        email: 'person74@example.com',
+        organization: { name: 'Acme Exteriors' },
+      });
+
+      const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+      expect(body.params.arguments.organization).toEqual({ name: 'Acme Exteriors' });
+      expect(body.params.arguments.organization).not.toHaveProperty('domain');
+    });
+
+    it('upsertContact: omits organization when no company is supplied', async () => {
+      const fetchSpy = jest
+        .fn()
+        .mockResolvedValue(jsonResponse(rpcOk({ person_id: 'p-no-org', created: true })));
+      global.fetch = fetchSpy as any;
+      const client = new ContactOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
+
+      await client.upsertContact(CTX, {
+        source: 'northwind',
+        sourceDedupKey: 'lead-no-company',
+        email: 'lead@acme.example',
+      });
+
+      const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
       expect(body.params.arguments).not.toHaveProperty('organization');
     });
 
