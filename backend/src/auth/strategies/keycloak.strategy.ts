@@ -6,7 +6,7 @@ import { AuthService } from '../auth.service';
 
 /**
  * Keycloak OIDC (Authorization Code) strategy for the browser login flow.
- * Redirects the user to the uchub realm, then on callback fetches the userinfo
+ * Redirects the user to the configured realm, then on callback fetches the userinfo
  * and JIT-provisions / resolves the Customer-Ops User via AuthService.
  */
 @Injectable()
@@ -18,15 +18,23 @@ export class KeycloakStrategy extends PassportStrategy(Strategy, 'keycloak') {
     private configService: ConfigService,
     private authService: AuthService,
   ) {
-    const keycloakUrl = configService.get('KEYCLOAK_URL', 'https://auth.unicorncommander.ai');
-    const realm = configService.get('KEYCLOAK_REALM', 'uchub');
+    const keycloakUrl = (
+      configService.get<string>('KEYCLOAK_URL') || 'http://127.0.0.1:8080'
+    ).replace(/\/$/, '');
+    // The browser reaches the loopback port; containers use the service name.
+    // Existing deployments with a single reachable issuer need no new setting.
+    const publicUrl = (configService.get<string>('KEYCLOAK_PUBLIC_URL') || keycloakUrl).replace(
+      /\/$/,
+      '',
+    );
+    const realm = configService.get('KEYCLOAK_REALM', 'customer-ops');
     const callbackURL = configService.get(
       'KEYCLOAK_CALLBACK_URL',
       '/api/v1/auth/keycloak/callback',
     );
 
     super({
-      authorizationURL: `${keycloakUrl}/realms/${realm}/protocol/openid-connect/auth`,
+      authorizationURL: `${publicUrl}/realms/${realm}/protocol/openid-connect/auth`,
       tokenURL: `${keycloakUrl}/realms/${realm}/protocol/openid-connect/token`,
       clientID: configService.get('KEYCLOAK_CLIENT_ID', 'customer-ops'),
       clientSecret: configService.get('KEYCLOAK_CLIENT_SECRET', ''),

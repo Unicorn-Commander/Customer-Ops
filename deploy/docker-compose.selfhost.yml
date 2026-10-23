@@ -1,0 +1,168 @@
+# Run from the repository root with --env-file deploy/.env.
+# All host ports are loopback-only; networks and volumes belong to this project.
+name: customer-ops-selfhost
+
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: customer_ops_admin
+      POSTGRES_DB: customerops
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run node deploy/selfhost/bootstrap.cjs}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ../infrastructure/database/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U customer_ops_admin -d customerops']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  keycloak-db:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: keycloak
+      POSTGRES_DB: keycloak
+      POSTGRES_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?run node deploy/selfhost/bootstrap.cjs}
+    volumes:
+      - keycloak-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U keycloak -d keycloak']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.1
+    restart: unless-stopped
+    command: ['start', '--import-realm']
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://localhost:5432/customer_ops
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?run node deploy/selfhost/bootstrap.cjs}
+      KC_HOSTNAME: http://127.0.0.1:8080
+      KC_HTTP_ENABLED: 'true'
+      KC_HEALTH_ENABLED: 'true'
+      KC_CACHE: local
+      KC_BOOTSTRAP_ADMIN_USERNAME: keycloak-admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?run node deploy/selfhost/bootstrap.cjs}
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:?run node deploy/selfhost/bootstrap.cjs}
+      CUSTOMER_OPS_ADMIN_PASSWORD: ${CUSTOMER_OPS_ADMIN_PASSWORD:?run node deploy/selfhost/bootstrap.cjs}
+    ports:
+      - '127.0.0.1:8080:8080'
+    volumes:
+      - ./selfhost/customer-ops-realm.json:/opt/keycloak/data/import/customer-ops-realm.json:ro
+    depends_on:
+      keycloak-db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        - "exec 3<>/dev/tcp/127.0.0.1/9000; printf 'GET /health/ready HTTP/1.0\r\n\r\n' >&3; head -n 1 <&3 | grep -q '200'"
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  migrate:
+    build:
+      context: ../backend
+      target: build
+    restart: 'no'
+    environment:
+      DATABASE_URL: postgresql://localhost:5432/customer_ops bootstrap}@postgres:5432/customerops?schema=public
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?run node deploy/selfhost/bootstrap.cjs}
+    command:
+      - sh
+      - -c
+      - node node_modules/prisma/build/index.js migrate deploy && node /selfhost/configure-database.cjs
+    volumes:
+      - ./selfhost/configure-database.cjs:/selfhost/configure-database.cjs:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  backend:
+    build:
+      context: ../backend
+      target: runtime
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://localhost:5432/customer_ops bootstrap}@postgres:5432/customerops?schema=public
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_PUBLIC_URL: http://127.0.0.1:8080
+      KEYCLOAK_REALM: customer-ops
+      KEYCLOAK_CLIENT_ID: customer-ops
+      KEYCLOAK_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET:?run bootstrap}
+      KEYCLOAK_CALLBACK_URL: http://127.0.0.1:3211/api/v1/auth/keycloak/callback
+      JWT_SECRET: ${JWT_SECRET:?run node deploy/selfhost/bootstrap.cjs}
+      FRONTEND_URL: http://127.0.0.1:3000
+      CORS_ORIGIN: http://127.0.0.1:3000
+      NODE_ENV: production
+      PORT: '3211'
+      API_PREFIX: api/v1
+      TRUST_PROXY: '0'
+      CUSTOMER_OPS_TENANCY_ENABLED: 'true'
+      CUSTOMER_OPS_SIGNUP_MODE: open
+      # Explicit local owner avoids the legacy deployment allow-list fallback.
+      CUSTOMER_OPS_ACCESS_LIST: admin@example.invalid:OWNER
+      DEFAULT_WORKSPACE_ID: 0190a000-7e57-7000-8000-00000000c007
+      # One backend; security state stays in-process until Redis is configured.
+      REDIS_URL: ''
+      # Keep admin/initialization credentials out of the running API environment.
+      ADMIN_DATABASE_URL: ''
+      POSTGRES_PASSWORD: ''
+      APP_DB_PASSWORD: ''
+      KEYCLOAK_DB_PASSWORD: ''
+      KEYCLOAK_ADMIN_PASSWORD: ''
+      CUSTOMER_OPS_ADMIN_PASSWORD: ''
+    command: ['node', 'dist/main']
+    ports:
+      - '127.0.0.1:3211:3211'
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      keycloak:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('http').get('http://127.0.0.1:3211/api/v1/health/ready',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  frontend:
+    build:
+      context: ../frontend
+      args:
+        NEXT_PUBLIC_API_URL: http://127.0.0.1:3211/api/v1
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:3000:3000'
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('http').get('http://127.0.0.1:3000/auth/login',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+volumes:
+  postgres-data:
+  keycloak-data:

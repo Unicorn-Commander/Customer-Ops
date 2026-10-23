@@ -174,25 +174,13 @@ CREATE TRIGGER "workspaces_hipaa_ratchet_trg"
   EXECUTE FUNCTION workspaces_hipaa_ratchet();
 
 -- ----------------------------------------------------------------------------
--- 4. Seed the bootstrap workspace + access-list memberships (idempotent).
---    Phase-1 dogfood single tenant. The access-list owners (Aaron, Shafen) get
---    OWNER on the bootstrap workspace so the eventual membership gate admits
---    them. Real workspaces come from uc-registry.
+-- 4. Seed an unowned placeholder workspace (idempotent).
+--    Existing rows keep their stable workspace id. The self-host bootstrap
+--    names this workspace; first SSO login seeds the configured local owner.
 -- ----------------------------------------------------------------------------
 INSERT INTO "workspaces" (id, slug, "displayName", "isolationMode", "isolationTier", status, "syncedAt", "createdAt", "updatedAt")
-VALUES ('0190a000-7e57-7000-8000-00000000c007', 'magic-unicorn', 'Magic Unicorn (bootstrap)', 'standard', 'shared', 'active', now(), now(), now())
+VALUES ('0190a000-7e57-7000-8000-00000000c007', 'bootstrap-placeholder', 'Bootstrap placeholder', 'standard', 'shared', 'active', now(), now(), now())
 ON CONFLICT (id) DO NOTHING;
-
--- Memberships keyed by userKey (== uchub sub == User.keycloakId). Seed the two
--- operator owners by the emails the access-list grants OWNER, when their user
--- row already exists + is SSO-linked (keycloakId not null). keycloakId may be
--- null pre-SSO-link, in which case the runtime seeder backfills on first login.
-INSERT INTO "memberships" ("userKey", "workspaceId", role, status, "isDefault", "createdAt")
-SELECT u."keycloakId", '0190a000-7e57-7000-8000-00000000c007', 'OWNER', 'ACTIVE', true, now()
-FROM "users" u
-WHERE u."keycloakId" IS NOT NULL
-  AND lower(u.email) IN ('aaron@magicunicorn.tech', 'shafenkhan@users.noreply.github.com')
-ON CONFLICT ("userKey", "workspaceId") DO NOTHING;
 
 -- ----------------------------------------------------------------------------
 -- 5. GRANTS — least privilege per runtime role. The owner already owns
