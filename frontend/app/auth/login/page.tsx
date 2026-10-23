@@ -6,9 +6,8 @@ import { ThemeToggle } from '@/components/ThemeToggle';
 
 /**
  * SSO sign-in. Customer-Ops is SSO-only — no local password. The button hands
- * off to the backend's Keycloak entry point (auth.unicorncommander.ai, realm
- * uchub), which runs the OIDC dance and returns to /auth/sso-callback with a
- * session. The user never sees "Keycloak" — only "Unicorn Commander".
+ * off to the backend's configured identity provider, which returns to
+ * /auth/sso-callback with a single-use exchange code.
  */
 export default function LoginPage() {
   return (
@@ -19,7 +18,10 @@ export default function LoginPage() {
 
       {/* ambient blooms */}
       <div aria-hidden className="co-glow absolute left-[18%] top-[20%] h-72 w-72 opacity-60" />
-      <div aria-hidden className="co-glow co-glow-fuchsia absolute right-[16%] bottom-[18%] h-72 w-80 opacity-45" />
+      <div
+        aria-hidden
+        className="co-glow co-glow-fuchsia absolute right-[16%] bottom-[18%] h-72 w-80 opacity-45"
+      />
 
       <div className="co-glass co-glass-edge relative w-full max-w-[430px] animate-fade-up p-8 text-center sm:p-10">
         {/* brand mark */}
@@ -37,7 +39,8 @@ export default function LoginPage() {
           <span className="text-tertiary">-Ops</span>
         </h1>
         <p className="mx-auto mt-2.5 max-w-[320px] text-sm leading-relaxed text-tertiary">
-          The relationship &amp; funnel cockpit of the Unicorn&nbsp;Commander suite. Sign in to continue.
+          The relationship &amp; funnel cockpit of the Unicorn&nbsp;Commander suite. Sign in to
+          continue.
         </p>
 
         <a
@@ -45,13 +48,13 @@ export default function LoginPage() {
           className="mt-7 inline-flex w-full items-center justify-center gap-2.5 rounded-token bg-accent px-4 py-3 text-sm font-semibold text-accent-contrast shadow-glow transition-[background-color,transform] duration-fast ease-token hover:-translate-y-0.5 hover:bg-accent-hover"
         >
           <ShieldCheck className="h-[18px] w-[18px]" strokeWidth={2.4} />
-          Continue with Unicorn&nbsp;Commander
+          Continue with single sign-on
           <ArrowRight className="h-4 w-4" strokeWidth={2.4} />
         </a>
 
         <div className="mt-6 flex items-center justify-center gap-2 text-[11px] text-muted">
           <span className="h-1.5 w-1.5 rounded-full bg-success" />
-          Single sign-on · secured by Unicorn Commander
+          Your configured identity provider
         </div>
       </div>
     </div>

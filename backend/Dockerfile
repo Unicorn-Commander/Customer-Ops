@@ -14,7 +14,9 @@ RUN npx prisma generate
 COPY . .
 RUN npm run build
 
-# Prune dev deps for the runtime image.
+# Keep the build target's Prisma CLI for the self-host migration job.
+FROM build AS production-deps
+# Prune dev deps for the runtime image only.
 RUN npm prune --omit=dev
 
 # ---- Runtime stage ----
@@ -24,7 +26,7 @@ ENV NODE_ENV=production
 # Prisma needs libssl; quote PDFs use puppeteer-core with system Chromium.
 RUN apk add --no-cache openssl libc6-compat chromium font-noto
 
-COPY --from=build /app/node_modules ./node_modules
+COPY --from=production-deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/prisma ./prisma
 COPY --from=build /app/package.json ./package.json
