@@ -182,7 +182,7 @@ describe('self-host deployment contract', () => {
     expect(values.CUSTOMER_OPS_SIGNUP_MODE).toBe('open');
   });
 
-  it('imports a closed local realm and one administrator with generated credentials', () => {
+  it('imports a closed local realm and wires generated credentials through Keycloak env substitutions', () => {
     expect(realm.realm).toBe(compose.services.backend.environment.KEYCLOAK_REALM);
     expect(realm.registrationAllowed).toBe(false);
     expect(compose.services.backend.environment.CUSTOMER_OPS_ACCESS_LIST).toBe(
@@ -194,21 +194,29 @@ describe('self-host deployment contract', () => {
       enabled: true,
       emailVerified: true,
       credentials: [
-        { type: 'password', value: '${CUSTOMER_OPS_ADMIN_PASSWORD}', temporary: false },
+        {
+          type: 'password',
+          value: '${env.CUSTOMER_OPS_ADMIN_PASSWORD}',
+          temporary: false,
+        },
       ],
     });
     const client = realm.clients[0];
     expect(client.clientId).toBe(compose.services.backend.environment.KEYCLOAK_CLIENT_ID);
     expect(client.publicClient).toBe(false);
     expect(client.directAccessGrantsEnabled).toBe(false);
-    expect(client.secret).toBe('${KEYCLOAK_CLIENT_SECRET}');
+    expect(client.secret).toBe('${env.KEYCLOAK_CLIENT_SECRET}');
+    expect(JSON.stringify(realm)).not.toContain('${KEYCLOAK_CLIENT_SECRET}');
+    expect(JSON.stringify(realm)).not.toContain('${CUSTOMER_OPS_ADMIN_PASSWORD}');
+    expect(compose.services.keycloak.environment).toMatchObject({
+      KEYCLOAK_CLIENT_SECRET: '${KEYCLOAK_CLIENT_SECRET:?run node deploy/selfhost/bootstrap.cjs}',
+      CUSTOMER_OPS_ADMIN_PASSWORD:
+        '${CUSTOMER_OPS_ADMIN_PASSWORD:?run node deploy/selfhost/bootstrap.cjs}',
+    });
     expect(client.redirectUris).toEqual([
       compose.services.backend.environment.KEYCLOAK_CALLBACK_URL,
     ]);
     expect(client.webOrigins).toEqual([compose.services.backend.environment.FRONTEND_URL]);
-    for (const [, key] of JSON.stringify(realm).matchAll(/\$\{([A-Z_]+)\}/g)) {
-      expect(compose.services.keycloak.environment[key]).toBeDefined();
-    }
   });
 
   it('never assigns migration memberships by an operator email', () => {
