@@ -125,6 +125,8 @@ curl -fsS http://127.0.0.1:3211/api/v1/health/ready
 
 Open <http://127.0.0.1:3000> and choose **Continue with single sign-on**. Sign in as `admin`. Read `CUSTOMER_OPS_ADMIN_PASSWORD` from the generated `deploy/.env` on your machine. The bootstrap script does not print it. The imported `customer-ops` realm uses the synthetic email `admin@example.invalid`, and `registrationAllowed` is false. The access list entry `admin@example.invalid:OWNER` seeds an OWNER membership in the local workspace on first sign-in.
 
+To give an agent its own credential, open **Settings** in the cockpit and create an API token, or call `POST http://127.0.0.1:3211/api/v1/auth/pats` with the signed-in session token and a body such as `{"name":"my-agent","scopes":["read:customers"],"workspaceId":"<your workspace id>","expiresAt":"<ISO date>"}`. The `co_pat_` plaintext comes back once in the `plaintext` field. Use it as the MCP `Authorization: Bearer` value above. A PAT cannot mint another PAT.
+
 Keep using `127.0.0.1`. The callback, CORS origin, and `NEXT_PUBLIC_API_URL` are set to that host. Keycloak's browser address is <http://127.0.0.1:8080>. Its management user is `keycloak-admin`, with `KEYCLOAK_ADMIN_PASSWORD` in the same file. This HTTP stack is for the Docker host.
 
 `CUSTOMER_OPS_SIGNUP_MODE=open` in the generated file lets another user of this local realm receive their own workspace and OWNER membership. It does not enable Keycloak self-registration. The code default, when the variable is unset or is anything other than `open`, is `invite` (a stranger is rejected). `UC_ENTITLEMENT_MODE=open` in the generated file allows local use without suite entitlement claims. When that variable is unset, the gates default to `enforce`.

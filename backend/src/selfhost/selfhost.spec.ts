@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 
 const { load } = require('js-yaml');
 const {
+  hoistInlineComments,
   SECRET_KEYS,
   createEnvironment,
   writeEnvironment,
@@ -196,7 +197,7 @@ describe('self-host deployment contract', () => {
       credentials: [
         {
           type: 'password',
-          value: '${env.CUSTOMER_OPS_ADMIN_PASSWORD}',
+          value: '${CUSTOMER_OPS_ADMIN_PASSWORD}',
           temporary: false,
         },
       ],
@@ -205,9 +206,10 @@ describe('self-host deployment contract', () => {
     expect(client.clientId).toBe(compose.services.backend.environment.KEYCLOAK_CLIENT_ID);
     expect(client.publicClient).toBe(false);
     expect(client.directAccessGrantsEnabled).toBe(false);
-    expect(client.secret).toBe('${env.KEYCLOAK_CLIENT_SECRET}');
-    expect(JSON.stringify(realm)).not.toContain('${KEYCLOAK_CLIENT_SECRET}');
-    expect(JSON.stringify(realm)).not.toContain('${CUSTOMER_OPS_ADMIN_PASSWORD}');
+    expect(client.secret).toBe('${KEYCLOAK_CLIENT_SECRET}');
+    // Keycloak 26 resolves `${NAME}` from the container environment on import.
+    // The `${env.NAME}` form is imported literally (clean-room run 2026-10-24).
+    expect(JSON.stringify(realm)).not.toContain('${env.');
     expect(compose.services.keycloak.environment).toMatchObject({
       KEYCLOAK_CLIENT_SECRET: '${KEYCLOAK_CLIENT_SECRET:?run node deploy/selfhost/bootstrap.cjs}',
       CUSTOMER_OPS_ADMIN_PASSWORD:
@@ -219,12 +221,29 @@ describe('self-host deployment contract', () => {
     expect(client.webOrigins).toEqual([compose.services.backend.environment.FRONTEND_URL]);
   });
 
-  it('never assigns migration memberships by an operator email', () => {
+  it('keeps the applied RLS-roles migration byte-for-byte (Prisma checksum)', () => {
     const sql = read(
       'backend/prisma/migrations/20260603202000_suite_tenancy_rls_roles/migration.sql',
     );
+    const digest = require('crypto').createHash('sha256').update(sql).digest('hex');
+    expect(digest.slice(0, 16)).toBe('4f0ff2acfd515670');
+  });
+
+  it('renames the bootstrap workspace only when it has no memberships', () => {
+    const sql = read(
+      'backend/prisma/migrations/20261024000000_bootstrap_workspace_placeholder/migration.sql',
+    );
+    expect(sql).toContain("SET slug = 'bootstrap-placeholder'");
+    expect(sql).toContain("w.slug = 'magic-unicorn'");
+    expect(sql).toMatch(/AND NOT EXISTS \(SELECT 1 FROM "memberships" m WHERE m\."workspaceId" = w\.id\)/);
     expect(sql).not.toMatch(/[\w.+-]+@[\w.-]+\.[a-z]{2,}/i);
-    expect(sql).not.toContain('INSERT INTO "memberships"');
-    expect(sql).toContain("'bootstrap-placeholder'");
+  });
+
+  it('leaves no inline comment where Compose would read it as a value', () => {
+    const env = createEnvironment(read('deploy/.env.example'), (n: number) => Buffer.alloc(n, 1));
+    for (const line of env.split('\n')) {
+      if (/^[A-Z0-9_]+=/.test(line)) expect(line).not.toMatch(/\s#/);
+    }
+    expect(hoistInlineComments('A=   # note\nB=x  # other\n')).toBe('# A: note\nA=\n# B: other\nB=x\n');
   });
 });

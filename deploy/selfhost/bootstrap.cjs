@@ -12,8 +12,18 @@ const SECRET_KEYS = [
   'JWT_SECRET',
 ];
 
+// Compose's env_file parser keeps a trailing `# comment` as the value when the
+// value before it is blank (`KEY=   # note` becomes `KEY=# note`), which broke
+// boot on M365_TOKEN_ENC_KEY. Move every inline comment onto its own line.
+function hoistInlineComments(template) {
+  return template.replace(
+    /^([A-Z0-9_]+)=([^#\n]*?)[ \t]+#[ \t]?([^\n]*)$/gm,
+    (_, key, value, comment) => `# ${key}: ${comment}\n${key}=${value.trim()}`,
+  );
+}
+
 function createEnvironment(template, random = randomBytes) {
-  let result = template;
+  let result = hoistInlineComments(template);
   for (const key of SECRET_KEYS) {
     const placeholder = new RegExp(`^${key}=$`, 'm');
     if (!placeholder.test(result)) throw new Error(`Missing blank placeholder: ${key}`);
@@ -50,4 +60,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { SECRET_KEYS, createEnvironment, writeEnvironment };
+module.exports = { hoistInlineComments, SECRET_KEYS, createEnvironment, writeEnvironment };
