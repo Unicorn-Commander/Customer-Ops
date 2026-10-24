@@ -272,7 +272,7 @@ Please report suspected vulnerabilities privately as described in [SECURITY.md](
 
 ## Licence
 
-Apache-2.0. See [LICENSE](LICENSE).
+Apache-2.0. See [LICENSE](LICENSE). Our names and logos are covered by [TRADEMARKS.md](TRADEMARKS.md).
 
 ---
 
