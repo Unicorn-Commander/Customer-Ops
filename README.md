@@ -69,17 +69,9 @@ The graph explorer can inspect a node and expand its neighborhood. Node labels a
 
 ### Quotes
 
-<p align="center">
-  <img src="docs/screenshots/quote.webp" width="100%" alt="Customer-Ops quote workspace for composing a customer proposal">
-</p>
-
 With `QUOTES_ENABLED=true` (or `1`), Customer-Ops keeps draft composition, commercial structure, rendered HTML or PDF, versions, and events. The send path composes an Email-Ops draft for a person to approve. A public acceptance flow can later email a verification code with `mode=send`. Quote theme tokens can be read from Brand-Ops when `BRAND_OPS_BASE_URL` is set; otherwise the renderer uses its default theme. Brand-Ops is not one of the `/health/integrations` rows.
 
 ### Lead intake
-
-<p align="center">
-  <img src="docs/screenshots/leads.webp" width="100%" alt="Customer-Ops lead intake dashboard showing staged, resolved, and failed leads">
-</p>
 
 The lead intake surface shows what arrived, which identity path succeeded, and what is still pending or failed. `resolve_pending_leads` promotes pending intakes, and with `scope=pending_and_failed` it also promotes failed ones. It upgrades provisional contact ids once Contact-Ops is reachable. Discard sets the intake to `DISCARDED`, and that status is not in the resolve scan. A resolved intake cannot be discarded; mark the relationship lost instead.
 
@@ -122,7 +114,7 @@ Use the smallest PAT scope set the client needs. Replace the placeholder locally
 
 From a checkout of this repository, the self-host stack bundles PostgreSQL 17, Keycloak 26.8.1 with its own Postgres, a one-shot migration job, the Customer-Ops API, and the Next.js cockpit. Published host ports are bound to `127.0.0.1`. You need Docker Engine with the Compose v2 plugin (`docker compose`, including `--wait`) and Node.js 20 or newer to run the bootstrap script. The API image is Node.js 22. The frontend image is Node.js 20.
 
-The public snapshot [customer-ops-community](https://github.com/Unicorn-Commander/customer-ops-community) does not include `deploy/selfhost/bootstrap.cjs` or `deploy/docker-compose.selfhost.yml`. Run these commands in this tree:
+Run these commands in this repository:
 
 ~~~bash
 node deploy/selfhost/bootstrap.cjs
@@ -232,14 +224,13 @@ These public repositories were reachable on GitHub. Descriptions below are the r
 | App | What it does |
 |---|---|
 | [Unicorn Commander](https://github.com/Unicorn-Commander/Unicorn-Commander) | Public platform repository for self-hosted infrastructure and agent orchestration |
-| [Contact-Ops](https://github.com/Unicorn-Commander/contact-ops-community) | Canonical contacts and identity. This cockpit stores a contact reference and reads the contact at view time |
-| [Accounting-Ops](https://github.com/Unicorn-Commander/accounting-ops-community) | Invoices and accounts receivable through the accounting seam |
+| [Contact-Ops](https://github.com/Unicorn-Commander/Contact-Ops) | Canonical contacts and identity. This cockpit stores a contact reference and reads the contact at view time |
+| [Accounting-Ops](https://github.com/Unicorn-Commander/Accounting-Ops) | Invoices and accounts receivable through the accounting seam |
 | **Customer-Ops** (this repository) | **Relationships, pipeline, and quotes. This tree is Apache-2.0** |
-| [customer-ops-community](https://github.com/Unicorn-Commander/customer-ops-community) | Separate public snapshot of Customer-Ops, licensed AGPL-3.0. It does not include `deploy/selfhost/bootstrap.cjs` or `deploy/docker-compose.selfhost.yml` |
-| [Email-Ops](https://github.com/Unicorn-Commander/email-ops-community) | Mailbox threads and the human approval inbox this cockpit drafts into |
-| [Project-Ops](https://github.com/Unicorn-Commander/project-ops-community) | Projects read into the customer-360 |
-| [Meeting-Ops](https://github.com/Unicorn-Commander/Meeting-Ops-OSS) | Meetings, summaries, and action items |
-| [Unicorn Stable](https://github.com/Unicorn-Commander/unicorn-stable-oss) | Public repository: humans and agents in the same room |
+| [Email-Ops](https://github.com/Unicorn-Commander/Email-Ops) | Mailbox threads and the human approval inbox this cockpit drafts into |
+| [Project-Ops](https://github.com/Unicorn-Commander/Project-Ops) | Projects read into the customer-360 |
+| [Meeting-Ops](https://github.com/Unicorn-Commander/Meeting-Ops) | Meetings, summaries, and action items |
+| [Unicorn Stable](https://github.com/Unicorn-Commander/Unicorn-Stable) | Public repository: humans and agents in the same room |
 
 Customer-Ops owns the relationship projection. It reads contact, accounting, email, meeting, project, outreach, and device-conversation records through the seams above. Outreach has no public repository under that organization at the time of this page. Ops-Center and Unicorn Brigade are the entitlement source and the RFC 8693 token exchange this API calls. Their `Ops-Center` and `Unicorn-Brigade` GitHub paths were not public repositories.
 
