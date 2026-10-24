@@ -205,9 +205,9 @@ export const SAMPLE_ROWS: CustomerRow[] = [
     createdAt: days(-21),
     updatedAt: hours(-8),
     contact: {
-      displayName: 'Bayview Women's Health',
+      displayName: 'Bayview Health',
       primaryEmail: 'admin@bayviewhealth.example',
-      currentOrgName: 'Bayview Women's Health — Summerville',
+      currentOrgName: 'Bayview Health — Summerville',
       tags: ['healthcare', 'proposal-out', 'GFL'],
     },
   },

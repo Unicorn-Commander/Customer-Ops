@@ -17,7 +17,7 @@ export const SAMPLE_BOARD: PipelineBoard = {
 
 export const SAMPLE_ATTENTION: AttentionItem[] = [
   { id: '1', name: 'Owen Reyes — Austin 401(k)', stage: 'PROSPECT', priority: 'HIGH', note: 'Follow-up overdue 3 days' },
-  { id: '2', name: 'Bayview Women's Health — Summerville', stage: 'PROSPECT', priority: 'HIGH', note: 'Proposal sent · awaiting signature' },
+  { id: '2', name: 'Bayview Health — Summerville', stage: 'PROSPECT', priority: 'HIGH', note: 'Proposal sent · awaiting signature' },
   { id: '3', name: 'Coastal Property Group', stage: 'LEAD', priority: 'HIGH', note: 'Hot CRE lead · no outreach yet' },
   { id: '4', name: 'Victor Lang', stage: 'LEAD', priority: 'MEDIUM', note: 'Enriched · ready to triage' },
   { id: '5', name: 'Sunrise Dental', stage: 'PROSPECT', priority: 'MEDIUM', note: 'Next action due today' },
@@ -35,7 +35,7 @@ export const SAMPLE_ACTIVITY: ActivityItem[] = [
 export const SAMPLE_GRAPH: GraphData = {
   nodes: [
     { id: 'hub', label: 'Your book', type: 'hub' },
-    { id: 'o1', label: 'Bayview Women's Health', type: 'org', stage: 'PROSPECT', weight: 3 },
+    { id: 'o1', label: 'Bayview Health', type: 'org', stage: 'PROSPECT', weight: 3 },
     { id: 'o2', label: 'Coastal Property', type: 'org', stage: 'LEAD', weight: 2 },
     { id: 'o3', label: 'Northwind Remodeling', type: 'org', stage: 'CUSTOMER', weight: 3 },
     { id: 'o4', label: 'Maple Street Dental', type: 'org', stage: 'PROSPECT', weight: 2 },
