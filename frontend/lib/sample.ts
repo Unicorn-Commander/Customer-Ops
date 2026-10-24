@@ -16,8 +16,8 @@ export const SAMPLE_BOARD: PipelineBoard = {
 };
 
 export const SAMPLE_ATTENTION: AttentionItem[] = [
-  { id: '1', name: 'Morgan Ali — Irving TX 401(k)', stage: 'PROSPECT', priority: 'HIGH', note: 'Follow-up overdue 3 days' },
-  { id: '2', name: 'Bayview Health — Frisco', stage: 'PROSPECT', priority: 'HIGH', note: 'Proposal sent · awaiting signature' },
+  { id: '1', name: 'Owen Reyes — Austin 401(k)', stage: 'PROSPECT', priority: 'HIGH', note: 'Follow-up overdue 3 days' },
+  { id: '2', name: 'Bayview Women's Health — Summerville', stage: 'PROSPECT', priority: 'HIGH', note: 'Proposal sent · awaiting signature' },
   { id: '3', name: 'Coastal Property Group', stage: 'LEAD', priority: 'HIGH', note: 'Hot CRE lead · no outreach yet' },
   { id: '4', name: 'Victor Lang', stage: 'LEAD', priority: 'MEDIUM', note: 'Enriched · ready to triage' },
   { id: '5', name: 'Sunrise Dental', stage: 'PROSPECT', priority: 'MEDIUM', note: 'Next action due today' },
@@ -25,7 +25,7 @@ export const SAMPLE_ATTENTION: AttentionItem[] = [
 
 export const SAMPLE_ACTIVITY: ActivityItem[] = [
   { id: 'a1', name: 'Northwind Remodeling', stage: 'CUSTOMER', text: 'converted to customer — $42k won', when: '12m ago' },
-  { id: 'a2', name: 'Morgan Ali', stage: 'PROSPECT', text: 'moved to prospect after a reply', when: '1h ago' },
+  { id: 'a2', name: 'Owen Reyes', stage: 'PROSPECT', text: 'moved to prospect after a reply', when: '1h ago' },
   { id: 'a3', name: 'Coastal Property Group', stage: 'LEAD', text: 'sourced from the LoopNet scrape', when: '2h ago' },
   { id: 'a4', name: 'Maple Street Dental', stage: 'PROSPECT', text: 'opened the outreach email 3×', when: '4h ago' },
   { id: 'a5', name: 'Victor Lang', stage: 'LEAD', text: 'enriched · email verified', when: 'Yesterday' },
@@ -35,14 +35,14 @@ export const SAMPLE_ACTIVITY: ActivityItem[] = [
 export const SAMPLE_GRAPH: GraphData = {
   nodes: [
     { id: 'hub', label: 'Your book', type: 'hub' },
-    { id: 'o1', label: 'Bayview Health', type: 'org', stage: 'PROSPECT', weight: 3 },
+    { id: 'o1', label: 'Bayview Women's Health', type: 'org', stage: 'PROSPECT', weight: 3 },
     { id: 'o2', label: 'Coastal Property', type: 'org', stage: 'LEAD', weight: 2 },
     { id: 'o3', label: 'Northwind Remodeling', type: 'org', stage: 'CUSTOMER', weight: 3 },
-    { id: 'o4', label: 'Frisco Dental', type: 'org', stage: 'PROSPECT', weight: 2 },
-    { id: 'o5', label: 'Irving 401(k)', type: 'org', stage: 'LEAD', weight: 2 },
+    { id: 'o4', label: 'Maple Street Dental', type: 'org', stage: 'PROSPECT', weight: 2 },
+    { id: 'o5', label: 'Austin 401(k)', type: 'org', stage: 'LEAD', weight: 2 },
     { id: 'o6', label: 'Sunrise Dental', type: 'org', stage: 'CUSTOMER', weight: 2 },
     { id: 'p1', label: 'Maya Hart', type: 'person', stage: 'PROSPECT' },
-    { id: 'p2', label: 'Morgan Ali', type: 'person', stage: 'LEAD' },
+    { id: 'p2', label: 'Owen Reyes', type: 'person', stage: 'LEAD' },
     { id: 'p3', label: 'Victor Lang', type: 'person', stage: 'LEAD' },
     { id: 'p4', label: 'D. Chen', type: 'person', stage: 'CUSTOMER' },
     { id: 'p5', label: 'R. Patel', type: 'person', stage: 'PROSPECT' },

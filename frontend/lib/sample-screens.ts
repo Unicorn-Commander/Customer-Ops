@@ -32,7 +32,7 @@ const days = (n: number): string => new Date(now + n * DAY).toISOString();
 const hours = (n: number): string => new Date(now + n * HOUR).toISOString();
 
 const OWNER_AARON = 'aaron@magicunicorn.tech';
-const OWNER_SHAFEN = 'shafen@magicunicorn.tech';
+const OWNER_ALEX = 'alex@magicunicorn.tech';
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * SAMPLE_ROWS — ~13 relationships across LEAD / PROSPECT / CUSTOMER.
@@ -60,7 +60,7 @@ export const SAMPLE_ROWS: CustomerRow[] = [
     updatedAt: hours(-5),
     contact: {
       displayName: 'Coastal Property Group',
-      primaryEmail: 'deals@coastalpropertygroup.com',
+      primaryEmail: 'deals@coastalpropertygroup.example',
       currentOrgName: 'Coastal Property Group',
       tags: ['CRE', 'LoopNet', 'Charleston'],
     },
@@ -70,7 +70,7 @@ export const SAMPLE_ROWS: CustomerRow[] = [
     contactId: 'c-victor-lang',
     stage: 'LEAD',
     priority: 'MEDIUM',
-    source: 'Referral — Shafen',
+    source: 'Referral — Alex',
     notes: 'Enriched; email verified. 401(k) rollover, ex-Mumbai relocation.',
     ownerUserKey: OWNER_AARON,
     expectedValue: '14000.0000',
@@ -84,7 +84,7 @@ export const SAMPLE_ROWS: CustomerRow[] = [
     updatedAt: days(-1),
     contact: {
       displayName: 'Victor Lang',
-      primaryEmail: 'person15@example.com',
+      primaryEmail: 'victor.lang@mail.example',
       currentOrgName: 'Lang Holdings',
       tags: ['401(k)', 'rollover', 'referral'],
     },
@@ -96,7 +96,7 @@ export const SAMPLE_ROWS: CustomerRow[] = [
     priority: 'MEDIUM',
     source: 'Webform',
     notes: 'New practice; asked about group plan + AR automation.',
-    ownerUserKey: OWNER_SHAFEN,
+    ownerUserKey: OWNER_ALEX,
     expectedValue: '9500.0000',
     currency: 'USD',
     nextActionAt: days(1),
@@ -108,7 +108,7 @@ export const SAMPLE_ROWS: CustomerRow[] = [
     updatedAt: hours(-20),
     contact: {
       displayName: 'Harborview Dental',
-      primaryEmail: 'office@harborviewdental.com',
+      primaryEmail: 'office@harborviewdental.example',
       currentOrgName: 'Harborview Dental',
       tags: ['dental', 'inbound'],
     },
@@ -132,7 +132,7 @@ export const SAMPLE_ROWS: CustomerRow[] = [
     updatedAt: days(-3),
     contact: {
       displayName: 'Arthur Brooks',
-      primaryEmail: 'a.brooks@brooksandco.com',
+      primaryEmail: 'a.brooks@brooksandco.example',
       currentOrgName: 'Brooks & Co.',
       tags: ['outbound', 'cold'],
     },
@@ -156,7 +156,7 @@ export const SAMPLE_ROWS: CustomerRow[] = [
     updatedAt: days(-7),
     contact: {
       displayName: 'Tidewater Retail Partners',
-      primaryEmail: 'leasing@tidewaterretail.com',
+      primaryEmail: 'leasing@tidewaterretail.example',
       currentOrgName: 'Tidewater Retail Partners',
       tags: ['CRE', 'LoopNet'],
     },
@@ -165,11 +165,11 @@ export const SAMPLE_ROWS: CustomerRow[] = [
   // ── Prospects ────────────────────────────────────────────────────────────
   {
     id: 'rel-006',
-    contactId: 'c-morgan-ali',
+    contactId: 'c-owen-reyes',
     stage: 'PROSPECT',
     priority: 'HIGH',
-    source: 'Referral — Shafen',
-    notes: 'Irving TX 401(k) rollover; replied warm, wants a call this week.',
+    source: 'Referral — Alex',
+    notes: 'Austin TX 401(k) rollover; replied warm, wants a call this week.',
     ownerUserKey: OWNER_AARON,
     expectedValue: '32000.0000',
     currency: 'USD',
@@ -181,9 +181,9 @@ export const SAMPLE_ROWS: CustomerRow[] = [
     createdAt: days(-12),
     updatedAt: hours(-2),
     contact: {
-      displayName: 'Morgan Ali',
-      primaryEmail: 'morgan.ali@irvingtx.com',
-      currentOrgName: 'Ali Capital — Irving TX',
+      displayName: 'Owen Reyes',
+      primaryEmail: 'owen.reyes@reyescapital.example',
+      currentOrgName: 'Reyes Capital — Austin TX',
       tags: ['401(k)', 'rollover', 'hot'],
     },
   },
@@ -194,7 +194,7 @@ export const SAMPLE_ROWS: CustomerRow[] = [
     priority: 'HIGH',
     source: 'Partner — GFL',
     notes: 'Proposal sent; awaiting signature from Dr. Maya Hart.',
-    ownerUserKey: OWNER_SHAFEN,
+    ownerUserKey: OWNER_ALEX,
     expectedValue: '64000.0000',
     currency: 'USD',
     nextActionAt: days(1),
@@ -205,20 +205,20 @@ export const SAMPLE_ROWS: CustomerRow[] = [
     createdAt: days(-21),
     updatedAt: hours(-8),
     contact: {
-      displayName: 'Bayview Health',
+      displayName: 'Bayview Women's Health',
       primaryEmail: 'admin@bayviewhealth.example',
-      currentOrgName: 'Bayview Health — Frisco',
+      currentOrgName: 'Bayview Women's Health — Summerville',
       tags: ['healthcare', 'proposal-out', 'GFL'],
     },
   },
   {
     id: 'rel-008',
-    contactId: 'c-sam-lee-example',
+    contactId: 'c-maple-street-dental',
     stage: 'PROSPECT',
     priority: 'MEDIUM',
     source: 'Outreach campaign',
     notes: 'Opened the outreach email 3×; clicked the pricing link.',
-    ownerUserKey: OWNER_SHAFEN,
+    ownerUserKey: OWNER_ALEX,
     expectedValue: '18000.0000',
     currency: 'USD',
     nextActionAt: days(0), // due today
@@ -230,7 +230,7 @@ export const SAMPLE_ROWS: CustomerRow[] = [
     updatedAt: hours(-4),
     contact: {
       displayName: 'Maple Street Dental',
-      primaryEmail: 'frontdesk@examplepractice.com',
+      primaryEmail: 'frontdesk@maplestreetdental.example',
       currentOrgName: 'Maple Street Dental',
       tags: ['dental', 'engaged'],
     },
@@ -254,7 +254,7 @@ export const SAMPLE_ROWS: CustomerRow[] = [
     updatedAt: days(-1),
     contact: {
       displayName: 'Sunrise Dental',
-      primaryEmail: 'billing@sunrisedental.com',
+      primaryEmail: 'billing@sunrisedental.example',
       currentOrgName: 'Sunrise Dental',
       tags: ['dental', 'evaluating'],
     },
@@ -280,7 +280,7 @@ export const SAMPLE_ROWS: CustomerRow[] = [
     updatedAt: hours(-1),
     contact: {
       displayName: 'Northwind Remodeling',
-      primaryEmail: 'dana@northwindremodeling.com',
+      primaryEmail: 'jules@northwindremodeling.example',
       currentOrgName: 'Northwind Remodeling LLC',
       tags: ['customer', 'remodeling', 'AR-active', 'retainer-upsell'],
     },
@@ -292,7 +292,7 @@ export const SAMPLE_ROWS: CustomerRow[] = [
     priority: 'MEDIUM',
     source: 'Webform',
     notes: 'Live customer; invoice #1042 paid. Monthly retainer.',
-    ownerUserKey: OWNER_SHAFEN,
+    ownerUserKey: OWNER_ALEX,
     expectedValue: '27000.0000',
     currency: 'USD',
     nextActionAt: days(9),
@@ -304,7 +304,7 @@ export const SAMPLE_ROWS: CustomerRow[] = [
     updatedAt: days(-1),
     contact: {
       displayName: 'Seaside Family Dentistry',
-      primaryEmail: 'ap@seasidefamilydentistry.com',
+      primaryEmail: 'ap@seasidefamilydentistry.example',
       currentOrgName: 'Seaside Family Dentistry',
       tags: ['customer', 'dental', 'retainer'],
     },
@@ -328,7 +328,7 @@ export const SAMPLE_ROWS: CustomerRow[] = [
     updatedAt: days(-5),
     contact: {
       displayName: 'Magnolia Holdings',
-      primaryEmail: 'cre@magnoliaholdings.com',
+      primaryEmail: 'cre@magnoliaholdings.example',
       currentOrgName: 'Magnolia Holdings',
       tags: ['customer', 'CRE', 'annual'],
     },
@@ -354,7 +354,7 @@ export const SAMPLE_ROWS: CustomerRow[] = [
     updatedAt: days(-7),
     contact: {
       displayName: 'Palmetto Payroll Co.',
-      primaryEmail: 'ops@palmettopayroll.com',
+      primaryEmail: 'ops@palmettopayroll.example',
       currentOrgName: 'Palmetto Payroll Co.',
       tags: ['lost', 'price'],
     },
@@ -452,7 +452,7 @@ export const SAMPLE_360: Customer360 = {
   contact: {
     contactId: 'c-northwind-remodeling',
     displayName: 'Northwind Remodeling',
-    primaryEmail: 'dana@northwindremodeling.com',
+    primaryEmail: 'jules@northwindremodeling.example',
     currentOrgName: 'Northwind Remodeling LLC',
     tags: ['customer', 'remodeling', 'AR-active', 'retainer-upsell'],
     kind: 'organization',
@@ -470,8 +470,8 @@ export const SAMPLE_360: Customer360 = {
     mergedIntoId: null,
     relationshipCategory: 'client',
     emails: [
-      { address: 'dana@northwindremodeling.com', type: 'work', is_primary: true },
-      { address: 'accounting@northwindremodeling.com', type: 'billing' },
+      { address: 'jules@northwindremodeling.example', type: 'work', is_primary: true },
+      { address: 'accounting@northwindremodeling.example', type: 'billing' },
     ],
     phones: [
       { e164: '+18435550148', type: 'mobile', is_primary: true },
@@ -481,7 +481,7 @@ export const SAMPLE_360: Customer360 = {
     identifiers: [
       { id: 'id-1', namespace: 'linkedin', value: 'dana-reyes', url: 'https://www.linkedin.com/in/dana-reyes', verified: true },
     ],
-    urls: [{ id: 'url-1', url: 'https://northwindremodeling.com', type: 'website', label: 'Website', is_primary: true }],
+    urls: [{ id: 'url-1', url: 'https://northwindremodeling.example', type: 'website', label: 'Website', is_primary: true }],
   },
   contactFederation: { contactId: 'c-northwind-remodeling', resolved: true, source: 'contact-ops' },
   timeline: SAMPLE_TIMELINE,
@@ -625,7 +625,7 @@ export const SAMPLE_360: Customer360 = {
         lastMessageAt: hours(-5),
         lastSnippet: 'Looks great — go ahead and send the first invoice, we’re ready to start Monday.',
         participants: [
-          { address: 'dana@northwindremodeling.com', name: 'Jules Whitman' },
+          { address: 'jules@northwindremodeling.example', name: 'Jules Whitman' },
           { address: 'aaron@magicunicorn.tech', name: 'Aaron Stransky' },
         ],
       },
@@ -637,7 +637,7 @@ export const SAMPLE_360: Customer360 = {
         lastMessageAt: days(-2),
         lastSnippet: 'Tuesday 10am ET works on our end. I’ll send the Meeting-Ops link.',
         participants: [
-          { address: 'dana@northwindremodeling.com', name: 'Jules Whitman' },
+          { address: 'jules@northwindremodeling.example', name: 'Jules Whitman' },
           { address: 'aaron@magicunicorn.tech', name: 'Aaron Stransky' },
         ],
       },
@@ -720,7 +720,7 @@ export const SAMPLE_360: Customer360 = {
         hasSummary: true,
         actionItemCount: 3,
         participants: [
-          { contactId: 'c-northwind-remodeling', displayName: 'Jules Whitman', email: 'dana@northwindremodeling.com' },
+          { contactId: 'c-northwind-remodeling', displayName: 'Jules Whitman', email: 'jules@northwindremodeling.example' },
           { contactId: null, displayName: 'Aaron Stransky', email: 'aaron@magicunicorn.tech' },
         ],
       },
@@ -734,7 +734,7 @@ export const SAMPLE_360: Customer360 = {
         hasSummary: false,
         actionItemCount: 1,
         participants: [
-          { contactId: 'c-northwind-remodeling', displayName: 'Jules Whitman', email: 'dana@northwindremodeling.com' },
+          { contactId: 'c-northwind-remodeling', displayName: 'Jules Whitman', email: 'jules@northwindremodeling.example' },
           { contactId: null, displayName: 'Aaron Stransky', email: 'aaron@magicunicorn.tech' },
         ],
       },
