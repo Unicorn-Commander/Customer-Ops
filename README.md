@@ -26,18 +26,20 @@
 
 ## What is Customer-Ops?
 
-Customer-Ops is the relationship and funnel cockpit for turning leads into customers and keeping the work around each relationship visible. It owns the lifecycle—stage, pipeline, notes, next actions, and optional quote drafts—while resolving contact, invoice, meeting, project, email, and outreach context from the apps that own those records. It is self-hostable, uses Keycloak SSO and Postgres-backed workspace isolation, and gives agents draft and proposal surfaces while workspace roles, PAT scopes, and human confirmation govern writes and outbound work. As part of Unicorn Commander, it uses shared identity and typed federation seams instead of creating duplicate contact or ledger records.
+Customer-Ops is the relationship and funnel cockpit for turning leads into customers and keeping the work around each relationship visible. It owns the lifecycle — stage, pipeline, notes, next actions, and optional quotes — and reads contact, invoice, meeting, project, email, outreach, and device-conversation context from the apps that own those records. A lead stays a contact in Contact-Ops. Customer-Ops stores the stage and a contact reference, not a second phonebook or a second ledger.
+
+The self-host stack runs Keycloak SSO with Postgres row-level security enforced: tenancy is on, and the API connects as the `NOBYPASSRLS` role `customer_ops_app`. Relationship agents and the Relations Officer return assessments, drafts, or a single proposed write. A person confirms that proposal, and outbound mail from those agents is staged for approval. Other REST and MCP writes run when the caller's workspace role and PAT scopes allow them, including an explicit email send. `backend/package.json`, `frontend/package.json`, and the MCP server info all say version 0.12.0. `CHANGELOG.md` stops at the 0.12.0 heading dated 2026-06-23, so quotes and the self-host stack are in this tree without a newer changelog heading.
 
 ## Highlights
 
-- **A guarded relationship funnel.** Move a relationship from Lead to Prospect to Customer, with one-step qualification rules, lost/reopen state, expected value, priority, owners, and next actions. The pipeline stays legible as work progresses.
-- **Customer-360 without a second phonebook.** The relationship record keeps a Contact-Ops reference; customer detail assembles contact, invoice, meeting, project, email, outreach, and conversation panels at read time. Each system remains the source of truth for its own data.
-- **A navigable relationship graph.** Customer-Ops projects workspace relationships into FalkorDB with typed people, organizations, deals, interactions, and provenance edges. Incremental post-commit refreshes and an explicit reindex path keep the graph repairable.
-- **An idempotent lead front door.** <code>ingest_lead</code> stages an enriched lead, resolves identity through Contact-Ops when available, and can retain a provisional identity for later reconciliation instead of dropping the intake.
-- **Quotes and proposals.** The feature-flagged quote workspace supports structured drafts, sections, line items, options, recipients, rendering, version history, and a controlled lifecycle tied to the relationship.
-- **Agents that prepare, never silently act.** Relationship agents return assessments, meeting briefs, follow-up drafts, and collections drafts. Agent-generated email can be staged for human approval; agent runs do not auto-send, post invoices, or move stages.
-- **Security at the workspace boundary.** Keycloak SSO, membership-aware authorization, Postgres row-level security, scoped Personal Access Tokens, and an append-only audit trail cover both REST and MCP paths.
-- **Optional integrations that fail clearly.** Unconfigured or unreachable federation surfaces degrade to a connect state, while <code>GET /api/v1/health/integrations</code> exposes per-seam configuration and probe status.
+- **A guarded relationship funnel.** Stages are Lead, Prospect, and Customer. A forward move is exactly one step, so a lead cannot skip qualification. Moving backward any number of steps is allowed. Lost and reopen are a separate flag, not a fourth stage. The relationship stores expected value, priority, `ownerUserKey`, and `nextActionAt`. A reply or click can advance the same one step. Opens, bounces, and unsubscribes do not, and a lost relationship does not advance until it is reopened.
+- **Customer-360 without a second phonebook.** The relationship record keeps a Contact-Ops reference. Customer detail assembles that contact plus invoice, meeting, project, email, outreach, and device-conversation panels at read time, along with the local timeline, quotes, and agent actions. Each system remains the source of truth for its own data.
+- **A navigable relationship graph.** Each workspace is one [FalkorDB](https://www.falkordb.com/) graph, keyed `cust_ops:ws:<workspaceId>`. Relationship writes refresh it after commit. `POST /api/v1/workspaces/:workspaceId/graph/reindex` rebuilds that workspace. With `FALKORDB_URL` unset, the API returns 503 for graph reads and the explorer projects the customer rows instead.
+- **An idempotent lead front door.** `ingest_lead` stages an enriched lead, resolves identity through Contact-Ops when that seam is reachable, and by default keeps a provisional identity (`LEAD_INTAKE_PROVISIONAL_IDENTITY`, on unless set to `false`, `0`, `no`, or `off`) so the intake is not dropped. `resolve_pending_leads` promotes pending intakes and upgrades provisional ids once Contact-Ops is reachable.
+- **Quotes and proposals.** Quote routes, the renderer, and the quote MCP tools register only when `QUOTES_ENABLED` is `true` or `1`. The flag is not listed in `deploy/.env.example`; unset means off. The workspace stores sections, line items, options, recipients, versions, and events. Sending a quote stages an Email-Ops approval draft (`mode=draft`). It does not deliver the proposal itself.
+- **Agents that prepare a draft or a proposal.** The five relationship agents return a lead assessment, a next action, a meeting brief, a follow-up draft, or a collections draft. Follow-up and collections can stage that draft in the Email-Ops approval inbox. Those runs do not auto-send, post an invoice, or move a stage. The Relations Officer can propose one of four writes — stage change, note, mark lost, or reopen — and runs it only after a person confirms. Separate MCP tools can transition a stage, create an invoice, or send mail when the token's scopes allow it.
+- **Security at the workspace boundary.** Keycloak SSO, membership checks when tenancy is on, Postgres row-level security on workspace-scoped tables, scoped Personal Access Tokens, and an append-only `audit_logs` trail. Relationship writes and agent runs are audited on both the REST and MCP paths. The runtime role is `customer_ops_app` (`NOBYPASSRLS`). Migrations use the owner role.
+- **Optional integrations that fail clearly.** An unconfigured or unreachable seam makes no call and the cockpit shows a connect state. `GET /api/v1/health/integrations` probes contact-ops, accounting-ops, outreach, email-ops, conversations-ops, meeting-ops, project-ops, and the Microsoft 365 connector. Each row includes `configured`, `ok`, HTTP `status`, and a `detail` of `ok`, `not-configured`, `auth-error`, or `unreachable`.
 
 ## Feature tour
 
@@ -47,7 +49,7 @@ Customer-Ops is the relationship and funnel cockpit for turning leads into custo
   <img src="docs/screenshots/pipeline.webp" width="100%" alt="Customer-Ops deal pipeline with Lead, Prospect, and Customer lanes">
 </p>
 
-The pipeline board groups relationships by lifecycle stage, expected value, priority, and next action. Drag-and-drop uses the same guarded transition path as the API, so qualification cannot be skipped accidentally.
+The pipeline board has one lane per lifecycle stage. Each card shows expected value, priority, and the next action when `nextActionAt` is set. Drag-and-drop calls the same `transitionStage` API as other clients. The server applies the one-step forward rule, and a rejected drop rolls the board back.
 
 ### Customer-360
 
@@ -55,7 +57,7 @@ The pipeline board groups relationships by lifecycle stage, expected value, prio
   <img src="docs/screenshots/customer.webp" width="100%" alt="Customer-360 view showing contacts, deals, quotes, and timeline">
 </p>
 
-Open one relationship to see its federated contact, local activity timeline, quotes, invoices, email, outreach, meetings, projects, and available agent actions. Local links preserve provenance without copying the sibling systems’ records.
+Open one relationship to see its federated contact, local activity timeline, quotes, invoices, email, outreach, meetings, projects, device conversations, and the agent actions. Local links store the foreign id and provenance. They do not copy the sibling record.
 
 ### Relationship graph
 
@@ -63,7 +65,7 @@ Open one relationship to see its federated contact, local activity timeline, quo
   <img src="docs/screenshots/relationships.webp" width="100%" alt="Interactive Customer-Ops relationship graph showing connected people, organizations, and interactions">
 </p>
 
-The graph explorer makes the relationship constellation clickable: inspect a node, expand its neighborhood, and follow typed connections. If FalkorDB is unavailable, the frontend can render a database-derived relationship projection instead.
+The graph explorer can inspect a node and expand its neighborhood. Node labels are Person, Org, Deal, Meeting, Email, Invoice, Campaign, Project, Doc, Product, LeadSource, and Hub. Edge types include `WORKS_AT`, `IS_CONTACT`, `OWNS_DEAL`, `ATTENDED`, `BILLED_FOR`, `PAID`, `ENROLLED_IN`, `EMAILED`, `THREAD_WITH`, `SOURCED_FROM`, and `STAGE_EVENT`. If FalkorDB is dormant or unreachable, the page builds a graph from `listCustomers` instead.
 
 ### Quotes
 
@@ -71,7 +73,7 @@ The graph explorer makes the relationship constellation clickable: inspect a nod
   <img src="docs/screenshots/quote.webp" width="100%" alt="Customer-Ops quote workspace for composing a customer proposal">
 </p>
 
-Quotes are registered when <code>QUOTES_ENABLED=true</code>. The workspace keeps draft composition and commercial structure in Customer-Ops, renders the document, records versions and events, and routes the controlled send path through Email-Ops.
+With `QUOTES_ENABLED=true` (or `1`), Customer-Ops keeps draft composition, commercial structure, rendered HTML or PDF, versions, and events. The send path composes an Email-Ops draft for a person to approve. A public acceptance flow can later email a verification code with `mode=send`. Quote theme tokens can be read from Brand-Ops when `BRAND_OPS_BASE_URL` is set; otherwise the renderer uses its default theme. Brand-Ops is not one of the `/health/integrations` rows.
 
 ### Lead intake
 
@@ -79,21 +81,25 @@ Quotes are registered when <code>QUOTES_ENABLED=true</code>. The workspace keeps
   <img src="docs/screenshots/leads.webp" width="100%" alt="Customer-Ops lead intake dashboard showing staged, resolved, and failed leads">
 </p>
 
-The lead intake surface shows what arrived, which identity resolution path succeeded, and what still needs attention. A later reconciliation can promote pending or provisional intakes once the canonical contact source is reachable.
+The lead intake surface shows what arrived, which identity path succeeded, and what is still pending or failed. `resolve_pending_leads` promotes pending intakes, and with `scope=pending_and_failed` it also promotes failed ones. It upgrades provisional contact ids once Contact-Ops is reachable. Discard sets the intake to `DISCARDED`, and that status is not in the resolve scan. A resolved intake cannot be discarded; mark the relationship lost instead.
 
 ## Built for agents
 
-Customer-Ops exposes a Streamable HTTP MCP server at <code>/api/v1/mcp</code>. Clients authenticate with a session or federation JWT, or with a scoped <code>co_pat_</code> Personal Access Token created from **Settings → API tokens** or <code>POST /api/v1/auth/pats</code>; PAT calls are checked against tool scopes and their workspace binding.
+Customer-Ops exposes a Streamable HTTP MCP server at `/api/v1/mcp`. `JwtAuthGuard` accepts a local HS256 session JWT, a Keycloak realm RS256 JWT, or a Brigade federation RS256 JWT whose audience is `customer-ops`, and it accepts a scoped `co_pat_` Personal Access Token. Create a PAT from **Settings → API tokens** or `POST /api/v1/auth/pats` (session JWT only). PAT calls are checked against the tool's scope and the token's workspace binding. A PAT cannot mint or revoke a PAT. The plaintext is returned once. Omitting `expiresAt` stores a non-expiring token. Revoke it from the same Settings page or `DELETE /api/v1/auth/pats/:id`.
 
-The server registers **24 core tools**, including <code>health</code>, <code>list_my_workspaces</code>, <code>list_customers</code>, <code>get_customer_360</code>, <code>pipeline_board</code>, <code>ingest_lead</code>, <code>lead_intake_stats</code>, <code>resolve_pending_leads</code>, <code>list_customer_invoices</code>, <code>list_customer_email</code>, <code>list_customer_meetings</code>, <code>triage_customer</code>, <code>draft_followup</code>, and <code>draft_collections_nudge</code>. When <code>QUOTES_ENABLED=true</code>, it adds **20 quote tools** for draft composition and quote lifecycle operations.
+The server registers **24 core tools**: `health`, `list_my_workspaces`, `list_customers`, `get_customer_360`, `pipeline_board`, `transition_customer_stage`, `add_customer_note`, `update_customer`, `list_customer_invoices`, `create_customer_invoice`, `list_customer_outreach`, `start_customer_campaign`, `list_customer_email`, `send_customer_email`, `record_customer_engagement`, `list_customer_meetings`, `triage_customer`, `draft_followup`, `draft_collections_nudge`, `ingest_lead`, `lead_intake_stats`, `list_lead_intakes`, `resolve_pending_leads`, and `discard_lead_intake`. When quotes are enabled it adds **20 quote tools** (13 draft and price-book operations plus `render_quote`, `send_quote`, `supersede_quote`, `revoke_share_link`, `record_quote_acceptance`, `list_quote_versions`, and `list_quote_events`). `send_customer_email` defaults to `mode=draft`. `mode=send` queues delivery unless the workspace agent pause switch is on. `record_customer_engagement` can advance the stage on a reply or click.
 
-The REST agent surface contains five draft-only actions: <code>lead-triage</code>, <code>follow-up-draft</code>, <code>collections-nudge</code>, <code>next-best-action</code>, and <code>meeting-prep</code>. The Relations Officer adds advisor/operator chat; operator-mode writes become single-use proposals that a person must confirm. There is no separate A2A agent-card endpoint in this repository—REST and MCP are the supported agent hooks.
+The REST agent routes, all under `/api/v1/workspaces/:workspaceId/customers/:id/agents/`, are `triage` (lead-triage), `follow-up` (follow-up-draft), `collections-nudge`, `next-best-action`, and `meeting-prep`. Each accepts a `tier` of `bundled` or `metered` on the body or `?tier=` query. The body wins. A metered request without the `ai-metered` entitlement is downgraded to bundled, unless `UC_ENTITLEMENT_MODE=open`. Next-best-action and meeting-prep are REST-only. They are not MCP tools.
+
+The Relations Officer is `POST /api/v1/workspaces/:workspaceId/relations-officer/chat` and `.../confirm-action`. Advisor mode reads and recommends. Operator mode may propose one single-use write (`transition_stage`, `add_note`, `mark_lost`, or `reopen`). Confirm executes it as the signed-in user. There is no A2A agent-card route in this repository.
 
 <p align="center">
   <img src="docs/brand/relations-officer.jpg" width="220" alt="Illustration of the Customer-Ops Relations Officer">
 </p>
 
-Example client configuration for a local self-hosted instance:
+Inference is optional. The client calls `POST {AGENT_INFERENCE_BASE_URL}/v1/chat/completions`. A blank base URL skips the call and the agents return the federated snapshot with a connect-inference note. The template aliases are `AGENT_INFERENCE_BUNDLED_MODEL=qwen3.6-35b-a3b` and `AGENT_INFERENCE_METERED_MODEL=claude-sonnet-4.6`. If those variables are unset, the client sends `uc-bundled` and `uc-metered`. The gateway maps the alias. Per-agent defaults can be set with `AGENT_<NAME>_TIER` (for example `AGENT_LEAD_TRIAGE_TIER`).
+
+Example client configuration for the self-host API on this machine:
 
 ~~~json
 {
@@ -108,36 +114,44 @@ Example client configuration for a local self-hosted instance:
 }
 ~~~
 
-Use the smallest PAT scope set the client needs. The plaintext PAT is returned only at creation; replace the placeholder above locally and do not commit it.
+Use the smallest PAT scope set the client needs. Replace the placeholder locally and do not commit it.
 
 ## Quick start
 
 ### Docker
 
-The self-host stack is the shortest complete path: it bundles PostgreSQL, Keycloak, the Customer-Ops API, and the Next.js cockpit. You need Docker Engine with Compose support for <code>--wait</code>, Git, and Node.js for the bootstrap script.
+From a checkout of this repository, the self-host stack bundles PostgreSQL 17, Keycloak 26.8.1 with its own Postgres, a one-shot migration job, the Customer-Ops API, and the Next.js cockpit. Published host ports are bound to `127.0.0.1`. You need Docker Engine with the Compose v2 plugin (`docker compose`, including `--wait`) and Node.js 20 or newer to run the bootstrap script. The API image is Node.js 22. The frontend image is Node.js 20.
+
+The public snapshot [customer-ops-community](https://github.com/Unicorn-Commander/customer-ops-community) does not include `deploy/selfhost/bootstrap.cjs` or `deploy/docker-compose.selfhost.yml`. Run these commands in this tree:
 
 ~~~bash
-git clone https://github.com/Unicorn-Commander/Customer-Ops.git
-cd Customer-Ops
 node deploy/selfhost/bootstrap.cjs
 docker compose --env-file deploy/.env -f deploy/docker-compose.selfhost.yml up -d --build --wait --wait-timeout 300
 curl -fsS http://127.0.0.1:3211/api/v1/health/live
 curl -fsS http://127.0.0.1:3211/api/v1/health/ready
 ~~~
 
-Open <http://127.0.0.1:3000> and choose **Continue with single sign-on**. The imported local Keycloak realm provides the <code>admin</code> account; read <code>CUSTOMER_OPS_ADMIN_PASSWORD</code> from the generated <code>deploy/.env</code> on your machine. The local stack uses the synthetic <code>admin@example.invalid</code> identity and creates the local workspace membership on first sign-in.
+Open <http://127.0.0.1:3000> and choose **Continue with single sign-on**. Sign in as `admin`. Read `CUSTOMER_OPS_ADMIN_PASSWORD` from the generated `deploy/.env` on your machine. The bootstrap script does not print it. The imported `customer-ops` realm uses the synthetic email `admin@example.invalid`, and `registrationAllowed` is false. The access list entry `admin@example.invalid:OWNER` seeds an OWNER membership in the local workspace on first sign-in.
 
-The bootstrap script creates <code>deploy/.env</code> with private file permissions, refuses to overwrite an existing file, and does not print credentials. On a later start, skip the bootstrap step and run the Compose command again. Federation, FalkorDB, inference, and the Microsoft 365 connector remain optional until their environment variables are configured.
+Keep using `127.0.0.1`. The callback, CORS origin, and `NEXT_PUBLIC_API_URL` are set to that host. Keycloak's browser address is <http://127.0.0.1:8080>. Its management user is `keycloak-admin`, with `KEYCLOAK_ADMIN_PASSWORD` in the same file. This HTTP stack is for the Docker host.
+
+`CUSTOMER_OPS_SIGNUP_MODE=open` in the generated file lets another user of this local realm receive their own workspace and OWNER membership. It does not enable Keycloak self-registration. The code default, when the variable is unset or is anything other than `open`, is `invite` (a stranger is rejected). `UC_ENTITLEMENT_MODE=open` in the generated file allows local use without suite entitlement claims. When that variable is unset, the gates default to `enforce`.
+
+The bootstrap script creates `deploy/.env` with mode `0600`, refuses to overwrite an existing file, and does not print credentials. On a later start, skip bootstrap and run the Compose command again. That reuses the `postgres-data` and `keycloak-data` volumes. Federation `*_BASE_URL` values, `FALKORDB_URL`, `AGENT_INFERENCE_BASE_URL`, `ENTITLEMENTS_ENDPOINT_URL`, and `M365_CLIENT_ID` stay blank until you set them. The local pipeline and provisional leads work without those services.
 
 ### Run from source
 
-Source development still needs a PostgreSQL database and a configured Keycloak SSO client; this repository has no application auth-bypass mode. For a bundled identity provider, use the Docker path above. From the repository root, for an existing development environment:
+Source development needs PostgreSQL and a configured Keycloak client. This repository has no auth-bypass mode. For a bundled identity provider, use the Docker path above. `deploy/.env.example` is the runtime template. `backend/.env.example` only points at it and documents the test database variables.
 
 ~~~bash
 cd backend
 npm ci
 cp ../deploy/.env.example .env
-# Set DATABASE_URL, ADMIN_DATABASE_URL, JWT_SECRET, and the KEYCLOAK_* values in .env.
+# Prisma reads DATABASE_URL, not ADMIN_DATABASE_URL.
+# Use the owner role for prisma:deploy, then the NOBYPASSRLS
+# customer_ops_app role for start:dev when CUSTOMER_OPS_TENANCY_ENABLED=true.
+# Set JWT_SECRET and the KEYCLOAK_* values. Compose is what points
+# prisma migrate deploy at ADMIN_DATABASE_URL.
 npm run prisma:generate
 npm run prisma:deploy
 npm run start:dev
@@ -149,33 +163,37 @@ In a second terminal:
 cd frontend
 npm ci
 cp .env.example .env.local
-# Set NEXT_PUBLIC_API_URL=http://127.0.0.1:3211/api/v1 in .env.local.
+# Set NEXT_PUBLIC_API_URL=http://127.0.0.1:3211/api/v1 for this local API.
 npm run dev
 ~~~
 
-The API serves under <code>/api/v1</code>; the frontend uses the public API URL baked into <code>NEXT_PUBLIC_API_URL</code> at build time.
+The API prefix defaults to `/api/v1` (`API_PREFIX`). Next.js inlines `NEXT_PUBLIC_API_URL` into the client bundle, including under `npm run dev`. The self-host API listens on port 3211 and the self-host UI on port 3000.
 
 ### Configuration
 
-The canonical template is [deploy/.env.example](deploy/.env.example). It documents the full runtime surface; keep secrets in the environment and never in the README.
+The canonical template is [deploy/.env.example](deploy/.env.example). Keep secrets in the environment and never in the README.
 
 | Variable | Meaning |
 |---|---|
-| <code>NODE_ENV</code>, <code>PORT</code>, <code>API_PREFIX</code> | Runtime mode, API listen port, and global API path prefix |
-| <code>DATABASE_URL</code> | Runtime PostgreSQL connection; production uses the row-level-security application role |
-| <code>ADMIN_DATABASE_URL</code> | Owner connection used for Prisma migrations |
-| <code>POSTGRES_PASSWORD</code>, <code>APP_DB_PASSWORD</code> | Self-host database bootstrap credentials |
-| <code>FRONTEND_URL</code>, <code>CORS_ORIGIN</code>, <code>NEXT_PUBLIC_API_URL</code> | Browser URL, allowed browser origin, and frontend API base URL |
-| <code>KEYCLOAK_URL</code>, <code>KEYCLOAK_PUBLIC_URL</code>, <code>KEYCLOAK_REALM</code>, <code>KEYCLOAK_CLIENT_ID</code>, <code>KEYCLOAK_CALLBACK_URL</code> | Keycloak server, browser-facing server, realm, client, and OAuth callback |
-| <code>KEYCLOAK_CLIENT_SECRET</code>, <code>JWT_SECRET</code> | Private credentials for the Keycloak client and local session signing |
-| <code>KEYCLOAK_DB_PASSWORD</code>, <code>KEYCLOAK_ADMIN_PASSWORD</code>, <code>CUSTOMER_OPS_ADMIN_PASSWORD</code> | Self-host Keycloak database, management, and local user credentials |
-| <code>CUSTOMER_OPS_TENANCY_ENABLED</code>, <code>DEFAULT_WORKSPACE_ID</code>, <code>CUSTOMER_OPS_ACCESS_LIST</code>, <code>CUSTOMER_OPS_SIGNUP_MODE</code> | Workspace isolation, bootstrap workspace, access policy, and self-serve policy |
-| <code>REDIS_URL</code> | Optional shared state and rate-limit store when running more than one backend replica |
-| <code>FALKORDB_URL</code> | Optional knowledge-graph store; blank leaves the graph plane dormant |
-| <code>AGENT_INFERENCE_BASE_URL</code>, <code>AGENT_INFERENCE_SERVICE_TOKEN</code>, <code>AGENT_INFERENCE_BUNDLED_MODEL</code>, <code>AGENT_INFERENCE_METERED_MODEL</code>, <code>AGENT_INFERENCE_TIMEOUT_MS</code> | Optional agent inference gateway, credential, model lanes, and timeout |
-| <code>UC_ENTITLEMENT_MODE</code>, <code>ENTITLEMENTS_ENDPOINT_URL</code> | Entitlement behavior and optional suite entitlement source |
-| <code>CONTACT_OPS_*</code>, <code>AO_*</code>, <code>EMAIL_OPS_*</code>, <code>MEETING_OPS_*</code>, <code>PROJECT_OPS_*</code>, <code>OUTREACH_*</code> | Per-seam base URL, auth mode, audience, workspace mapping, credential, scope, and timeout |
-| <code>M365_CLIENT_ID</code>, <code>M365_CLIENT_SECRET</code>, <code>M365_TENANT_ID</code>, <code>M365_REDIRECT_URI</code>, <code>M365_SCOPES</code>, <code>M365_TOKEN_ENC_KEY</code> | Optional Microsoft 365 contact connector; blank client configuration keeps it dormant |
+| `NODE_ENV`, `PORT`, `API_PREFIX` | Runtime mode, listen port (template `3211`), and global path prefix (template `api/v1`) |
+| `DATABASE_URL` | The URL Prisma and the running API use. Self-host points the API at `customer_ops_app` |
+| `ADMIN_DATABASE_URL` | Owner connection. Prisma does not read it. Production and dogfood compose pass it into `prisma migrate deploy` by overriding `DATABASE_URL`. The self-host API process sets this empty |
+| `POSTGRES_PASSWORD`, `APP_DB_PASSWORD` | Self-host database bootstrap credentials. The migration job sets the `customer_ops_app` password from `APP_DB_PASSWORD` |
+| `FRONTEND_URL`, `CORS_ORIGIN`, `NEXT_PUBLIC_API_URL` | Browser URL, allowed browser origin, and the API base the frontend inlines |
+| `KEYCLOAK_URL`, `KEYCLOAK_PUBLIC_URL`, `KEYCLOAK_REALM`, `KEYCLOAK_CLIENT_ID`, `KEYCLOAK_CALLBACK_URL` | Keycloak server, browser-facing server, realm, client, and OAuth callback. Self-host realm and client are both `customer-ops` |
+| `KEYCLOAK_CLIENT_SECRET`, `JWT_SECRET` | Keycloak client secret, and the secret for the local HS256 session token. An empty `JWT_SECRET` fails closed |
+| `KEYCLOAK_DB_PASSWORD`, `KEYCLOAK_ADMIN_PASSWORD`, `CUSTOMER_OPS_ADMIN_PASSWORD` | Self-host Keycloak database password, management password, and the local `admin` user's password |
+| `CUSTOMER_OPS_TENANCY_ENABLED`, `DEFAULT_WORKSPACE_ID`, `CUSTOMER_OPS_ACCESS_LIST`, `CUSTOMER_OPS_SIGNUP_MODE` | Workspace isolation (code default off; the template sets `true`), bootstrap workspace, access policy, and self-serve policy (`invite` unless the value is `open`) |
+| `REDIS_URL` | Optional. Unset keeps rate limits, M365 OAuth nonces, and Relations Officer confirmations in process, which is correct for one replica. Set it before running more than one API replica. A pending confirmation stored in Redis also survives a restart |
+| `FALKORDB_URL` | Optional FalkorDB URL. Blank leaves graph reads dormant |
+| `AGENT_INFERENCE_BASE_URL`, `AGENT_INFERENCE_SERVICE_TOKEN`, `AGENT_INFERENCE_BUNDLED_MODEL`, `AGENT_INFERENCE_METERED_MODEL`, `AGENT_INFERENCE_TIMEOUT_MS` | Optional OpenAI-compatible gateway, bearer token, model aliases, and timeout |
+| `UC_ENTITLEMENT_MODE`, `ENTITLEMENTS_ENDPOINT_URL` | `open` allows gated calls with a warning. Unset means `enforce`. The endpoint, when set, is an optional entitlement source. The self-host template sets `open` and leaves the endpoint blank |
+| `CONTACT_OPS_*`, `AO_*`, `EMAIL_OPS_*`, `MEETING_OPS_*`, `PROJECT_OPS_*`, `OUTREACH_*` | Per-seam base URL, `AUTH_MODE` (`static` or `brigade-sts`), audience, workspace override, service token, and timeout. Scope variables exist for Project-Ops and Outreach. Contact-Ops has `CONTACT_OPS_INGEST_TOOL`. Meeting-Ops has `MEETING_OPS_MCP_PATH` |
+| `CONVERSATIONS_OPS_BASE_URL` | Optional device-conversation seam for the customer-360 panel. Blank leaves it dormant. It is included in `/health/integrations`. Further activation variables are in deploy/.env.dogfood.example |
+| `BRAND_OPS_BASE_URL` | Optional quote theme tokens. Blank uses the default theme. This seam is not in `/health/integrations` |
+| `QUOTES_ENABLED` | Not in the template. `true` or `1` registers quote REST, rendering, and the 20 MCP quote tools. Any other value, including unset, leaves them off |
+| `LEAD_INTAKE_PROVISIONAL_IDENTITY` | Not required in the template. Default on: unresolved leads receive a provisional id. `false`, `0`, `no`, or `off` leaves them `PENDING` |
+| `M365_CLIENT_ID`, `M365_CLIENT_SECRET`, `M365_TENANT_ID`, `M365_REDIRECT_URI`, `M365_SCOPES`, `M365_TOKEN_ENC_KEY` | Optional Microsoft 365 contact connector. A blank `M365_CLIENT_ID` keeps it dormant. `M365_TOKEN_ENC_KEY` is required when the client id is set, or boot fails closed |
 
 ## Architecture
 
@@ -187,47 +205,43 @@ flowchart LR
   API --> DB["PostgreSQL + Prisma + RLS"]
   API -. optional shared state .-> Redis["Redis"]
   API -. optional graph .-> Graph["FalkorDB"]
-  API -. optional inference .-> AI["Inference gateway"]
+  API -. optional inference .-> AI["OpenAI-compatible gateway"]
   API --> Seam["Typed federation seams"]
-  Brigade["Unicorn Brigade token exchange"] -. optional auth .-> Seam
+  Brigade["Unicorn Brigade RFC 8693 exchange"] -. optional auth .-> Seam
   Seam --> Contact["Contact-Ops"]
   Seam --> Accounting["Accounting-Ops"]
   Seam --> Email["Email-Ops"]
   Seam --> Meeting["Meeting-Ops"]
   Seam --> Project["Project-Ops"]
   Seam --> Outreach["Outreach"]
+  Seam --> Conversations["Conversations-Ops"]
 ~~~
 
 The load-bearing components are:
 
-- **Frontend:** Next.js and React cockpit with the dashboard, pipeline, customer-360, lead intake, graph explorer, quote views, settings, and SSO callback.
-- **Backend:** NestJS API and MCP server. REST callers and MCP tools share the same customer, lead, quote, graph, federation, audit, and agent services.
-- **Data plane:** PostgreSQL via Prisma for relationship state, activity, links, lead intake, quotes, memberships, tokens, and audit events. Workspace-scoped tables are protected by Postgres RLS; the runtime role is deliberately separate from the migration owner.
-- **Identity and federation:** Keycloak handles SSO. Configured app-to-app calls use typed MCP clients and can obtain audience- and workspace-bound credentials through Unicorn Brigade.
-- **Optional planes:** FalkorDB stores the relationship graph, Redis shares security state and throttling across replicas, the inference gateway powers agent output, and Microsoft Graph powers the opt-in contact connector.
+- **Frontend:** Next.js 15, React 19, and Tailwind. The graph view uses `react-force-graph-3d`. Screens include the dashboard, pipeline, customer-360, lead intake, graph explorer, quotes, settings, and the SSO callback.
+- **Backend:** NestJS 10 and Prisma 5. REST and MCP share the customer, lead, quote, graph, federation, audit, and agent services. The MCP server version string is `0.12.0`.
+- **Data plane:** PostgreSQL 17 via Prisma for relationship state, activity, links, lead intake, quotes, memberships, tokens, and audit events. Workspace-scoped tables use Postgres RLS (`ENABLE` and `FORCE`) behind `current_workspace_id()`. The self-host API role is `customer_ops_app` (`NOBYPASSRLS`), separate from the migration owner. Personal access tokens and Microsoft 365 connection rows are user-scoped and are not under that RLS policy. The graph key `cust_ops:ws:<workspaceId>` is the graph-plane fence.
+- **Identity and federation:** Keycloak handles SSO. The self-host realm is `customer-ops` and signs with RS256. After the callback, Customer-Ops issues an HS256 session token. Outbound app calls use a typed MCP client. `AUTH_MODE=brigade-sts` (the template default) exchanges a short-lived audience- and workspace-bound token through Unicorn Brigade (RFC 8693). `AUTH_MODE=static` sends the seam's service token instead. A blank base URL makes no call.
+- **Optional planes:** FalkorDB stores the relationship graph. Redis shares rate limits, OAuth nonces, and pending Relations Officer confirmations. The inference client speaks `/v1/chat/completions`. Microsoft Graph is the opt-in contact connector. Brand-Ops supplies optional quote theme tokens. Ops-Center is the optional entitlement source behind `ENTITLEMENTS_ENDPOINT_URL`.
 
 ## Part of Unicorn Commander
 
+These public repositories were reachable on GitHub. Descriptions below are the role this codebase uses, or the public repository's own short description where this tree does not call that app.
+
 | App | What it does |
 |---|---|
-| [Ops-Center](https://github.com/Unicorn-Commander/Ops-Center) | The control plane: tenants, billing, federation, API keys, model routing |
-| [Unicorn-Brigade](https://github.com/Unicorn-Commander/Unicorn-Brigade) | The agent layer: agents, tools, memory, orchestration |
-| [Unicorn-Stable](https://github.com/Unicorn-Commander/Unicorn-Stable) | Humans and agents in the same room: chat, voice, video |
-| [Accounting-Ops](https://github.com/Unicorn-Commander/Accounting-Ops) | Agent-native accounting and books |
-| [Contact-Ops](https://github.com/Unicorn-Commander/Contact-Ops) | The shared contact and identity graph |
-| **[Customer-Ops](https://github.com/Unicorn-Commander/Customer-Ops)** | **Customers, pipeline, quotes and outreach** |
-| [Email-Ops](https://github.com/Unicorn-Commander/Email-Ops) | Agent-drafted email with a human approval inbox |
-| [Project-Ops](https://github.com/Unicorn-Commander/Project-Ops) | Projects, tasks, time and invoices |
-| [Meeting-Ops](https://github.com/Unicorn-Commander/Meeting-Ops) | Recordings, transcripts, summaries and action items |
-| [Knowledge-Ops](https://github.com/Unicorn-Commander/Knowledge-Ops) | The wiki and memory your agents ground on |
-| [Security-Ops](https://github.com/Unicorn-Commander/Security-Ops) | Authorized security scanning with engagement and attestation gates |
-| [Tax-Planning-Ops](https://github.com/Unicorn-Commander/Tax-Planning-Ops) | Tax plans, scenarios and statutory deadlines |
-| [Brand-Ops](https://github.com/Unicorn-Commander/Brand-Ops) | Brand kits, marks, voices and rules |
-| [Podcast-Ops](https://github.com/Unicorn-Commander/Podcast-Ops) | Episodes, audio QA and publishing |
-| [UUDA](https://github.com/Unicorn-Commander/UUDA) | The device agent for your fleet |
-| [fleet-map](https://github.com/Unicorn-Commander/fleet-map) | Fleet inventory and topology map |
+| [Unicorn Commander](https://github.com/Unicorn-Commander/Unicorn-Commander) | Public platform repository for self-hosted infrastructure and agent orchestration |
+| [Contact-Ops](https://github.com/Unicorn-Commander/contact-ops-community) | Canonical contacts and identity. This cockpit stores a contact reference and reads the contact at view time |
+| [Accounting-Ops](https://github.com/Unicorn-Commander/accounting-ops-community) | Invoices and accounts receivable through the accounting seam |
+| **Customer-Ops** (this repository) | **Relationships, pipeline, and quotes. This tree is Apache-2.0** |
+| [customer-ops-community](https://github.com/Unicorn-Commander/customer-ops-community) | Separate public snapshot of Customer-Ops, licensed AGPL-3.0. It does not include `deploy/selfhost/bootstrap.cjs` or `deploy/docker-compose.selfhost.yml` |
+| [Email-Ops](https://github.com/Unicorn-Commander/email-ops-community) | Mailbox threads and the human approval inbox this cockpit drafts into |
+| [Project-Ops](https://github.com/Unicorn-Commander/project-ops-community) | Projects read into the customer-360 |
+| [Meeting-Ops](https://github.com/Unicorn-Commander/Meeting-Ops-OSS) | Meetings, summaries, and action items |
+| [Unicorn Stable](https://github.com/Unicorn-Commander/unicorn-stable-oss) | Public repository: humans and agents in the same room |
 
-Customer-Ops owns the relationship projection and connects to the canonical contact, accounting, email, meeting, project, and outreach surfaces through the optional typed seams above; each connected app remains the source of truth for its own records.
+Customer-Ops owns the relationship projection. It reads contact, accounting, email, meeting, project, outreach, and device-conversation records through the seams above. Outreach has no public repository under that organization at the time of this page. Ops-Center and Unicorn Brigade are the entitlement source and the RFC 8693 token exchange this API calls. Their `Ops-Center` and `Unicorn-Brigade` GitHub paths were not public repositories.
 
 ## Development
 
@@ -248,7 +262,7 @@ npm run build
 npm run lint
 ~~~
 
-The backend lint script applies ESLint fixes. RLS integration tests need the test-only database variables documented in [backend/README.md](backend/README.md).
+The backend lint script runs ESLint with `--fix`. The frontend lint script is `next lint --max-warnings=0`. RLS integration tests need `CUSTOMER_OPS_RLS_TEST_DATABASE_URL` (the `customer_ops_app` role) and `CUSTOMER_OPS_RLS_OWNER_DATABASE_URL` (the owner role), as documented in [backend/README.md](backend/README.md).
 
 ### Further reading
 
