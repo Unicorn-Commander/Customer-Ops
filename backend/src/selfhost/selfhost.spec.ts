@@ -197,7 +197,7 @@ describe('self-host deployment contract', () => {
       credentials: [
         {
           type: 'password',
-          value: '${env.CUSTOMER_OPS_ADMIN_PASSWORD}',
+          value: '${CUSTOMER_OPS_ADMIN_PASSWORD}',
           temporary: false,
         },
       ],
@@ -206,9 +206,10 @@ describe('self-host deployment contract', () => {
     expect(client.clientId).toBe(compose.services.backend.environment.KEYCLOAK_CLIENT_ID);
     expect(client.publicClient).toBe(false);
     expect(client.directAccessGrantsEnabled).toBe(false);
-    expect(client.secret).toBe('${env.KEYCLOAK_CLIENT_SECRET}');
-    expect(JSON.stringify(realm)).not.toContain('${KEYCLOAK_CLIENT_SECRET}');
-    expect(JSON.stringify(realm)).not.toContain('${CUSTOMER_OPS_ADMIN_PASSWORD}');
+    expect(client.secret).toBe('${KEYCLOAK_CLIENT_SECRET}');
+    // Keycloak 26 resolves `${NAME}` from the container environment on import.
+    // The `${env.NAME}` form is imported literally (clean-room run 2026-10-24).
+    expect(JSON.stringify(realm)).not.toContain('${env.');
     expect(compose.services.keycloak.environment).toMatchObject({
       KEYCLOAK_CLIENT_SECRET: '${KEYCLOAK_CLIENT_SECRET:?run node deploy/selfhost/bootstrap.cjs}',
       CUSTOMER_OPS_ADMIN_PASSWORD:
