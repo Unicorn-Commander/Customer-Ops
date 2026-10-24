@@ -26,13 +26,13 @@ const days = (n: number) => new Date(now + n * DAY).toISOString();
 const hours = (n: number) => new Date(now + n * HOUR).toISOString();
 
 const OWNER_AARON = 'aaron@magicunicorn.tech';
-const OWNER_SHAFEN = 'shafen@magicunicorn.tech';
+const OWNER_ALEX = 'alex@magicunicorn.tech';
 
 /* 13 intakes across every source, a realistic status mix, some provisional. */
 const SAMPLE_INTAKES: LeadIntake[] = [
   {
-    id: 'li-001', source: 'northwind', sourceDedupKey: 'dana-merrill-northwind-remodel',
-    status: 'RESOLVED', displayName: 'Casey Merrill', email: 'dana@northwindremodeling.com',
+    id: 'li-001', source: 'manual', sourceDedupKey: 'casey-merrill-northwind-remodel',
+    status: 'RESOLVED', displayName: 'Casey Merrill', email: 'casey.merrill@northwindremodeling.example',
     phone: '+1 843 555 0147', orgName: 'Northwind Remodeling', tags: ['remodel', 'retainer', 'charleston'],
     score: 92, expectedValue: '15100.0000', currency: 'USD', priority: 'HIGH',
     ownerUserKey: OWNER_AARON, notes: 'Graduated from outreach; signed SOW.',
@@ -42,7 +42,7 @@ const SAMPLE_INTAKES: LeadIntake[] = [
   },
   {
     id: 'li-002', source: 'loopnet', sourceDedupKey: 'coastal-property-group-mtp',
-    status: 'PENDING', displayName: 'Coastal Property Group', email: 'deals@coastalpropertygroup.com',
+    status: 'PENDING', displayName: 'Coastal Property Group', email: 'deals@coastalpropertygroup.example',
     phone: null, orgName: 'Coastal Property Group', tags: ['CRE', 'LoopNet', 'off-market'],
     score: 81, expectedValue: '48000.0000', currency: 'USD', priority: 'HIGH',
     ownerUserKey: OWNER_AARON, notes: '3 off-market listings in Mount Pleasant.',
@@ -52,7 +52,7 @@ const SAMPLE_INTAKES: LeadIntake[] = [
   },
   {
     id: 'li-003', source: 'magic-unicorn-outreach', sourceDedupKey: 'victor-lang-rollover',
-    status: 'RESOLVED', displayName: 'Victor Lang', email: 'person15@example.com',
+    status: 'RESOLVED', displayName: 'Victor Lang', email: 'victor.lang@mail.example',
     phone: '+1 469 555 0188', orgName: 'Lang Holdings', tags: ['401(k)', 'rollover', 'sequence'],
     score: 74, expectedValue: '14000.0000', currency: 'USD', priority: 'MEDIUM',
     ownerUserKey: OWNER_AARON, notes: 'Replied to step 2 of the rollover sequence.',
@@ -62,17 +62,17 @@ const SAMPLE_INTAKES: LeadIntake[] = [
   },
   {
     id: 'li-004', source: 'multistate', sourceDedupKey: 'harborview-dental-webform',
-    status: 'PENDING', displayName: 'Harborview Dental', email: 'office@harborviewdental.com',
+    status: 'PENDING', displayName: 'Harborview Dental', email: 'office@harborviewdental.example',
     phone: '+1 843 555 0312', orgName: 'Harborview Dental', tags: ['dental', 'group-plan'],
     score: 58, expectedValue: '9500.0000', currency: 'USD', priority: 'MEDIUM',
-    ownerUserKey: OWNER_SHAFEN, notes: 'New practice; asked about AR automation.',
+    ownerUserKey: OWNER_ALEX, notes: 'New practice; asked about AR automation.',
     resolvedContactId: null, provisional: false, customerId: null,
     statusDetail: 'Queued for the next resolve sweep.', createdByUcUid: null,
     resolvedAt: null, createdAt: hours(-11), updatedAt: hours(-11),
   },
   {
     id: 'li-005', source: 'multistate', sourceDedupKey: 'sandhills-401k-rollover',
-    status: 'PENDING', displayName: 'Marcus Webb', email: 'mwebb@sandhillswealth.com',
+    status: 'PENDING', displayName: 'Marcus Webb', email: 'mwebb@sandhillswealth.example',
     phone: null, orgName: 'Sandhills Wealth', tags: ['401(k)', 'rollover', 'NC'],
     score: 49, expectedValue: '11200.0000', currency: 'USD', priority: 'MEDIUM',
     ownerUserKey: OWNER_AARON, notes: 'Multistate 1.27M batch; mid-funnel.',
@@ -82,7 +82,7 @@ const SAMPLE_INTAKES: LeadIntake[] = [
   },
   {
     id: 'li-006', source: 'agent', sourceDedupKey: 'agent-triage-elena-cho',
-    status: 'RESOLVED', displayName: 'Elena Cho', email: 'elena.cho@brightpathclinic.com',
+    status: 'RESOLVED', displayName: 'Elena Cho', email: 'elena.cho@brightpathclinic.example',
     phone: '+1 415 555 0199', orgName: 'BrightPath Clinic', tags: ['agent-sourced', 'healthcare'],
     score: 88, expectedValue: '22000.0000', currency: 'USD', priority: 'HIGH',
     ownerUserKey: OWNER_AARON, notes: 'Lead-triage agent graduated this from the inbox.',
@@ -91,8 +91,8 @@ const SAMPLE_INTAKES: LeadIntake[] = [
     createdByUcUid: 'agent:lead-triage', resolvedAt: hours(-15), createdAt: hours(-16), updatedAt: hours(-15),
   },
   {
-    id: 'li-007', source: 'northwind', sourceDedupKey: 'patel-kitchen-reno',
-    status: 'PENDING', displayName: 'Raj Patel', email: 'person100@example.com',
+    id: 'li-007', source: 'manual', sourceDedupKey: 'bennett-kitchen-reno',
+    status: 'PENDING', displayName: 'Theo Bennett', email: 'theo.bennett@mail.example',
     phone: '+1 843 555 0521', orgName: null, tags: ['remodel', 'kitchen'],
     score: 63, expectedValue: '28000.0000', currency: 'USD', priority: 'HIGH',
     ownerUserKey: OWNER_AARON, notes: 'Kitchen + primary bath; budget confirmed.',
@@ -102,7 +102,7 @@ const SAMPLE_INTAKES: LeadIntake[] = [
   },
   {
     id: 'li-008', source: 'loopnet', sourceDedupKey: 'oakwood-industrial-park',
-    status: 'FAILED', displayName: null, email: 'leasing@oakwoodindustrial.com',
+    status: 'FAILED', displayName: null, email: 'leasing@oakwoodindustrial.example',
     phone: null, orgName: 'Oakwood Industrial', tags: ['CRE', 'industrial'],
     score: 41, expectedValue: '60000.0000', currency: 'USD', priority: 'MEDIUM',
     ownerUserKey: OWNER_AARON, notes: 'Enrichment failed — bad domain MX.',
@@ -112,17 +112,17 @@ const SAMPLE_INTAKES: LeadIntake[] = [
   },
   {
     id: 'li-009', source: 'magic-unicorn-outreach', sourceDedupKey: 'greenfield-cpa-firm',
-    status: 'PENDING', displayName: 'Tom Greenfield', email: 'tom@greenfieldcpa.com',
+    status: 'PENDING', displayName: 'Tom Ashby', email: 'tom@ashbycpa.example',
     phone: '+1 919 555 0244', orgName: 'Greenfield CPA', tags: ['accounting', 'B2B'],
     score: 55, expectedValue: '8400.0000', currency: 'USD', priority: 'LOW',
-    ownerUserKey: OWNER_SHAFEN, notes: 'Opened sequence; no reply yet.',
+    ownerUserKey: OWNER_ALEX, notes: 'Opened sequence; no reply yet.',
     resolvedContactId: null, provisional: false, customerId: null,
     statusDetail: 'Queued for resolution.', createdByUcUid: null,
     resolvedAt: null, createdAt: hours(-30), updatedAt: hours(-30),
   },
   {
     id: 'li-010', source: 'agent', sourceDedupKey: 'agent-web-summit-nadia',
-    status: 'RESOLVED', displayName: 'Nadia Rahman', email: 'nadia@summitlegal.io',
+    status: 'RESOLVED', displayName: 'Nadia Rahman', email: 'nadia@summitlegal.example',
     phone: '+1 646 555 0166', orgName: 'Summit Legal', tags: ['agent-sourced', 'legal'],
     score: 79, expectedValue: '18500.0000', currency: 'USD', priority: 'HIGH',
     ownerUserKey: OWNER_AARON, notes: 'Web-summit follow-up agent graduated this.',
