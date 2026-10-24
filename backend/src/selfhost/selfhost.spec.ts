@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 
 const { load } = require('js-yaml');
 const {
+  hoistInlineComments,
   SECRET_KEYS,
   createEnvironment,
   writeEnvironment,
@@ -235,5 +236,13 @@ describe('self-host deployment contract', () => {
     expect(sql).toContain("w.slug = 'magic-unicorn'");
     expect(sql).toMatch(/AND NOT EXISTS \(SELECT 1 FROM "memberships" m WHERE m\."workspaceId" = w\.id\)/);
     expect(sql).not.toMatch(/[\w.+-]+@[\w.-]+\.[a-z]{2,}/i);
+  });
+
+  it('leaves no inline comment where Compose would read it as a value', () => {
+    const env = createEnvironment(read('deploy/.env.example'), (n: number) => Buffer.alloc(n, 1));
+    for (const line of env.split('\n')) {
+      if (/^[A-Z0-9_]+=/.test(line)) expect(line).not.toMatch(/\s#/);
+    }
+    expect(hoistInlineComments('A=   # note\nB=x  # other\n')).toBe('# A: note\nA=\n# B: other\nB=x\n');
   });
 });
