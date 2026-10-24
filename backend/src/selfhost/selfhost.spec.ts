@@ -219,12 +219,21 @@ describe('self-host deployment contract', () => {
     expect(client.webOrigins).toEqual([compose.services.backend.environment.FRONTEND_URL]);
   });
 
-  it('never assigns migration memberships by an operator email', () => {
+  it('keeps the applied RLS-roles migration byte-for-byte (Prisma checksum)', () => {
     const sql = read(
       'backend/prisma/migrations/20260603202000_suite_tenancy_rls_roles/migration.sql',
     );
+    const digest = require('crypto').createHash('sha256').update(sql).digest('hex');
+    expect(digest.slice(0, 16)).toBe('4f0ff2acfd515670');
+  });
+
+  it('renames the bootstrap workspace only when it has no memberships', () => {
+    const sql = read(
+      'backend/prisma/migrations/20261024000000_bootstrap_workspace_placeholder/migration.sql',
+    );
+    expect(sql).toContain("SET slug = 'bootstrap-placeholder'");
+    expect(sql).toContain("w.slug = 'magic-unicorn'");
+    expect(sql).toMatch(/AND NOT EXISTS \(SELECT 1 FROM "memberships" m WHERE m\."workspaceId" = w\.id\)/);
     expect(sql).not.toMatch(/[\w.+-]+@[\w.-]+\.[a-z]{2,}/i);
-    expect(sql).not.toContain('INSERT INTO "memberships"');
-    expect(sql).toContain("'bootstrap-placeholder'");
   });
 });
