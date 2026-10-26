@@ -20,6 +20,7 @@ import { buildThrottlers } from './common/security/throttler.config';
 import { RedisThrottlerStorage } from './common/security/redis-throttler.storage';
 import { ReconciliationSchedulerModule } from './common/scheduler/reconciliation-scheduler.module';
 import { AuthModule } from './auth/auth.module';
+import { OAuthDiscoveryModule } from './auth/oauth-discovery/oauth-discovery.module';
 import { HealthModule } from './health/health.module';
 import { McpModule } from './mcp/mcp.module';
 import { ContactOpsModule } from './contact-ops/contact-ops.module';
@@ -84,6 +85,9 @@ import { EntitlementsInterceptor } from './entitlements/entitlements.interceptor
     ObservabilityModule,
     // Shared app-to-app federation credential (Brigade RFC-8693 token source).
     FederationAuthModule,
+    // RFC 9728 protected-resource metadata for hosted MCP clients. These
+    // routes are root-prefixed and do not carry an auth guard.
+    OAuthDiscoveryModule,
     AuthModule,
     // Entitlements source: the EntitlementsInterceptor stamps endpoint-sourced
     // SKUs onto the request after auth (dormant until ENTITLEMENTS_ENDPOINT_URL).

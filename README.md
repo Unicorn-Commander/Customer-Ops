@@ -79,6 +79,23 @@ The lead intake surface shows what arrived, which identity path succeeded, and w
 
 Customer-Ops exposes a Streamable HTTP MCP server at `/api/v1/mcp`. `JwtAuthGuard` accepts a local HS256 session JWT, a Keycloak realm RS256 JWT, or a Brigade federation RS256 JWT whose audience is `customer-ops`, and it accepts a scoped `co_pat_` Personal Access Token. Create a PAT from **Settings → API tokens** or `POST /api/v1/auth/pats` (session JWT only). PAT calls are checked against the tool's scope and the token's workspace binding. A PAT cannot mint or revoke a PAT. The plaintext is returned once. Omitting `expiresAt` stores a non-expiring token. Revoke it from the same Settings page or `DELETE /api/v1/auth/pats/:id`.
 
+For the hosted service, connect an OAuth-capable MCP client to
+`https://api.customer-ops.unicorncommander.ai/api/v1/mcp`. Sign in with your
+Unicorn Commander account (OAuth) or paste a token. The OAuth configuration is
+the header-free form:
+
+~~~bash
+claude mcp add --transport http customer-ops https://api.customer-ops.unicorncommander.ai/api/v1/mcp
+~~~
+
+For a pasted Customer-Ops PAT, use the same URL with a header. Customer-Ops
+PATs use the `co_pat_` prefix (the same prefix used by Contact-Ops); keep the
+plaintext in the local client configuration and never commit it.
+
+~~~bash
+claude mcp add --transport http customer-ops-pat https://api.customer-ops.unicorncommander.ai/api/v1/mcp --header "Authorization: Bearer <co_pat_replace_me>"
+~~~
+
 The server registers **24 core tools**: `health`, `list_my_workspaces`, `list_customers`, `get_customer_360`, `pipeline_board`, `transition_customer_stage`, `add_customer_note`, `update_customer`, `list_customer_invoices`, `create_customer_invoice`, `list_customer_outreach`, `start_customer_campaign`, `list_customer_email`, `send_customer_email`, `record_customer_engagement`, `list_customer_meetings`, `triage_customer`, `draft_followup`, `draft_collections_nudge`, `ingest_lead`, `lead_intake_stats`, `list_lead_intakes`, `resolve_pending_leads`, and `discard_lead_intake`. When quotes are enabled it adds **20 quote tools** (13 draft and price-book operations plus `render_quote`, `send_quote`, `supersede_quote`, `revoke_share_link`, `record_quote_acceptance`, `list_quote_versions`, and `list_quote_events`). `send_customer_email` defaults to `mode=draft`. `mode=send` queues delivery unless the workspace agent pause switch is on. `record_customer_engagement` can advance the stage on a reply or click.
 
 The REST agent routes, all under `/api/v1/workspaces/:workspaceId/customers/:id/agents/`, are `triage` (lead-triage), `follow-up` (follow-up-draft), `collections-nudge`, `next-best-action`, and `meeting-prep`. Each accepts a `tier` of `bundled` or `metered` on the body or `?tier=` query. The body wins. A metered request without the `ai-metered` entitlement is downgraded to bundled, unless `UC_ENTITLEMENT_MODE=open`. Next-best-action and meeting-prep are REST-only. They are not MCP tools.
