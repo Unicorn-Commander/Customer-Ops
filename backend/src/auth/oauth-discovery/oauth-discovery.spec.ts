@@ -171,6 +171,8 @@ describe('Customer-Ops MCP OAuth discovery and resource-server boundary', () => 
         'https://api.customer-ops.example.com/api/v1/mcp',
       );
       expect((response.body as any).authorization_servers).toEqual([realmIssuer]);
+      // Clients request exactly these; Keycloak's DCR policy refuses any other scope, and `mcp` carries the audience.
+      expect((response.body as any).scopes_supported).toEqual(['openid', 'profile', 'email', 'offline_access', 'mcp']);
     }
   });
 
