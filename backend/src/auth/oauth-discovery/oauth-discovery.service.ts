@@ -34,7 +34,8 @@ export class OAuthDiscoveryService {
       resource: `${publicOrigin}${MCP_PATH}`,
       authorization_servers: [this.getAuthorizationServer()],
       bearer_methods_supported: ['header'],
-      scopes_supported: ['openid', 'profile'],
+      // Exactly what Keycloak's anonymous-DCR policy allows; the realm scope `mcp` carries this app's audience + uc_uid.
+      scopes_supported: ['openid', 'profile', 'email', 'offline_access', 'mcp'],
       resource_name: 'Customer-Ops MCP',
       resource_documentation: RESOURCE_DOCUMENTATION_URL,
     };
