@@ -5,7 +5,7 @@ import { QuoteDocumentService } from '../quotes/quote-document.service';
 import { QuotesLifecycleService } from '../quotes/quotes-lifecycle.service';
 import * as S from '../quotes/quote.schemas';
 export function registerQuoteTools(server: any, user: User, quotes: QuotesService | undefined) {
-  const mutations: Record<string, z.AnyZodObject> = {
+  const mutations: Record<string, z.ZodType> = {
     create_quote: S.quoteCreate,
     update_quote: S.quoteUpdate,
     add_quote_section: S.sectionInput,
