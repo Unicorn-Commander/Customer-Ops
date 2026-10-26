@@ -218,7 +218,7 @@ export const RecordSchema = z.object({
         at: z.string(),
         actor: z.string(),
         kind: z.string(),
-        data: z.record(z.unknown()).nullable(),
+        data: z.record(z.string(), z.unknown()).nullable(),
         ip: z.string().nullable(),
         ua: z.string().nullable(),
       }),

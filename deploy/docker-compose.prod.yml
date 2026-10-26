@@ -145,6 +145,10 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    # Chromium's crashpad handler writes under HOME during PDF rendering. The
+    # root filesystem is read-only, so keep its state on the writable /tmp tmpfs.
+    environment:
+      HOME: /tmp
     # Migrate as the OWNER, then boot as the APP role (see block comment above).
     # ADMIN_DATABASE_URL MUST be set in prod (.env.prod.example) or this falls
     # back to the app role and the migrate step fails closed (loud), which is the

@@ -5,6 +5,7 @@ const { createRequire } = require('node:module');
 const fs = require('node:fs');
 const path = require('node:path');
 const nestRequire = createRequire(require.resolve('@nestjs/platform-express/package.json'));
+const expressRequire = createRequire(require.resolve('express/package.json'));
 const nextTick = () => new Promise(resolve => setImmediate(resolve));
 async function checkParser(express, parser, expected) {
   const app = express();
@@ -26,12 +27,14 @@ async function checkParser(express, parser, expected) {
   } finally { await new Promise(resolve => server.close(resolve)); }
 }
 async function main() {
-  assert.equal(nestRequire('body-parser/package.json').version, '1.20.6');
-  assert.equal(require('body-parser/package.json').version, '2.3.0');
+  assert.equal(require('@azure/msal-node/package.json').version, '7.1.1');
+  assert.equal(nestRequire('body-parser/package.json').version, '1.20.9');
+  assert.equal(expressRequire('body-parser/package.json').version, '2.4.0');
   const parsers = [];
-  parsers.push(await checkParser(nestRequire('express'), nestRequire('body-parser'), 'Nest Express4 / body-parser1.20.6'));
-  parsers.push(await checkParser(require('express'), require('body-parser'), 'MCP Express5 / body-parser2.3.0'));
-  assert.equal(require('multer/package.json').version, '2.3.0');
+  parsers.push(await checkParser(nestRequire('express'), nestRequire('body-parser'), 'Nest Express4 / body-parser1.20.9'));
+  parsers.push(await checkParser(expressRequire('express'), expressRequire('body-parser'), 'MCP Express5 / body-parser2.4.0'));
+  assert.equal(require('multer/package.json').version, '2.5.0');
+  assert.equal(require('zod/package.json').version, '4.6.7');
   const app = nestRequire('express')();
   app.post('/upload', require('multer')({ limits: { fileSize: 16 } }).single('fixture'), (req, res) => res.json({ size: req.file.size }));
   app.use((err, req, res, next) => res.status(400).json({ code: err.code }));
@@ -59,7 +62,7 @@ async function main() {
     throw new Error('Package metadata absent: ' + name);
   }
   const pins = { swaggerYaml: versionAt(swaggerRequire, 'js-yaml'), ajvFastUri: versionAt(ajvRequire, 'fast-uri'), rateLimitIpAddress: versionAt(rateRequire, 'ip-address'), sdkHono: versionAt(sdkRequire, 'hono'), sdkNodeAdapter: versionAt(sdkRequire, '@hono/node-server'), nestParserQs: versionAt(parserRequire, 'qs') };
-  assert.deepEqual(pins, { swaggerYaml: '4.3.2', ajvFastUri: '3.1.6', rateLimitIpAddress: '10.3.1', sdkHono: '4.13.5', sdkNodeAdapter: '1.19.15', nestParserQs: '6.16.0' });
+  assert.deepEqual(pins, { swaggerYaml: '4.3.2', ajvFastUri: '3.1.8', rateLimitIpAddress: '10.3.1', sdkHono: '4.13.5', sdkNodeAdapter: '1.19.15', nestParserQs: '6.16.0' });
   const yaml = swaggerRequire('js-yaml'); assert.deepEqual(yaml.load(yaml.dump({ openapi: '3.0.0', paths: {} })), { openapi: '3.0.0', paths: {} });
   const Ajv = sdkRequire('ajv'); const valid = new Ajv().compile({ type: 'object', properties: { id: { type: 'string' } }, required: ['id'] });
   assert.equal(valid({ id: 'fixture' }), true); assert.equal(valid({ id: 1 }), false);

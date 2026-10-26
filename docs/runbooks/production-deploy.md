@@ -240,6 +240,11 @@ placeholder-password migration nor clobbers step 6's real password) — then
 `node dist/main` boots the app reading the runtime `DATABASE_URL` (the **app**
 role). RLS is live and enforced per request via the `app.current_workspace` GUC.
 
+The production backend sets `HOME=/tmp` because its root filesystem is
+read-only and `/tmp` is the writable tmpfs. This keeps Chromium's crashpad
+configuration/database writable when quote PDF rendering is enabled; keep the
+same value in `deploy/.env` when preparing production.
+
 > **Why migrate is a one-shot BEFORE the password (step 5 → 6).** The
 > `…_suite_tenancy_rls_roles` migration carries `ALTER ROLE customer_ops_app …
 > PASSWORD '<placeholder>'`, which overwrites the role's password on its FIRST
