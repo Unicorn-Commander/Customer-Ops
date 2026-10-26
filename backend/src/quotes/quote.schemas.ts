@@ -8,6 +8,21 @@ const quantity = z
   }, 'qty must be nonnegative with at most four decimal places');
 const money = z.number().int().min(0).max(2_000_000_000);
 const text = z.string().max(40000);
+// Zod 4 applies a field's .default() even when the field is optional, so a plain .partial() of a
+// create schema fills every omitted field with its create-time default, and a partial update then
+// overwrites stored values (qty -> 1, unit -> 'item', currency -> 'USD', showDeliveryPartner -> true).
+// Update schemas drop the defaults before every field becomes optional: an omitted field stays omitted.
+type WithoutDefaults<T extends z.ZodRawShape> = {
+  [K in keyof T]: T[K] extends z.ZodDefault<infer Inner> ? Inner : T[K];
+};
+function withoutDefaults<T extends z.ZodRawShape>(shape: T): WithoutDefaults<T> {
+  return Object.fromEntries(
+    Object.entries(shape).map(([key, field]) => [
+      key,
+      field instanceof z.ZodDefault ? field.unwrap() : field,
+    ]),
+  ) as WithoutDefaults<T>;
+}
 export const quoteCreate = z
   .object({
     customerId: z.string().uuid(),
@@ -33,7 +48,10 @@ export const quoteCreate = z
     taxEstimateCents: money.nullable().optional(),
   })
   .strict();
-export const quoteUpdate = quoteCreate.omit({ customerId: true, parentQuoteId: true }).partial();
+export const quoteUpdate = z
+  .object(withoutDefaults(quoteCreate.omit({ customerId: true, parentQuoteId: true }).shape))
+  .strict()
+  .partial();
 export const sectionInput = z
   .object({
     position: z.number().int().min(0).default(0),
@@ -108,7 +126,7 @@ export const lineInput = z
     priceBookItemId: z.string().uuid().nullable().optional(),
   })
   .strict();
-export const lineUpdate = lineInput.partial();
+export const lineUpdate = z.object(withoutDefaults(lineInput.shape)).strict().partial();
 export const optionsInput = z
   .object({ selectedLineIds: z.array(z.string().uuid()).max(500) })
   .strict();
