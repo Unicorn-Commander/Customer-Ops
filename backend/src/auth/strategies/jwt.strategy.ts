@@ -3,6 +3,7 @@ import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { ConfigService } from '@nestjs/config';
 import * as jsonwebtoken from 'jsonwebtoken';
+import type { Algorithm, VerifyOptions } from 'jsonwebtoken';
 import jwksClient, { JwksClient } from 'jwks-rsa';
 import { AuthService, JwtPayload } from '../auth.service';
 import { User } from '@prisma/client';
@@ -30,8 +31,11 @@ import { User } from '@prisma/client';
 export class JwtStrategy extends PassportStrategy(Strategy) {
   private readonly logger = new Logger(JwtStrategy.name);
   private readonly jwks?: JwksClient;
+  private readonly realmIssuer: string | null;
   private readonly brigadeTrustedIssuers: Set<string>;
   private readonly brigadeExpectedAudience: string;
+  private readonly keycloakEnforceAudience: boolean;
+  private readonly keycloakExpectedAudiences: Set<string>;
 
   constructor(
     configService: ConfigService,
@@ -39,11 +43,20 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   ) {
     const localSecret = configService.get<string>('JWT_SECRET') || '';
     const realmJwksUri = JwtStrategy.buildJwksUri(configService);
+    const realmIssuer = JwtStrategy.buildRealmIssuer(configService);
     const brigadeJwksByIss = JwtStrategy.buildBrigadeJwksClients(configService);
     // Audience-binding input: Customer-Ops only accepts a federation token
     // minted FOR customer-ops. (SUITE-IDENTITY §1: aud=customer-ops.)
     const brigadeExpectedAudience =
       configService.get<string>('BRIGADE_EXPECTED_AUDIENCE') || 'customer-ops';
+    // The shared uchub realm issues tokens for several suite clients. Keep
+    // rollout compatibility by logging mismatches by default; production can
+    // flip this to true once Keycloak's MCP audience scope is live.
+    const keycloakEnforceAudience = JwtStrategy.readBoolEnv(
+      configService.get<string>('KEYCLOAK_ENFORCE_AUDIENCE'),
+      false,
+    );
+    const keycloakExpectedAudiences = JwtStrategy.buildKeycloakExpectedAudiences(configService);
 
     let jwks: JwksClient | undefined;
     if (realmJwksUri) {
@@ -59,12 +72,10 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
-      // Explicit algorithm allow-list. Without it, passport-jwt verifies with
-      // whatever `alg` the (untrusted) token header names — the classic RS256→
-      // HS256 confusion vector (sign HS256 using the RSA *public* key as the HMAC
-      // secret). We accept only our two real families: HS256 (local session) and
-      // RS256 (Keycloak / Brigade JWKS). `alg:none` and anything else are
-      // rejected before secretOrKeyProvider's key ever applies.
+      // The hybrid strategy supports the legacy local HS256 path and the
+      // external RS256 paths. Each branch below performs a second,
+      // branch-specific verification with a pinned algorithm before Passport
+      // receives the key; the local secret is never used for a realm token.
       algorithms: ['HS256', 'RS256'],
       // secretOrKeyProvider runs per-request; inspect the JWT header + payload
       // and resolve the right key on the fly. Provider must call done(err, key).
@@ -81,6 +92,14 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
           const kid = decoded?.header?.kid;
           const iss: string | undefined = decoded?.payload?.iss;
 
+          // A token claiming to be from a Keycloak realm must be asymmetric.
+          // This is the algorithm-confusion fence between the local HS256
+          // secret and the realm's RS256 JWKS.
+          if (typeof iss === 'string' && iss.includes('/realms/') && alg !== 'RS256') {
+            done(new Error('Keycloak tokens must use RS256'));
+            return;
+          }
+
           // RS256 + Brigade-trusted-issuer -> per-issuer Brigade JWKS
           if (alg === 'RS256' && kid && iss && brigadeJwksByIss.has(iss)) {
             const client = brigadeJwksByIss.get(iss)!;
@@ -89,30 +108,42 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
                 done(err || new Error('Brigade signing key not found'));
                 return;
               }
-              done(null, key.getPublicKey());
+              JwtStrategy.verifyPinned(token, key.getPublicKey(), ['RS256'], undefined, done);
             });
             return;
           }
 
-          // RS256 + valid kid -> Keycloak realm JWKS (default RS256 branch)
-          if (alg === 'RS256' && kid && jwks) {
+          // RS256 + valid kid -> the configured Keycloak realm JWKS. A
+          // different issuer must never be treated as a Keycloak token merely
+          // because it is signed by a key from the shared realm JWKS.
+          if (alg === 'RS256') {
+            if (!kid || !jwks || !iss || !realmIssuer || iss !== realmIssuer) {
+              done(new Error('Untrusted JWT issuer'));
+              return;
+            }
             jwks.getSigningKey(kid, (err, key) => {
               if (err || !key) {
                 done(err || new Error('signing key not found'));
                 return;
               }
-              done(null, key.getPublicKey());
+              JwtStrategy.verifyPinned(token, key.getPublicKey(), ['RS256'], realmIssuer, done);
             });
             return;
           }
-          // Default: locally-signed HS256 JWT. Fail CLOSED if JWT_SECRET is
-          // unset — verifying against an empty key would accept any HS256 token
-          // an attacker signs with the empty string. Never silently allow it.
+
+          // Default: locally-signed HS256 JWT. Any other algorithm is refused
+          // before Passport sees a key. Fail closed when JWT_SECRET is unset —
+          // verifying against an empty key would accept any HS256 token signed
+          // with the empty string.
+          if (alg !== 'HS256') {
+            done(new Error('Unsupported JWT algorithm'));
+            return;
+          }
           if (!localSecret) {
             done(new Error('JWT_SECRET is not configured; cannot verify a local HS256 token'));
             return;
           }
-          done(null, localSecret);
+          JwtStrategy.verifyPinned(token, localSecret, ['HS256'], undefined, done);
         } catch (err) {
           done(err);
         }
@@ -120,8 +151,11 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     });
 
     this.jwks = jwks;
+    this.realmIssuer = realmIssuer;
     this.brigadeTrustedIssuers = new Set(brigadeJwksByIss.keys());
     this.brigadeExpectedAudience = brigadeExpectedAudience;
+    this.keycloakEnforceAudience = keycloakEnforceAudience;
+    this.keycloakExpectedAudiences = keycloakExpectedAudiences;
 
     // Local HS256 sessions are the primary login path (AuthService signs them
     // after the Keycloak callback), so an empty JWT_SECRET is a misconfiguration
@@ -135,6 +169,17 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
 
     if (realmJwksUri) {
       this.logger.log(`Keycloak realm JWT validation enabled via ${realmJwksUri}`);
+      if (this.keycloakEnforceAudience) {
+        this.logger.log(
+          `Keycloak audience binding ENFORCED: azp/aud must match one of [${[
+            ...this.keycloakExpectedAudiences,
+          ].join(', ')}]`,
+        );
+      } else {
+        this.logger.warn(
+          'Keycloak audience binding LOG-ONLY (KEYCLOAK_ENFORCE_AUDIENCE=false): mismatched realm audiences are accepted during rollout',
+        );
+      }
     } else {
       this.logger.log(
         'Keycloak realm JWT validation disabled (KEYCLOAK_URL/KEYCLOAK_REALM not set)',
@@ -154,6 +199,73 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     const realm = config.get<string>('KEYCLOAK_REALM');
     if (!base || !realm) return null;
     return `${base}/realms/${encodeURIComponent(realm)}/protocol/openid-connect/certs`;
+  }
+
+  /**
+   * The issuer is the browser-facing URL when an internal Keycloak URL is used
+   * for JWKS fetches (the self-host compose arrangement); otherwise it is the
+   * existing KEYCLOAK_URL. Both hosted rings set the values to their auth host.
+   */
+  private static buildRealmIssuer(config: ConfigService): string | null {
+    const base = (
+      config.get<string>('KEYCLOAK_PUBLIC_URL') ||
+      config.get<string>('KEYCLOAK_URL') ||
+      ''
+    ).replace(/\/$/, '');
+    const realm = config.get<string>('KEYCLOAK_REALM');
+    if (!base || !realm) return null;
+    return `${base}/realms/${encodeURIComponent(realm)}`;
+  }
+
+  private static readBoolEnv(value: string | undefined, fallback: boolean): boolean {
+    if (value == null || value === '') return fallback;
+    const normalized = value.trim().toLowerCase();
+    if (['false', '0', 'no', 'off'].includes(normalized)) return false;
+    if (['true', '1', 'yes', 'on'].includes(normalized)) return true;
+    return fallback;
+  }
+
+  /**
+   * Accepted Keycloak client identities. Keycloak commonly puts the dynamic
+   * client in `azp` and leaves `aud` as `account`, so validation checks either
+   * claim. Extra CSV values are additive to the configured client id.
+   */
+  private static buildKeycloakExpectedAudiences(config: ConfigService): Set<string> {
+    const clientId = config.get<string>('KEYCLOAK_CLIENT_ID') || 'customer-ops';
+    const expected = new Set<string>([clientId]);
+    const raw = config.get<string>('KEYCLOAK_EXPECTED_AUDIENCES');
+    for (const value of (raw || '').split(',')) {
+      const audience = value.trim();
+      if (audience) expected.add(audience);
+    }
+    return expected;
+  }
+
+  /**
+   * Verify with a branch-specific algorithm before Passport's shared hybrid
+   * verifier runs. This keeps local HS256 and Brigade paths compatible while
+   * pinning Keycloak access tokens to RS256 and the configured issuer.
+   */
+  private static verifyPinned(
+    token: string,
+    secretOrKey: string | Buffer,
+    algorithms: Algorithm[],
+    issuer: string | undefined,
+    done: (err: any, secretOrKey?: string | Buffer) => void,
+  ): void {
+    const options: VerifyOptions = { algorithms };
+    if (issuer) options.issuer = issuer;
+    try {
+      jsonwebtoken.verify(token, secretOrKey, options, (error) => {
+        if (error) {
+          done(error);
+          return;
+        }
+        done(null, secretOrKey);
+      });
+    } catch (error) {
+      done(error);
+    }
   }
 
   /**
@@ -195,6 +307,15 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   static audienceMatches(aud: unknown, expected: string): boolean {
     if (Array.isArray(aud)) return aud.includes(expected);
     return aud === expected;
+  }
+
+  static keycloakAudienceMatches(aud: unknown, azp: unknown, expected: Set<string>): boolean {
+    if (typeof azp === 'string' && expected.has(azp)) return true;
+    if (typeof aud === 'string' && expected.has(aud)) return true;
+    if (Array.isArray(aud)) {
+      return aud.some((value) => typeof value === 'string' && expected.has(value));
+    }
+    return false;
   }
 
   /**
@@ -268,6 +389,23 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
             `Rejected Brigade token: aud=${JSON.stringify(payload?.aud)} != ${this.brigadeExpectedAudience}`,
           );
           throw new UnauthorizedException('Token audience is not customer-ops');
+        }
+      } else if (typeof issuer === 'string' && issuer === this.realmIssuer) {
+        const audienceMatches = JwtStrategy.keycloakAudienceMatches(
+          payload?.aud,
+          payload?.azp,
+          this.keycloakExpectedAudiences,
+        );
+        if (!audienceMatches) {
+          const detail =
+            `Keycloak token audience mismatch: azp=${JSON.stringify(payload?.azp)} ` +
+            `aud=${JSON.stringify(payload?.aud)} expected one of ` +
+            `[${[...this.keycloakExpectedAudiences].join(', ')}]`;
+          if (this.keycloakEnforceAudience) {
+            this.logger.warn(`Rejected ${detail}`);
+            throw new UnauthorizedException('Token is not authorized for customer-ops');
+          }
+          this.logger.warn(`${detail} (log-only; set KEYCLOAK_ENFORCE_AUDIENCE=true to reject)`);
         }
       }
 

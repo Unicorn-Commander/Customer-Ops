@@ -13,6 +13,7 @@ import {
 } from './common/security/federation-override-guard';
 import { tenancyEnabled } from './common/workspace/feature-flags';
 import { PrismaService } from './prisma/prisma.service';
+import { createMcpCorsMiddleware } from './auth/oauth-discovery/mcp-cors';
 
 async function bootstrap() {
   // Typed as NestExpressApplication so we can cap body sizes via the platform's
@@ -79,6 +80,11 @@ async function bootstrap() {
   app.useBodyParser('json', { limit });
   app.useBodyParser('urlencoded', { limit, extended: true });
 
+  // MCP is a bearer-only browser surface. This middleware runs before Nest's
+  // guards so preflight can answer without authentication and disallowed
+  // browser origins are rejected without revealing auth state.
+  app.use(createMcpCorsMiddleware(configService));
+
   // CORS
   app.enableCors({
     origin: configService.get('CORS_ORIGIN', 'http://localhost:3001'),
@@ -87,7 +93,13 @@ async function bootstrap() {
 
   // Global prefix
   const apiPrefix = configService.get('API_PREFIX', 'api/v1');
-  app.setGlobalPrefix(apiPrefix);
+  app.setGlobalPrefix(apiPrefix, {
+    // RFC 9728 metadata is served at the origin root, not under /api/v1.
+    exclude: [
+      '.well-known/oauth-protected-resource',
+      '.well-known/oauth-protected-resource/api/v1/mcp',
+    ],
+  });
 
   // Global validation pipe
   app.useGlobalPipes(
