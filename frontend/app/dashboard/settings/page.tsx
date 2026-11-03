@@ -14,6 +14,7 @@ import type { LucideIcon } from 'lucide-react';
 import { Settings, Network, UserCircle, Building2, ArrowRight } from 'lucide-react';
 import { cn } from '@/components/ui';
 import { IconTile } from '@/components/ui/IconTile';
+import { ConnectYourAiPanel } from '@/components/connect/ConnectYourAiPanel';
 import { ApiTokensCard } from './api-tokens-card';
 
 interface Section {
@@ -111,6 +112,9 @@ export default function SettingsPage() {
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {SECTIONS.map((s) => <SectionCard key={s.key} section={s} />)}
       </div>
+
+      {/* Bring-your-own-AI setup sits immediately above the token mint/revoke card. */}
+      <ConnectYourAiPanel />
 
       {/* Personal access tokens — a live, inline section (not a sub-page link) */}
       <ApiTokensCard />
