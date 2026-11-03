@@ -13,6 +13,11 @@ import {
   LayoutDashboard, Filter, Users, Waypoints, Bot, UserPlus, HelpCircle,
   type LucideIcon,
 } from 'lucide-react';
+import { API_BASE } from './api';
+import { mcpUrlFromApiBase } from './mcpPublicUrl';
+
+/** The configured ring's public MCP endpoint, used by the in-app help copy. */
+const MCP_URL = mcpUrlFromApiBase(API_BASE);
 
 /** Placeholder URL for the public user guide. */
 export const USER_GUIDE_URL = 'https://docs.customer-ops.example.com';
@@ -121,6 +126,7 @@ export const HELP_TOPICS: HelpTopic[] = [
           'Collections nudge — draft a nudge on an overdue invoice.',
         ],
       },
+      { kind: 'p', text: `Connect Claude Code, Claude Desktop/claude.ai, ChatGPT, Cursor, Codex, or another MCP client from Settings → Connect your AI. The Customer-Ops MCP endpoint for this ring is ${MCP_URL}; OAuth opens a browser window, and a personal token is available below the setup panel when you need one.` },
       { kind: 'p', text: 'By default the agents run on your own local models — private, on your infrastructure, no per-word cost. For a task that warrants extra horsepower, you (or an admin) can route a single call to a frontier model. Either way you get a draft or a recommendation; nothing is sent or changed until you say so. See the User Guide for more.' },
     ],
   },
@@ -150,6 +156,7 @@ export const HELP_TOPICS: HelpTopic[] = [
           '“Could not load / please sign in.” Your session timed out — sign in again. Customer-Ops never stores a password of its own.',
           'A contact shows a placeholder name. It was imported name-only and is still resolving; the real name fills in once it lands in Contact-Ops.',
           'Is my data shared with a vendor? No. Customer-Ops runs on infrastructure you own, and the AI runs on your models by default.',
+          'Customer-Ops and Contact-Ops both use the co_pat_ prefix. Check the MCP URL before pasting a token: a Customer-Ops token belongs at the Customer-Ops endpoint only.',
         ],
       },
       { kind: 'p', text: 'For more details, see the User Guide.' },
