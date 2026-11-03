@@ -1,5 +1,11 @@
 import { WorkspaceInvitationsService } from '../common/workspace/workspace-invitations.service';
-import { ConflictException, Injectable, UnauthorizedException, Logger } from '@nestjs/common';
+import {
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  UnauthorizedException,
+  Logger,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma/prisma.service';
 import { User } from '@prisma/client';
@@ -7,6 +13,18 @@ import { resolveUserAccess, describeAccessList } from './access-list';
 import { signupMode } from '../common/workspace/feature-flags';
 import { WorkspaceProvisioningService } from '../common/workspace/workspace-provisioning.service';
 import { MembershipService } from '../common/workspace/membership.service';
+
+export const NO_WORKSPACE_ACCESS_RESPONSE = {
+  error: 'no_workspace_access',
+  message:
+    'Your account is verified but has no workspace in Customer-Ops yet. Ask your workspace admin for an invite.',
+} as const;
+
+export class NoWorkspaceAccessException extends ForbiddenException {
+  constructor() {
+    super(NO_WORKSPACE_ACCESS_RESPONSE);
+  }
+}
 
 export interface JwtPayload {
   sub: string;
@@ -157,9 +175,8 @@ export class AuthService {
       } else {
         // Invite-only (default): a uchub account does not by itself grant access.
         this.logger.warn(`Rejected SSO JIT for ${email || '(no email)'} — ${access.reason}`);
-        throw new UnauthorizedException(
-          'You are not authorized for Customer-Ops. Contact your administrator.',
-        );
+        if (email) throw new NoWorkspaceAccessException();
+        throw new UnauthorizedException('Invalid token');
       }
     }
 

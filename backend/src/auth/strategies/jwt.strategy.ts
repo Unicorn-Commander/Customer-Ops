@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException, Logger } from '@nestjs/common';
+import { ForbiddenException, Injectable, UnauthorizedException, Logger } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { ConfigService } from '@nestjs/config';
@@ -441,7 +441,9 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     } catch (error) {
       this.logger.warn(`JWT validation failed: ${(error as Error).message ?? 'unknown'}`);
       // Preserve an explicit audience rejection as-is; collapse the rest.
-      if (error instanceof UnauthorizedException) throw error;
+      if (error instanceof UnauthorizedException || error instanceof ForbiddenException) {
+        throw error;
+      }
       throw new UnauthorizedException('Invalid token');
     }
   }

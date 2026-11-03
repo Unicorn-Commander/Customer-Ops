@@ -6,7 +6,7 @@ import { AddressInfo } from 'net';
 import * as jwt from 'jsonwebtoken';
 import { JwtAuthGuard } from '../guards/jwt-auth.guard';
 import { JwtStrategy } from '../strategies/jwt.strategy';
-import { AuthService } from '../auth.service';
+import { AuthService, NoWorkspaceAccessException } from '../auth.service';
 import { PatService } from '../pat/pat.service';
 import { listMyWorkspaces } from '../../common/workspace/list-my-workspaces';
 import { createMcpCorsMiddleware } from './mcp-cors';
@@ -262,7 +262,7 @@ describe('Customer-Ops MCP OAuth discovery and resource-server boundary', () => 
     expect(response.headers.get('www-authenticate')).not.toContain('error="invalid_token"');
   });
 
-  it('accepts a signed Keycloak RS256 token and resolves the same user path as REST', async () => {
+  it('accepts a signed Keycloak RS256 token for a user with workspace access', async () => {
     const response = await call('/api/v1/mcp', {
       method: 'POST',
       headers: { Authorization: `Bearer ${signedKeycloakToken()}`, 'Content-Type': 'application/json' },
@@ -272,6 +272,34 @@ describe('Customer-Ops MCP OAuth discovery and resource-server boundary', () => 
     expect(response.status).toBe(200);
     expect(response.body).toEqual({ ok: true, ucUid: 'synthetic-uchub-sub' });
     expect(authService.validateJwtPayload).toHaveBeenCalled();
+  });
+
+  it('returns 403 insufficient_scope for a valid token with no workspace access', async () => {
+    (authService.validateJwtPayload as jest.Mock).mockImplementation(async (payload: any) => {
+      if (payload.sub === 'synthetic-no-workspace') {
+        throw new NoWorkspaceAccessException();
+      }
+      return fixtureUser;
+    });
+
+    const response = await call('/api/v1/mcp', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${signedKeycloakToken({ sub: 'synthetic-no-workspace' })}`,
+        'Content-Type': 'application/json',
+      },
+      body: jsonBody(),
+    });
+
+    expect(response.status).toBe(403);
+    expect(response.headers.get('www-authenticate')).toBe(
+      'Bearer error="insufficient_scope", error_description="no workspace access"',
+    );
+    expect(response.body).toEqual({
+      error: 'no_workspace_access',
+      message:
+        'Your account is verified but has no workspace in Customer-Ops yet. Ask your workspace admin for an invite.',
+    });
   });
 
   it('rejects an expired signed Keycloak token', async () => {

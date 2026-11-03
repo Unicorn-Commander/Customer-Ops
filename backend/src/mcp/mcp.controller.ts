@@ -7,17 +7,41 @@
  * its own session (Brigade re-authenticates per call).
  */
 
-import { All, Controller, Logger, Req, Res, UseGuards } from '@nestjs/common';
+import {
+  All,
+  ArgumentsHost,
+  Catch,
+  Controller,
+  ExceptionFilter,
+  Logger,
+  Req,
+  Res,
+  UseFilters,
+  UseGuards,
+} from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { Request, Response } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RequireScopes } from '../auth/decorators/require-scopes.decorator';
+import { setMcpInsufficientScopeHeader } from '../auth/oauth-discovery/mcp-auth-header';
+import { NoWorkspaceAccessException } from '../auth/auth.service';
 import { McpService } from './mcp.service';
 import { PersonalAccessToken, User } from '@prisma/client';
 
+@Catch(NoWorkspaceAccessException)
+class McpNoWorkspaceAccessFilter implements ExceptionFilter {
+  catch(exception: NoWorkspaceAccessException, host: ArgumentsHost): void {
+    const request = host.switchToHttp().getRequest<Request>();
+    const response = host.switchToHttp().getResponse<Response>();
+    setMcpInsufficientScopeHeader(request, response);
+    response.status(403).json(exception.getResponse());
+  }
+}
+
 @ApiTags('mcp')
 @ApiBearerAuth()
+@UseFilters(McpNoWorkspaceAccessFilter)
 // MCP is the most expensive + most attacker-interesting surface: a `co_pat_`-
 // prefixed bearer triggers the O(n) bcrypt scan in PatService BEFORE auth
 // succeeds, so an unlimited endpoint is a pre-auth CPU-exhaustion vector. Rather
