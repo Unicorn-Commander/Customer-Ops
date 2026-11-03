@@ -7,6 +7,8 @@ import {
 } from './oauth-discovery.service';
 
 export const MCP_REALM = 'customer-ops-mcp';
+export const MCP_INSUFFICIENT_SCOPE_HEADER =
+  'Bearer error="insufficient_scope", error_description="no workspace access"';
 
 /** True when the request carries a non-empty Bearer credential. */
 export function hasBearerToken(request: Request): boolean {
@@ -43,4 +45,14 @@ export function setMcpUnauthorizedHeader(
     'WWW-Authenticate',
     `Bearer realm="${MCP_REALM}", resource_metadata="${metadataUrl}"${error}`,
   );
+}
+
+/**
+ * Challenge a verified principal whose Customer-Ops workspace access is not
+ * provisioned. This is an authorization result, so it must not advertise an
+ * invalid bearer or send the client back through OAuth discovery.
+ */
+export function setMcpInsufficientScopeHeader(request: Request, response: Response): void {
+  if (!isMcpRequest(request)) return;
+  response.setHeader('WWW-Authenticate', MCP_INSUFFICIENT_SCOPE_HEADER);
 }

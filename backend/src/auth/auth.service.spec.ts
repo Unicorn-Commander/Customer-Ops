@@ -1,4 +1,4 @@
-import { ConflictException, UnauthorizedException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { User } from '@prisma/client';
 import { AuthService } from './auth.service';
@@ -81,11 +81,16 @@ describe('AuthService.validateKeycloakUser — signup modes', () => {
   });
 
   describe('invite mode (default)', () => {
-    it('rejects a stranger (no User row, no allow-list match) — unchanged', async () => {
+    it('returns structured 403 for a verified stranger with no workspace access', async () => {
       const { svc, provisioning } = makeService();
-      await expect(svc.validateKeycloakUser(STRANGER_SUB, stranger)).rejects.toThrow(
-        UnauthorizedException,
-      );
+      await expect(svc.validateKeycloakUser(STRANGER_SUB, stranger)).rejects.toMatchObject({
+        status: 403,
+        response: {
+          error: 'no_workspace_access',
+          message:
+            'Your account is verified but has no workspace in Customer-Ops yet. Ask your workspace admin for an invite.',
+        },
+      });
       // The self-serve provisioner is NEVER touched in invite mode.
       expect(provisioning.provisionSelfServeUser).not.toHaveBeenCalled();
     });
@@ -93,16 +98,16 @@ describe('AuthService.validateKeycloakUser — signup modes', () => {
     it('an unset CUSTOMER_OPS_SIGNUP_MODE behaves as invite (fail-safe)', async () => {
       delete process.env.CUSTOMER_OPS_SIGNUP_MODE;
       const { svc } = makeService();
-      await expect(svc.validateKeycloakUser(STRANGER_SUB, stranger)).rejects.toThrow(
-        UnauthorizedException,
+      await expect(svc.validateKeycloakUser(STRANGER_SUB, stranger)).rejects.toBeInstanceOf(
+        ForbiddenException,
       );
     });
 
     it('a typo signup mode also fails safe to invite (rejects the stranger)', async () => {
       process.env.CUSTOMER_OPS_SIGNUP_MODE = 'opn';
       const { svc } = makeService();
-      await expect(svc.validateKeycloakUser(STRANGER_SUB, stranger)).rejects.toThrow(
-        UnauthorizedException,
+      await expect(svc.validateKeycloakUser(STRANGER_SUB, stranger)).rejects.toBeInstanceOf(
+        ForbiddenException,
       );
     });
 

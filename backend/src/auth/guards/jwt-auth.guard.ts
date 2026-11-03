@@ -16,7 +16,11 @@ import { JWT_ONLY_KEY } from '../decorators/jwt-only.decorator';
 import { REQUIRE_SCOPES_KEY } from '../decorators/require-scopes.decorator';
 import { expandScopes, PatScope } from '../pat/pat.constants';
 import { explicitRequestedWorkspaceId } from '../../common/workspace/workspace.util';
-import { hasBearerToken, setMcpUnauthorizedHeader } from '../oauth-discovery/mcp-auth-header';
+import {
+  hasBearerToken,
+  setMcpInsufficientScopeHeader,
+  setMcpUnauthorizedHeader,
+} from '../oauth-discovery/mcp-auth-header';
 
 /**
  * Auth chokepoint for protected routes.
@@ -166,7 +170,11 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
       const request = context.switchToHttp().getRequest<Request>();
       const response = context.switchToHttp().getResponse?.();
       if (response) {
-        setMcpUnauthorizedHeader(request, response, this.configService, hasBearerToken(request));
+        if (isNoWorkspaceAccessError(err)) {
+          setMcpInsufficientScopeHeader(request, response);
+        } else {
+          setMcpUnauthorizedHeader(request, response, this.configService, hasBearerToken(request));
+        }
       }
     }
     return super.handleRequest(err, user, info, context, status);
@@ -205,6 +213,16 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
     }
     return this.patService;
   }
+}
+
+function isNoWorkspaceAccessError(error: unknown): boolean {
+  if (!(error instanceof ForbiddenException)) return false;
+  const response = error.getResponse();
+  return (
+    typeof response === 'object' &&
+    response !== null &&
+    (response as { error?: unknown }).error === 'no_workspace_access'
+  );
 }
 
 function extractBearerToken(request: Request): string | null {
