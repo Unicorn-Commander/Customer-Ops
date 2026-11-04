@@ -74,7 +74,17 @@ export class KeycloakStrategy extends PassportStrategy(Strategy, 'keycloak') {
     }
 
     const keycloakId = userProfile.sub || userProfile.id;
-    return this.authService.validateKeycloakUser(keycloakId, userProfile);
+    const isHumanRealmProfile =
+      typeof userProfile?.email === 'string' &&
+      userProfile.email.trim() !== '' &&
+      userProfile?.email_verified === true &&
+      !userProfile?.act &&
+      !userProfile?.client_id &&
+      !userProfile?.clientId &&
+      !userProfile?.__federationActor;
+    return isHumanRealmProfile
+      ? this.authService.validateKeycloakUser(keycloakId, userProfile, accessToken)
+      : this.authService.validateKeycloakUser(keycloakId, userProfile);
   }
 
   /**

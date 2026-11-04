@@ -13,6 +13,7 @@ import { resolveUserAccess, describeAccessList } from './access-list';
 import { signupMode } from '../common/workspace/feature-flags';
 import { WorkspaceProvisioningService } from '../common/workspace/workspace-provisioning.service';
 import { MembershipService } from '../common/workspace/membership.service';
+import { customerOpsEntitlementsEnabled, resolveOrgEntitlement } from './org-entitlements.client';
 
 export const NO_WORKSPACE_ACCESS_RESPONSE = {
   error: 'no_workspace_access',
@@ -40,6 +41,13 @@ export interface JwtPayload {
    */
   entitlements?: string[];
   email_verified?: boolean;
+}
+
+export interface KeycloakValidationOptions {
+  /** Bearer callers cache the endpoint verdict; browser callbacks re-check. */
+  cacheEntitlement?: boolean;
+  /** Verified bearer expiry, in seconds, for the bounded verdict cache. */
+  tokenExp?: number;
 }
 
 /**
@@ -84,7 +92,12 @@ export class AuthService {
    *   2. by email — links an existing local row to this sub (sets keycloakId).
    *   3. neither — JIT-create, GATED by the access list.
    */
-  async validateKeycloakUser(keycloakId: string, profile: any): Promise<User> {
+  async validateKeycloakUser(
+    keycloakId: string,
+    profile: any,
+    forwardedAccessToken?: string,
+    options?: KeycloakValidationOptions,
+  ): Promise<User> {
     const email: string | undefined = profile?.email;
 
     // 1. keycloakId / sub first.
@@ -119,8 +132,53 @@ export class AuthService {
       }
     }
 
-    // 3. JIT-provision. The access-list match ALWAYS wins first (unchanged in
-    //    both signup modes); the not-matched case is what the signup mode gates.
+    // 3. Resolve the Ops-Center organization before the legacy JIT branches.
+    //    Strategies only forward a human Keycloak realm token; this extra guard
+    //    keeps a directly-called federation/PAT-shaped path inert as well.
+    let orgEntitlement: Awaited<ReturnType<typeof resolveOrgEntitlement>> | null = null;
+    const mayResolveOrgEntitlement =
+      typeof forwardedAccessToken === 'string' &&
+      forwardedAccessToken.trim() !== '' &&
+      !forwardedAccessToken.startsWith('co_pat_') &&
+      !profile?.__federationActor &&
+      !profile?.act &&
+      !profile?.client_id &&
+      !profile?.clientId;
+    if (mayResolveOrgEntitlement && customerOpsEntitlementsEnabled()) {
+      orgEntitlement = await resolveOrgEntitlement(forwardedAccessToken, {
+        subject: keycloakId,
+        exp: options?.tokenExp,
+        cache: options?.cacheEntitlement === true,
+      });
+    }
+
+    if (orgEntitlement?.allowed && orgEntitlement.orgId && user?.isActive !== false) {
+      const verifiedEmail =
+        profile?.email_verified === true &&
+        typeof email === 'string' &&
+        (!user || email.trim().toLowerCase() === user.email.trim().toLowerCase());
+      if (!verifiedEmail && !user) {
+        this.logger.warn(
+          `Entitled Customer-Ops identity ${keycloakId} has no verified email; using legacy admission`,
+        );
+      } else if (!verifiedEmail) {
+        this.logger.warn(
+          `Entitled Customer-Ops identity ${keycloakId} email is not verified; using legacy admission`,
+        );
+      } else {
+        if (!user) user = await this.createEntitledUser(keycloakId, profile, email!);
+        await this.provisioning.provisionEntitledOrgWorkspace({
+          user,
+          orgId: orgEntitlement.orgId,
+          orgName: orgEntitlement.orgName,
+          role: orgEntitlement.role,
+        });
+      }
+    }
+
+    // 4. JIT-provision. The access-list match ALWAYS wins first (unchanged in
+    //    both signup modes) when the new entitlement path did not admit the
+    //    caller; the not-matched case is what the signup mode gates.
     if (!user) {
       const access = resolveUserAccess(email);
       if (access.allowed) {
@@ -224,6 +282,26 @@ export class AuthService {
    * gets a ConflictException from the unique constraints — we recover by
    * re-reading the row the winner just created, so both callers succeed.
    */
+  private async createEntitledUser(keycloakId: string, profile: any, email: string): Promise<User> {
+    try {
+      return await this.prisma.user.create({
+        data: {
+          email: email.trim(),
+          username: profile?.preferred_username || profile?.username || email.trim(),
+          firstName: profile?.given_name || profile?.firstName || '',
+          lastName: profile?.family_name || profile?.lastName || '',
+          keycloakId,
+        },
+      });
+    } catch (error) {
+      const existing = await this.prisma.user.findUnique({ where: { keycloakId } });
+      if (existing && existing.email.trim().toLowerCase() === email.trim().toLowerCase()) {
+        return existing;
+      }
+      throw error;
+    }
+  }
+
   private async provisionSelfServe(keycloakId: string, profile: any, email: string): Promise<User> {
     try {
       const result = await this.provisioning.provisionSelfServeUser({
@@ -280,7 +358,7 @@ export class AuthService {
    *     provisions OUTSIDE that policy.
    *   - Locally-signed session token (no/foreign `iss`) → resolve by local id.
    */
-  async validateJwtPayload(payload: any): Promise<User> {
+  async validateJwtPayload(payload: any, forwardedAccessToken?: string): Promise<User> {
     const issuer: string | undefined = payload?.iss;
     const isKeycloakRealmToken = typeof issuer === 'string' && issuer.includes('/realms/');
     const isBrigadeFederationToken =
@@ -303,7 +381,18 @@ export class AuthService {
         act: payload.act,
         __federationActor: isBrigadeFederationToken,
       };
-      return this.validateKeycloakUser(payload.sub, profile);
+      const humanRealmToken =
+        isKeycloakRealmToken &&
+        !isBrigadeFederationToken &&
+        AuthService.isHumanRealmToken(payload) &&
+        typeof forwardedAccessToken === 'string' &&
+        !forwardedAccessToken.startsWith('co_pat_');
+      return humanRealmToken
+        ? this.validateKeycloakUser(payload.sub, profile, forwardedAccessToken, {
+            cacheEntitlement: true,
+            tokenExp: payload.exp,
+          })
+        : this.validateKeycloakUser(payload.sub, profile);
     }
 
     // Locally-signed session token.
@@ -328,5 +417,17 @@ export class AuthService {
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean);
+  }
+
+  /** Realm users have a verified email; service/machine tokens do not. */
+  private static isHumanRealmToken(payload: any): boolean {
+    return (
+      typeof payload?.email === 'string' &&
+      payload.email.trim() !== '' &&
+      payload?.email_verified === true &&
+      !payload?.act &&
+      !payload?.client_id &&
+      !payload?.clientId
+    );
   }
 }

@@ -59,6 +59,10 @@ describe('KeycloakStrategy self-host endpoints', () => {
       'http://keycloak:8080/realms/customer-ops/protocol/openid-connect/userinfo',
       { headers: { Authorization: 'Bearer test-access-token' } },
     );
-    expect(auth.validateKeycloakUser).toHaveBeenCalledWith('local-admin', profile);
+    expect(auth.validateKeycloakUser).toHaveBeenCalledWith(
+      'local-admin',
+      profile,
+      'test-access-token',
+    );
   });
 });
