@@ -56,6 +56,20 @@ export interface ProvisionResult {
   workspaceIdSource: 'uc-registry' | 'local-fallback';
 }
 
+/** The organization membership returned by the Ops-Center entitlement lookup. */
+export interface EntitledOrgWorkspaceRequest {
+  user: User;
+  orgId: string;
+  orgName?: string | null;
+  role?: string | null;
+}
+
+export interface EntitledOrgWorkspaceResult {
+  workspaceId: string;
+  membership: Membership;
+  workspaceIdSource: 'uc-registry' | 'local-fallback' | 'existing';
+}
+
 @Injectable()
 export class WorkspaceProvisioningService {
   private readonly logger = new Logger(WorkspaceProvisioningService.name);
@@ -124,6 +138,119 @@ export class WorkspaceProvisioningService {
         `${workspaceId} [id source: ${minted.source}]`,
     );
     return result;
+  }
+
+  /**
+   * Ensure the Customer-Ops workspace that corresponds to an entitled
+   * Ops-Center organization. The org id is the idempotency key and is also the
+   * local workspace id, so every user in one org joins the same workspace.
+   *
+   * The registry client is still called for a new mirror row. Some Ops-Center
+   * org ids are UUID v4 while the legacy registry client validates UUID v7; if
+   * it cannot confirm the supplied id, the local mirror keeps the org id and
+   * reports the same local-fallback posture as self-serve provisioning.
+   */
+  async provisionEntitledOrgWorkspace(
+    request: EntitledOrgWorkspaceRequest,
+  ): Promise<EntitledOrgWorkspaceResult> {
+    const orgId = request.orgId.trim();
+    if (!orgId) throw new Error('Entitled organization id is required');
+
+    const userKey = MembershipService.membershipKey(request.user);
+    const role =
+      request.role?.trim().toLowerCase() === 'owner' ? WorkspaceRole.OWNER : WorkspaceRole.MEMBER;
+    const slug = `org-${orgId.slice(0, 8).toLowerCase()}`;
+    const displayName = request.orgName?.trim() || `Organization ${orgId.slice(0, 8)}`;
+    const existing = await this.prisma.workspace.findUnique({ where: { id: orgId } });
+
+    let source: EntitledOrgWorkspaceResult['workspaceIdSource'] = existing
+      ? 'existing'
+      : 'local-fallback';
+    if (!existing) {
+      try {
+        const minted = await this.registry.mintWorkspaceId({
+          workspaceId: orgId,
+          slug,
+          displayName,
+          ownerUcUid: role === WorkspaceRole.OWNER ? userKey : null,
+          ownerIsDefault: true,
+        });
+        source = minted.workspaceId === orgId ? minted.source : 'local-fallback';
+        if (minted.workspaceId !== orgId) {
+          this.logger.warn(
+            `uc-registry could not confirm entitled org workspace id ${orgId}; keeping the org id locally`,
+          );
+        }
+      } catch (error) {
+        this.logger.warn(
+          `uc-registry entitlement registration failed for ${orgId}: ${(error as Error).message}`,
+        );
+      }
+    }
+
+    try {
+      const result = await this.materializeEntitledOrgWorkspace({
+        orgId,
+        userKey,
+        role,
+        slug,
+        displayName,
+      });
+      return { workspaceId: orgId, membership: result.membership, workspaceIdSource: source };
+    } catch (error) {
+      // Two first logins for a new org can race on the Workspace primary key.
+      // Re-run the idempotent transaction after the winner commits.
+      if (!this.isUniqueViolation(error)) throw error;
+      const raced = await this.prisma.workspace.findUnique({ where: { id: orgId } });
+      if (!raced) throw error;
+      const result = await this.materializeEntitledOrgWorkspace({
+        orgId,
+        userKey,
+        role,
+        slug,
+        displayName,
+      });
+      return {
+        workspaceId: orgId,
+        membership: result.membership,
+        workspaceIdSource: 'existing',
+      };
+    }
+  }
+
+  private async materializeEntitledOrgWorkspace(fields: {
+    orgId: string;
+    userKey: string;
+    role: WorkspaceRole;
+    slug: string;
+    displayName: string;
+  }): Promise<{ membership: Membership }> {
+    return this.prisma.withWorkspace(fields.orgId, fields.userKey, async (tx) => {
+      const workspace =
+        (await tx.workspace.findUnique({ where: { id: fields.orgId } })) ??
+        (await tx.workspace.create({
+          data: {
+            id: fields.orgId,
+            slug: fields.slug,
+            displayName: fields.displayName,
+          },
+        }));
+      const hasAny = await tx.membership.findFirst({ where: { userKey: fields.userKey } });
+      const membership = await tx.membership.upsert({
+        where: {
+          userKey_workspaceId: { userKey: fields.userKey, workspaceId: workspace.id },
+        },
+        update: { status: MembershipStatus.ACTIVE },
+        create: {
+          userKey: fields.userKey,
+          workspaceId: workspace.id,
+          role: fields.role,
+          status: MembershipStatus.ACTIVE,
+          isDefault: !hasAny,
+        },
+      });
+      return { membership };
+    });
   }
 
   /**

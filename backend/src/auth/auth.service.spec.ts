@@ -60,13 +60,20 @@ describe('AuthService.validateKeycloakUser — signup modes', () => {
           membership: {},
           workspaceIdSource: 'uc-registry',
         })),
+      provisionEntitledOrgWorkspace: jest.fn(async () => ({
+        workspaceId: '6e40af62-214d-4155-86f1-37dea8bcc53b',
+        membership: {},
+        workspaceIdSource: 'uc-registry',
+      })),
     } as unknown as WorkspaceProvisioningService;
 
     const membership = {
       ensureSeededMembership: jest.fn(async () => undefined),
     } as unknown as MembershipService;
     const jwt = { sign: jest.fn(() => 'tok') } as unknown as JwtService;
-    const svc = new AuthService(jwt, prisma, provisioning, membership, { permitsIdentity: jest.fn().mockResolvedValue(false) } as any);
+    const svc = new AuthService(jwt, prisma, provisioning, membership, {
+      permitsIdentity: jest.fn().mockResolvedValue(false),
+    } as any);
     return { svc, prisma, provisioning, membership };
   }
 
@@ -74,9 +81,15 @@ describe('AuthService.validateKeycloakUser — signup modes', () => {
     __resetAccessListCacheForTests();
     delete process.env.CUSTOMER_OPS_ACCESS_LIST; // legacy fallback (Aaron+Shafen OWNER)
     delete process.env.CUSTOMER_OPS_SIGNUP_MODE;
+    delete process.env.CUSTOMER_OPS_ENTITLEMENTS_ENABLED;
+    delete process.env.UC_ENTITLEMENTS_URL;
+    delete process.env.CUSTOMER_OPS_ENTITLEMENT_FEATURE_KEY;
   });
   afterEach(() => {
     delete process.env.CUSTOMER_OPS_SIGNUP_MODE;
+    delete process.env.CUSTOMER_OPS_ENTITLEMENTS_ENABLED;
+    delete process.env.UC_ENTITLEMENTS_URL;
+    delete process.env.CUSTOMER_OPS_ENTITLEMENT_FEATURE_KEY;
     jest.restoreAllMocks();
   });
 
@@ -231,6 +244,132 @@ describe('AuthService.validateKeycloakUser — signup modes', () => {
       await expect(
         svc.validateKeycloakUser('kc-noemail', { sub: 'kc-noemail', preferred_username: 'x' }),
       ).rejects.toThrow(UnauthorizedException);
+      expect(provisioning.provisionSelfServeUser).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('entitled organization workspace path', () => {
+    const ownerProfile = {
+      sub: 'kc-lantern-owner',
+      email: 'owner@lantern-harbor.example',
+      email_verified: true,
+      preferred_username: 'lantern-owner',
+      given_name: 'Nora',
+      family_name: 'Harbor',
+    };
+
+    beforeEach(() => {
+      process.env.CUSTOMER_OPS_ENTITLEMENTS_ENABLED = 'true';
+      process.env.UC_ENTITLEMENTS_URL = 'https://ops.example.test/api/v1/entitlements';
+    });
+
+    it('browser login provisions an entitled owner before legacy JIT branches', async () => {
+      const { svc, provisioning } = makeService();
+      jest.spyOn(global, 'fetch').mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          org_id: '6e40af62-214d-4155-86f1-37dea8bcc53b',
+          tier: 'byok',
+          role: 'owner',
+          entitlements: ['customer_ops_access'],
+          org_name: 'Lantern Harbor Advisory',
+        }),
+      } as Response);
+
+      const user = await svc.validateKeycloakUser(
+        ownerProfile.sub,
+        ownerProfile,
+        'fixture-browser-bearer',
+      );
+
+      expect(user.keycloakId).toBe(ownerProfile.sub);
+      expect(provisioning.provisionEntitledOrgWorkspace).toHaveBeenCalledWith(
+        expect.objectContaining({
+          user,
+          orgId: '6e40af62-214d-4155-86f1-37dea8bcc53b',
+          orgName: 'Lantern Harbor Advisory',
+          role: 'owner',
+        }),
+      );
+      expect(provisioning.provisionSelfServeUser).not.toHaveBeenCalled();
+    });
+
+    it('bearer login forwards a human realm token and caches the entitlement lookup', async () => {
+      const { svc, provisioning } = makeService();
+      const fetcher = jest.spyOn(global, 'fetch').mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          org_id: '6e40af62-214d-4155-86f1-37dea8bcc53b',
+          tier: 'byok',
+          role: 'member',
+          entitlements: ['customer_ops_access'],
+        }),
+      } as Response);
+      const payload = {
+        sub: 'kc-lantern-member',
+        iss: 'https://auth.example.test/realms/uchub',
+        email: 'member@lantern-harbor.example',
+        email_verified: true,
+        preferred_username: 'lantern-member',
+      };
+
+      await svc.validateJwtPayload(payload, 'fixture-bearer-value');
+      await svc.validateJwtPayload(payload, 'fixture-bearer-value');
+
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(provisioning.provisionEntitledOrgWorkspace).toHaveBeenCalledTimes(2);
+      expect(provisioning.provisionEntitledOrgWorkspace).toHaveBeenLastCalledWith(
+        expect.objectContaining({ role: 'member' }),
+      );
+    });
+
+    it('does not resolve PAT or federation paths', async () => {
+      const { svc } = makeService();
+      const fetcher = jest.spyOn(global, 'fetch');
+      const common = {
+        email: 'member@lantern-harbor.example',
+        email_verified: true,
+        preferred_username: 'lantern-member',
+      };
+
+      await expect(
+        svc.validateJwtPayload(
+          {
+            ...common,
+            sub: 'kc-pat-shaped',
+            iss: 'https://auth.example.test/realms/uchub',
+          },
+          'co_pat_fixture',
+        ),
+      ).rejects.toMatchObject({ status: 403 });
+      await expect(
+        svc.validateJwtPayload(
+          {
+            ...common,
+            sub: 'brigade-member',
+            iss: 'https://brigade.unicorncommander.ai',
+            aud: 'customer-ops',
+          },
+          'fixture-federation-bearer',
+        ),
+      ).rejects.toMatchObject({ status: 403 });
+      expect(fetcher).not.toHaveBeenCalled();
+    });
+
+    it('client errors fall through to the existing invite-only rejection', async () => {
+      const { svc, provisioning } = makeService();
+      jest.spyOn(global, 'fetch').mockRejectedValue(new Error('fixture outage'));
+
+      await expect(
+        svc.validateKeycloakUser(
+          'kc-outage-stranger',
+          { ...ownerProfile, sub: 'kc-outage-stranger', email: 'stranger@lantern-harbor.example' },
+          'fixture-browser-bearer',
+        ),
+      ).rejects.toMatchObject({ status: 403 });
+      expect(provisioning.provisionEntitledOrgWorkspace).not.toHaveBeenCalled();
       expect(provisioning.provisionSelfServeUser).not.toHaveBeenCalled();
     });
   });

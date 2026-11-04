@@ -7,6 +7,7 @@ import type { Algorithm, VerifyOptions } from 'jsonwebtoken';
 import jwksClient, { JwksClient } from 'jwks-rsa';
 import { AuthService, JwtPayload } from '../auth.service';
 import { User } from '@prisma/client';
+import type { Request } from 'express';
 
 /**
  * Multi-token JWT strategy (SUITE-IDENTITY §D6).
@@ -71,6 +72,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
 
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
+      passReqToCallback: true,
       ignoreExpiration: false,
       // The hybrid strategy supports the legacy local HS256 path and the
       // external RS256 paths. Each branch below performs a second,
@@ -376,7 +378,9 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     return [...new Set(codes)];
   }
 
-  async validate(payload: any): Promise<User> {
+  async validate(requestOrPayload: Request | any, maybePayload?: any): Promise<User> {
+    const request = maybePayload === undefined ? null : (requestOrPayload as Request);
+    const payload = maybePayload === undefined ? requestOrPayload : maybePayload;
     try {
       // Any token whose `iss` is a trusted Brigade broker is a federation token:
       // enforce that its audience is THIS app before resolving the user. (Local
@@ -409,7 +413,19 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         }
       }
 
-      const user = await this.authService.validateJwtPayload(payload as JwtPayload);
+      const rawBearer = request ? JwtStrategy.extractBearerToken(request) : undefined;
+      const forwardableBearer =
+        rawBearer &&
+        typeof payload?.iss === 'string' &&
+        payload.iss.includes('/realms/') &&
+        !this.brigadeTrustedIssuers.has(payload.iss) &&
+        JwtStrategy.isHumanRealmPayload(payload) &&
+        !rawBearer.startsWith('co_pat_')
+          ? rawBearer
+          : undefined;
+      const user = forwardableBearer
+        ? await this.authService.validateJwtPayload(payload as JwtPayload, forwardableBearer)
+        : await this.authService.validateJwtPayload(payload as JwtPayload);
       // Surface the suite-canonical workspace/tenant claim + acting sub on the
       // resolved user so the tenancy seam (WorkspaceContextService /
       // @CurrentWorkspace) can scope rows without trusting an HTTP header.
@@ -446,5 +462,23 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       }
       throw new UnauthorizedException('Invalid token');
     }
+  }
+
+  private static extractBearerToken(request: Request): string | undefined {
+    const raw = request?.headers?.authorization;
+    if (typeof raw !== 'string') return undefined;
+    const match = raw.match(/^Bearer\s+(.+)$/i);
+    return match?.[1]?.trim() || undefined;
+  }
+
+  private static isHumanRealmPayload(payload: any): boolean {
+    return (
+      typeof payload?.email === 'string' &&
+      payload.email.trim() !== '' &&
+      payload?.email_verified === true &&
+      !payload?.act &&
+      !payload?.client_id &&
+      !payload?.clientId
+    );
   }
 }

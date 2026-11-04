@@ -1,4 +1,5 @@
 import { JwtStrategy } from './jwt.strategy';
+import { ConfigService } from '@nestjs/config';
 
 /**
  * Audience-binding is the cross-app fence (SUITE-IDENTITY §9.4): a federation
@@ -35,10 +36,9 @@ describe('JwtStrategy.audienceMatches', () => {
  */
 describe('JwtStrategy.readEntitlements', () => {
   it('reads a flat entitlements array', () => {
-    expect(JwtStrategy.readEntitlements({ entitlements: ['customer-ops', 'accounting-ops'] })).toEqual([
-      'customer-ops',
-      'accounting-ops',
-    ]);
+    expect(
+      JwtStrategy.readEntitlements({ entitlements: ['customer-ops', 'accounting-ops'] }),
+    ).toEqual(['customer-ops', 'accounting-ops']);
   });
 
   it('reads a space- or comma-separated entitlements string', () => {
@@ -65,13 +65,19 @@ describe('JwtStrategy.readEntitlements', () => {
 
   it('reads the singular entitlement claim as a fallback', () => {
     expect(JwtStrategy.readEntitlements({ entitlement: 'customer-ops' })).toEqual(['customer-ops']);
-    expect(JwtStrategy.readEntitlements({ entitlement: ['customer-ops'] })).toEqual(['customer-ops']);
+    expect(JwtStrategy.readEntitlements({ entitlement: ['customer-ops'] })).toEqual([
+      'customer-ops',
+    ]);
   });
 
   it('falls back to products, then nested subscription.products', () => {
-    expect(JwtStrategy.readEntitlements({ products: ['accounting-ops'] })).toEqual(['accounting-ops']);
+    expect(JwtStrategy.readEntitlements({ products: ['accounting-ops'] })).toEqual([
+      'accounting-ops',
+    ]);
     expect(
-      JwtStrategy.readEntitlements({ subscription: { products: ['customer-ops', 'accounting-ops'] } }),
+      JwtStrategy.readEntitlements({
+        subscription: { products: ['customer-ops', 'accounting-ops'] },
+      }),
     ).toEqual(['customer-ops', 'accounting-ops']);
   });
 
@@ -112,5 +118,74 @@ describe('JwtStrategy.readEntitlements', () => {
     expect(
       JwtStrategy.readEntitlements({ entitlements: ['customer-ops', 'customer-ops'] }),
     ).toEqual(['customer-ops']);
+  });
+});
+
+describe('JwtStrategy human realm bearer forwarding', () => {
+  const user = {
+    id: 'local-human',
+    email: 'human@lantern-harbor.example',
+    isActive: true,
+  } as any;
+
+  function makeStrategy() {
+    const auth = {
+      validateJwtPayload: jest.fn(async () => user),
+    };
+    const strategy = new JwtStrategy(
+      new ConfigService({
+        JWT_SECRET: 'fixture-secret',
+        KEYCLOAK_URL: 'https://auth.example.test',
+        KEYCLOAK_PUBLIC_URL: 'https://auth.example.test',
+        KEYCLOAK_REALM: 'uchub',
+        KEYCLOAK_CLIENT_ID: 'customer-ops',
+        BRIGADE_TRUSTED_ISSUERS: 'https://brigade.unicorncommander.ai',
+      }),
+      auth as any,
+    );
+    return { strategy, auth };
+  }
+
+  it('forwards only a human Keycloak realm bearer', async () => {
+    const { strategy, auth } = makeStrategy();
+    const payload = {
+      sub: 'kc-human',
+      iss: 'https://auth.example.test/realms/uchub',
+      aud: 'customer-ops',
+      email: 'human@lantern-harbor.example',
+      email_verified: true,
+    };
+
+    await strategy.validate(
+      { headers: { authorization: 'Bearer fixture-human-bearer' } } as any,
+      payload,
+    );
+
+    expect(auth.validateJwtPayload).toHaveBeenCalledWith(payload, 'fixture-human-bearer');
+  });
+
+  it('does not forward PAT-shaped or federation bearers', async () => {
+    const { strategy, auth } = makeStrategy();
+    const human = {
+      sub: 'kc-human',
+      iss: 'https://auth.example.test/realms/uchub',
+      aud: 'customer-ops',
+      email: 'human@lantern-harbor.example',
+      email_verified: true,
+    };
+    const federation = {
+      ...human,
+      sub: 'brigade-human',
+      iss: 'https://brigade.unicorncommander.ai',
+    };
+
+    await strategy.validate({ headers: { authorization: 'Bearer co_pat_fixture' } } as any, human);
+    await strategy.validate(
+      { headers: { authorization: 'Bearer fixture-federation-bearer' } } as any,
+      federation,
+    );
+
+    expect(auth.validateJwtPayload).toHaveBeenNthCalledWith(1, human);
+    expect(auth.validateJwtPayload).toHaveBeenNthCalledWith(2, federation);
   });
 });

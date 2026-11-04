@@ -1,5 +1,5 @@
 import { ConflictException } from '@nestjs/common';
-import { MembershipStatus, Prisma, WorkspaceRole } from '@prisma/client';
+import { MembershipStatus, Prisma, User, WorkspaceRole } from '@prisma/client';
 import { WorkspaceProvisioningService } from './workspace-provisioning.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { MintedWorkspaceId, UcRegistryClient } from '../uc-registry/uc-registry.client';
@@ -61,6 +61,47 @@ describe('WorkspaceProvisioningService', () => {
     return {
       mintWorkspaceId: jest.fn(async () => minted),
     } as unknown as UcRegistryClient;
+  }
+
+  function makeEntitledPrisma() {
+    const workspaces = new Map<string, any>();
+    const memberships = new Map<string, any>();
+    const tx = {
+      workspace: {
+        findUnique: jest.fn(async ({ where }: any) => workspaces.get(where.id) ?? null),
+        create: jest.fn(async ({ data }: any) => {
+          workspaces.set(data.id, data);
+          return data;
+        }),
+      },
+      membership: {
+        findFirst: jest.fn(async ({ where }: any) => {
+          for (const membership of memberships.values()) {
+            if (membership.userKey === where.userKey) return membership;
+          }
+          return null;
+        }),
+        upsert: jest.fn(async ({ where, update, create }: any) => {
+          const key = `${where.userKey_workspaceId.userKey}:${where.userKey_workspaceId.workspaceId}`;
+          const existing = memberships.get(key);
+          if (existing) {
+            const updated = { ...existing, ...update };
+            memberships.set(key, updated);
+            return updated;
+          }
+          const created = { ...create };
+          memberships.set(key, created);
+          return created;
+        }),
+      },
+    };
+    const prisma = {
+      workspace: {
+        findUnique: jest.fn(async ({ where }: any) => workspaces.get(where.id) ?? null),
+      },
+      withWorkspace: jest.fn(async (_workspaceId: string, _userKey: string, fn: any) => fn(tx)),
+    } as unknown as PrismaService;
+    return { prisma, tx, workspaces, memberships };
   }
 
   it('provisions User + Workspace + OWNER membership in one transaction, keyed by sub', async () => {
@@ -158,5 +199,70 @@ describe('WorkspaceProvisioningService', () => {
     const svc = new WorkspaceProvisioningService(prisma, makeRegistry());
 
     await expect(svc.provisionSelfServeUser(identity)).rejects.toThrow('connection reset');
+  });
+
+  it('uses the Ops-Center org id for an entitled owner and joins a second user to it', async () => {
+    const orgId = '6e40af62-214d-4155-86f1-37dea8bcc53b';
+    const { prisma, tx, workspaces } = makeEntitledPrisma();
+    const registry = makeRegistry({ workspaceId: orgId, source: 'local-fallback' });
+    const svc = new WorkspaceProvisioningService(prisma, registry);
+    const owner = {
+      id: 'local-owner',
+      keycloakId: 'kc-lantern-owner',
+      email: 'owner@lantern-harbor.example',
+    } as User;
+    const member = {
+      id: 'local-member',
+      keycloakId: 'kc-lantern-member',
+      email: 'member@lantern-harbor.example',
+    } as User;
+
+    const first = await svc.provisionEntitledOrgWorkspace({
+      user: owner,
+      orgId,
+      orgName: 'Lantern Harbor Advisory',
+      role: 'owner',
+    });
+    const second = await svc.provisionEntitledOrgWorkspace({
+      user: member,
+      orgId,
+      orgName: 'A changed name must not rename the workspace',
+      role: 'member',
+    });
+
+    expect(first.workspaceId).toBe(orgId);
+    expect(second.workspaceId).toBe(orgId);
+    expect(first.membership.role).toBe(WorkspaceRole.OWNER);
+    expect(second.membership.role).toBe(WorkspaceRole.MEMBER);
+    expect(workspaces.get(orgId)).toMatchObject({
+      id: orgId,
+      displayName: 'Lantern Harbor Advisory',
+    });
+    expect(registry.mintWorkspaceId).toHaveBeenCalledTimes(1);
+    expect(tx.workspace.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the org id when the registry cannot confirm a non-v7 org UUID', async () => {
+    const orgId = '6e40af62-214d-4155-86f1-37dea8bcc53b';
+    const { prisma, workspaces } = makeEntitledPrisma();
+    const registry = makeRegistry({
+      workspaceId: '0190a000-7e57-7000-8000-00000000d00d',
+      source: 'local-fallback',
+    });
+    const svc = new WorkspaceProvisioningService(prisma, registry);
+
+    const result = await svc.provisionEntitledOrgWorkspace({
+      user: {
+        id: 'local-owner',
+        keycloakId: 'kc-lantern-owner',
+        email: 'owner@lantern-harbor.example',
+      } as User,
+      orgId,
+      role: 'owner',
+    });
+
+    expect(result.workspaceId).toBe(orgId);
+    expect(result.workspaceIdSource).toBe('local-fallback');
+    expect(workspaces.has(orgId)).toBe(true);
   });
 });
