@@ -26,6 +26,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
@@ -128,13 +129,26 @@ export class GdprController {
   @ApiOperation({
     summary:
       'Run the dormant-record retention sweep for THIS workspace now (owner-only). No-op ' +
-      'unless CUSTOMER_OPS_RETENTION_SWEEP_ENABLED is on AND a retention window is set.',
+      'unless CUSTOMER_OPS_RETENTION_SWEEP_ENABLED is on, a source scope is set, and a ' +
+      'retention window is set. Add ?dryRun=true for count-only output.',
   })
-  async runSweep(@CurrentUser() user: AuthedUser, @Param('workspaceId') workspaceId: string) {
+  async runSweep(
+    @CurrentUser() user: AuthedUser,
+    @Param('workspaceId') workspaceId: string,
+    @Query('dryRun') dryRun?: string,
+  ) {
     // Owner-gate before triggering (the sweep itself is a system job that skips
     // authz + writes its own per-customer DELETE audit rows). No-op unless the
-    // master flag is on AND this workspace has a retention window.
+    // master flag is on, the source scope is non-empty, AND this workspace has a
+    // retention window.
     await this.membership.assertOwner(user, workspaceId);
+
+    const isDryRun = ['1', 'true', 'yes', 'on'].includes((dryRun ?? '').trim().toLowerCase());
+    if (isDryRun) {
+      const result = await this.sweep.sweepWorkspace(workspaceId, undefined, { dryRun: true });
+      return { workspace_id: workspaceId, ...result };
+    }
+
     const purged = await this.sweep.sweepWorkspace(workspaceId);
     return { workspace_id: workspaceId, customers_purged: purged };
   }
