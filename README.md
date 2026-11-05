@@ -197,6 +197,7 @@ The canonical template is [deploy/.env.example](deploy/.env.example). Keep secre
 | `KEYCLOAK_CLIENT_SECRET`, `JWT_SECRET` | Keycloak client secret, and the secret for the local HS256 session token. An empty `JWT_SECRET` fails closed |
 | `KEYCLOAK_DB_PASSWORD`, `KEYCLOAK_ADMIN_PASSWORD`, `CUSTOMER_OPS_ADMIN_PASSWORD` | Self-host Keycloak database password, management password, and the local `admin` user's password |
 | `CUSTOMER_OPS_TENANCY_ENABLED`, `DEFAULT_WORKSPACE_ID`, `CUSTOMER_OPS_ACCESS_LIST`, `CUSTOMER_OPS_SIGNUP_MODE` | Workspace isolation (code default off; the template sets `true`), bootstrap workspace, access policy, and self-serve policy (`invite` unless the value is `open`) |
+| `CUSTOMER_OPS_RETENTION_SWEEP_ENABLED`, `CUSTOMER_OPS_RETENTION_SWEEP_SOURCES`, `CUSTOMER_OPS_RETENTION_SWEEP_INTERVAL_MS` | Dormant-record sweep flag, comma-separated source prefixes, and interval; when the flag is on, an empty/unset source scope fails closed and purges nothing |
 | `CUSTOMER_OPS_ENTITLEMENTS_ENABLED`, `UC_ENTITLEMENTS_URL`, `CUSTOMER_OPS_ENTITLEMENT_FEATURE_KEY` | Optional Ops-Center organization admission; both first settings arm it, and the feature key defaults to `customer_ops_access` |
 | `REDIS_URL` | Optional. Unset keeps rate limits, M365 OAuth nonces, and Relations Officer confirmations in process, which is correct for one replica. Set it before running more than one API replica. A pending confirmation stored in Redis also survives a restart |
 | `FALKORDB_URL` | Optional FalkorDB URL. Blank leaves graph reads dormant |

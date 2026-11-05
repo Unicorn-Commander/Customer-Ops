@@ -116,9 +116,10 @@ export class GdprService {
 
   /**
    * The shared erasure primitive used by BOTH the owner-gated endpoint and the
-   * retention sweep (which passes a null actor + 'retention' reason). Does NOT
-   * gate — the caller owns authorization. Returns `erased: false` (never throws)
-   * when the customer is not present, so the sweep can skip cleanly.
+   * retention sweep (which passes a null actor + 'retention' reason and, when
+   * available, a structural source prefix). Does NOT gate — the caller owns
+   * authorization. Returns `erased: false` (never throws) when the customer is
+   * not present, so the sweep can skip cleanly.
    *
    * Order: children (incl. lead_intakes, which the FK would only SET NULL, so we
    * delete them explicitly to remove the raw inbound identity PII) → the customer
@@ -130,6 +131,7 @@ export class GdprService {
     customerId: string,
     actorUcUid: string | null,
     reason: string,
+    sourcePrefix?: string,
   ): Promise<ErasureResult> {
     const tx = await this.workspaces.runInWorkspace(
       workspaceId,
@@ -191,15 +193,21 @@ export class GdprService {
       );
     }
 
-    // DELETE audit — structural metadata only (reason + counts), NEVER the
-    // contact id/name/email (the erased PII must not resurface in the trail).
+    // DELETE audit — structural metadata only (reason, optional source prefix,
+    // and counts), NEVER the contact id/name/email (the erased PII must not
+    // resurface in the trail).
     await this.audit.log({
       workspaceId,
       userId: actorUcUid ?? undefined,
       action: AuditAction.DELETE,
       resource: 'customer',
       resourceId: customerId,
-      details: { reason, removed: tx.removed, graphNodesDeleted },
+      details: {
+        reason,
+        ...(sourcePrefix ? { sourcePrefix } : {}),
+        removed: tx.removed,
+        graphNodesDeleted,
+      },
     });
 
     return { erased: true, customerId, removed: tx.removed, graphNodesDeleted };
