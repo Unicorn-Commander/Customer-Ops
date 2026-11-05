@@ -465,6 +465,32 @@ describe('LeadIntakeService — ingest_lead keystone', () => {
     expect(result.customerId).toBe('cust-1');
   });
 
+  it('tags website-assistant leads for the Contact-Ops retention scope, and nobody else', async () => {
+    const tagsSentFor = async (source: string) => {
+      const { tx } = makeTx();
+      const upsert = jest.fn().mockResolvedValue({ contactId: 'co-tagged-1' });
+      const { svc } = makeService({ tx, contact: { upsertContact: upsert } });
+      await svc.ingestForUser(
+        aaron,
+        {
+          source,
+          sourceDedupKey: 'one-lead',
+          displayName: 'Avery Quimby',
+          email: 'avery@example.com',
+          tags: ['callback'],
+        },
+        WS,
+      );
+      return upsert.mock.calls[0][1].tags;
+    };
+
+    expect(await tagsSentFor('talking-website-example-com')).toEqual([
+      'callback',
+      'website-assistant-lead',
+    ]);
+    expect(await tagsSentFor('northwind')).toEqual(['callback']);
+  });
+
   it('re-pushes a refreshed canonical id by re-pointing the existing relationship in place', async () => {
     const { tx, customers } = makeTx();
     const upsert = jest

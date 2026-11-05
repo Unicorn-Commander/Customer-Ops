@@ -112,6 +112,11 @@ interface ResolveOutcome {
   detail: string;
 }
 
+/** Leads the website assistant captured. The privacy notice promises these, and
+ *  only these, are kept up to 24 months after last contact. */
+const WEBSITE_ASSISTANT_SOURCE_PREFIX = 'talking-website-';
+const WEBSITE_ASSISTANT_LEAD_TAG = 'website-assistant-lead';
+
 @Injectable()
 export class LeadIntakeService extends LeadLabelResolver {
   private readonly logger = new Logger(LeadIntakeService.name);
@@ -946,7 +951,11 @@ export class LeadIntakeService extends LeadLabelResolver {
             },
           }
         : {}),
-      tags: intake.tags,
+      // Contact-Ops' retention sweep only ages people carrying this tag, and it
+      // applies on create: someone already in the book stays untouched.
+      tags: intake.source.startsWith(WEBSITE_ASSISTANT_SOURCE_PREFIX)
+        ? [...new Set([...intake.tags, WEBSITE_ASSISTANT_LEAD_TAG])]
+        : intake.tags,
     };
   }
 
