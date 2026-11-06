@@ -15,7 +15,7 @@
  * Pure data + pure helpers — no React, so the Integrations page and any future
  * surface (a status widget, the command palette) can import it freely.
  */
-import { API_BASE } from './api';
+import { apiGet } from './api';
 
 /* ── the raw shape the backend returns ──────────────────────────────────────
    Mirrors `backend/src/health/seam-health.ts` (SeamHealth) 1:1. */
@@ -160,17 +160,14 @@ export function seamCopy(seam: string): SeamCopy {
 }
 
 /**
- * Fetch federation seam health. This route is GLOBAL (not workspace-scoped) and
- * unauthenticated like the other `/health/*` probes — it reports only seam
- * up/down + a short detail, never tenant data — so we hit it directly rather
- * than going through `apiGet` (which would attach a bearer + bounce on 401).
+ * Fetch federation seam health. Since 2026-11-06 the route needs a signed-in
+ * workspace member (it names seams, rollout flags and notes, which is not for
+ * the open internet), so it goes through `apiGet` with the session bearer like
+ * every other cockpit read. The liveness probes (`/health`, `/health/live`,
+ * `/health/ready`) stay public.
  */
 export async function getIntegrationsHealth(): Promise<IntegrationsHealth> {
-  const res = await fetch(`${API_BASE}/health/integrations`, { cache: 'no-store' });
-  if (!res.ok) {
-    throw new Error(`GET /health/integrations failed: ${res.status}`);
-  }
-  return (await res.json()) as IntegrationsHealth;
+  return apiGet<IntegrationsHealth>('/health/integrations', undefined, { 'Cache-Control': 'no-store' });
 }
 
 /** A short, human latency string (e.g. "103 ms"); '—' when none was measured. */

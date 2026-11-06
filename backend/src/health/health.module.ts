@@ -2,6 +2,8 @@ import { Module } from '@nestjs/common';
 import { TerminusModule } from '@nestjs/terminus';
 import { HealthController } from './health.controller';
 import { PrismaHealthIndicator } from './prisma.health';
+import { AuthModule } from '../auth/auth.module';
+import { WorkspaceModule } from '../common/workspace/workspace.module';
 import { ContactOpsModule } from '../contact-ops/contact-ops.module';
 import { AccountingOpsModule } from '../accounting-ops/accounting-ops.module';
 import { OutreachOpsModule } from '../outreach-ops/outreach-ops.module';
@@ -15,8 +17,13 @@ import { M365Module } from '../m365/m365.module';
   // Each ops module EXPORTS its federation port; importing them lets the
   // HealthController inject the 7 ports for the `/health/integrations` probe.
   // M365Module exports its health indicator for the `m365` connector seam.
+  // AuthModule exports JwtAuthGuard; WorkspaceModule exports
+  // WorkspaceMembershipGuard. Seam status and the channel catalog use both.
+  // Liveness (`/health`, `/health/live`, `/health/ready`) stays public.
   imports: [
     TerminusModule,
+    AuthModule,
+    WorkspaceModule,
     ContactOpsModule,
     AccountingOpsModule,
     OutreachOpsModule,
