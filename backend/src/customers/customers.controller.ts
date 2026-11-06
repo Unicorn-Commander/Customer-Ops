@@ -140,7 +140,12 @@ export class CustomersController {
   }
 
   @Post(':id/lost')
-  @ApiOperation({ summary: 'Mark the relationship closed-lost (orthogonal to stage).' })
+  @ApiOperation({
+    summary:
+      'Mark the relationship closed-lost. The funnel stages are LEAD, PROSPECT, and ' +
+      'CUSTOMER only (no LOST or archived stage); this sets isLost and writes the ' +
+      'reason on the timeline. The row is not deleted, and Contact-Ops is not touched.',
+  })
   @RequireScopes('write:customers')
   @RequireWorkspaceRole(WorkspaceRole.MEMBER)
   async markLost(

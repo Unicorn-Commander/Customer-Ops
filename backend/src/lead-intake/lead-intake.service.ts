@@ -27,7 +27,14 @@
  * Contact-Ops upsert (an external call) runs OUTSIDE the DB transaction.
  */
 
-import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
+import { isEmail } from 'class-validator';
 import { ConfigService } from '@nestjs/config';
 import { createHash } from 'crypto';
 import {
@@ -37,8 +44,12 @@ import {
   Prisma,
   RelationshipStage,
   User,
+  WorkspaceRole,
 } from '@prisma/client';
+import { markCustomerLostInTx } from '../customers/customers.service';
 import { WorkspaceContextService } from '../common/workspace/workspace-context.service';
+import { MembershipService } from '../common/workspace/membership.service';
+import { roleMeetsMinimum } from '../common/workspace/workspace-role.util';
 import { WorkspaceTxClient } from '../prisma/prisma.service';
 import { WithWorkspaceClaim, ucUidOf } from '../common/workspace/workspace.util';
 import { ContactOpsPort, FederationContext } from '../contact-ops/contact-ops.port';
@@ -50,6 +61,7 @@ import {
   isProvisionalContactId,
 } from './lead-label.port';
 import {
+  canonicalizeIngestEmailInput,
   DiscardIntakeDto,
   IngestLeadDto,
   ListIntakesQueryDto,
@@ -125,6 +137,7 @@ export class LeadIntakeService extends LeadLabelResolver {
     private readonly workspaces: WorkspaceContextService,
     private readonly contactOps: ContactOpsPort,
     private readonly config: ConfigService,
+    private readonly membership: MembershipService,
   ) {
     super();
   }
@@ -146,8 +159,12 @@ export class LeadIntakeService extends LeadLabelResolver {
   // ========================================================================
 
   async ingestForUser(user: AuthedUser, dto: IngestLeadDto, requestedWorkspaceId?: string | null) {
-    const explicitContactId = dto.contactId?.trim() || null;
-    const hasIdentityKey = !!(dto.email?.trim() || dto.phone?.trim() || dto.displayName?.trim());
+    // MCP calls this service directly (no ValidationPipe). Canonicalize here too
+    // so both surfaces store one email shape and a non-email is a 400 that names
+    // the field. source + sourceDedupKey — the idempotency key — are not touched.
+    const staged: IngestLeadDto = { ...dto, email: this.canonicalEmail(dto.email) };
+    const explicitContactId = staged.contactId?.trim() || null;
+    const hasIdentityKey = !!(staged.email || staged.phone?.trim() || staged.displayName?.trim());
     if (!explicitContactId && !hasIdentityKey) {
       throw new BadRequestException(
         'A lead needs an identity to resolve: pass contactId, or at least one of ' +
@@ -161,7 +178,7 @@ export class LeadIntakeService extends LeadLabelResolver {
     // 1) Land/refresh the staged intake (idempotent on (ws, source, dedupKey)).
     const intake = await this.workspaces.runForUser(
       user,
-      (tx) => this.upsertIntakeInTx(tx, dto, ucUid),
+      (tx) => this.upsertIntakeInTx(tx, staged, ucUid),
       requestedWorkspaceId,
     );
 
@@ -196,6 +213,16 @@ export class LeadIntakeService extends LeadLabelResolver {
       customerId: outcome.customerId ?? null,
       detail: outcome.detail,
     };
+  }
+
+  /** Trim + lowercase, or 400 naming `email`. Blank is absent. */
+  private canonicalEmail(raw: string | undefined): string | undefined {
+    const email = canonicalizeIngestEmailInput(raw);
+    if (email == null) return undefined;
+    if (typeof email !== 'string' || !isEmail(email)) {
+      throw new BadRequestException('email must be an email');
+    }
+    return email;
   }
 
   /** Upsert the staged intake row. Create → PENDING; re-push → refresh the staged
@@ -852,28 +879,137 @@ export class LeadIntakeService extends LeadLabelResolver {
     dto: DiscardIntakeDto,
     requestedWorkspaceId?: string | null,
   ) {
-    const row = await this.workspaces.runForUser(
+    const workspaceId = await this.workspaces.resolveAuthorized(user, requestedWorkspaceId);
+    const role = await this.membership.roleInWorkspace(user, workspaceId);
+    const ucUid = ucUidOf(user);
+    const result = await this.workspaces.runForUser(
       user,
       async (tx) => {
         const r = await tx.leadIntake.findUnique({ where: { id } });
         if (!r) throw new NotFoundException(`Lead intake ${id} not found`);
         if (r.status === LeadIntakeStatus.RESOLVED) {
-          throw new BadRequestException(
-            'Cannot discard a RESOLVED intake — its relationship already exists. ' +
-              'Mark the relationship lost instead.',
-          );
+          // Pending/failed discards stay MEMBER-level. Closing a relationship
+          // that already graduated is owner/admin, and it requires a reason.
+          if (!roleMeetsMinimum(role, WorkspaceRole.ADMIN)) {
+            throw new ForbiddenException(
+              'Discarding a RESOLVED intake requires the owner or admin role.',
+            );
+          }
+          const reason = dto.reason?.trim();
+          if (!reason) {
+            throw new BadRequestException('reason is required to discard a RESOLVED intake');
+          }
+          const closed = await this.closeProvisionalJunkInTx(tx, r, reason, ucUid);
+          const detail =
+            `${reason} — discarded. Contact-Ops identity rows were left alone.` +
+            (closed.marked
+              ? ' Relationship closed-lost (isLost; the funnel has no LOST or archived stage).'
+              : '');
+          const intake = await tx.leadIntake.update({
+            where: { id },
+            data: { status: LeadIntakeStatus.DISCARDED, statusDetail: detail },
+          });
+          return {
+            intake,
+            customerMarkedLost: closed.marked,
+            customerOutcome: closed.outcome,
+          };
         }
-        return tx.leadIntake.update({
+        const intake = await tx.leadIntake.update({
           where: { id },
           data: {
             status: LeadIntakeStatus.DISCARDED,
             statusDetail: dto.reason?.trim() || 'Discarded',
           },
         });
+        return { intake, customerMarkedLost: false, customerOutcome: null as string | null };
       },
       requestedWorkspaceId,
     );
-    return this.serialize(row);
+    return {
+      ...this.serialize(result.intake),
+      customerMarkedLost: result.customerMarkedLost,
+      customerOutcome: result.customerOutcome,
+      // Identity stays in Contact-Ops. This path never deletes or edits a person.
+      contactOpsUntouched: true,
+    };
+  }
+
+  /**
+   * Close the customer only when THIS intake minted the provisional contact
+   * and the projection, and nothing else has happened to that relationship.
+   * Otherwise the intake is still discarded and the relationship is left open
+   * for an explicit mark-lost. Contact-Ops is not called.
+   */
+  private async closeProvisionalJunkInTx(
+    tx: WorkspaceTxClient,
+    intake: LeadIntake,
+    reason: string,
+    ucUid: string,
+  ): Promise<{ marked: boolean; outcome: string }> {
+    if (!intake.customerId) {
+      return { marked: false, outcome: 'left-open: no customer on the intake' };
+    }
+    const customer = await tx.customer.findUnique({ where: { id: intake.customerId } });
+    if (!customer) {
+      return { marked: false, outcome: 'left-open: no customer on the intake' };
+    }
+    if (customer.isLost) return { marked: false, outcome: 'already-lost' };
+    if (!this.intakeCreatedCustomer(intake, customer)) {
+      return { marked: false, outcome: 'left-open: customer was not created by this intake' };
+    }
+    const siblings = await tx.leadIntake.findMany({
+      where: { customerId: customer.id },
+      select: { id: true },
+    });
+    if (siblings.some((row) => row.id !== intake.id)) {
+      return { marked: false, outcome: 'left-open: customer has other activity' };
+    }
+    const activities = await tx.customerActivity.findMany({
+      where: { customerId: customer.id },
+      select: { kind: true, body: true },
+    });
+    const otherActivity = activities.some((row) => !this.isThisIntakeIngest(row, intake));
+    const linkCount = await this.customerLinkCount(tx, customer.id);
+    if (otherActivity || linkCount > 0 || customer.stage !== RelationshipStage.LEAD) {
+      return { marked: false, outcome: 'left-open: customer has other activity' };
+    }
+    await markCustomerLostInTx(tx, customer.id, reason, ucUid);
+    return { marked: true, outcome: 'marked-lost' };
+  }
+
+  /** True when this intake minted the provisional contact and its projection. */
+  private intakeCreatedCustomer(
+    intake: LeadIntake,
+    customer: { id: string; contactId: string },
+  ): boolean {
+    return (
+      intake.provisional === true &&
+      !!intake.resolvedContactId &&
+      isProvisionalContactId(intake.resolvedContactId) &&
+      customer.id === intake.customerId &&
+      customer.contactId === intake.resolvedContactId
+    );
+  }
+
+  /** The INGESTED row this intake wrote. Any other timeline row is other activity. */
+  private isThisIntakeIngest(
+    activity: { kind: CustomerActivityKind; body: string | null },
+    intake: LeadIntake,
+  ): boolean {
+    if (activity.kind !== CustomerActivityKind.INGESTED) return false;
+    const body = activity.body ?? '';
+    return body.includes(`Ingested from ${intake.source} (${intake.sourceDedupKey})`);
+  }
+
+  private async customerLinkCount(tx: WorkspaceTxClient, customerId: string): Promise<number> {
+    const [quotes, invoices, outreach, emails] = await Promise.all([
+      tx.quote.count({ where: { customerId } }),
+      tx.customerInvoiceLink.count({ where: { customerId } }),
+      tx.customerOutreachLink.count({ where: { customerId } }),
+      tx.customerEmailLink.count({ where: { customerId } }),
+    ]);
+    return quotes + invoices + outreach + emails;
   }
 
   // ========================================================================

@@ -160,7 +160,8 @@ export class McpService {
           'relationship + the FEDERATED Contact-Ops contact + Accounting-Ops ' +
           'invoices + Outreach campaigns/touches + Email-Ops threads + Meeting-Ops ' +
           'conversation signal), view the pipeline board, move a relationship ' +
-          'through the funnel, update relationship fields, and add timeline notes. Invoicing tools federate to ' +
+          'through the funnel, update relationship fields, mark a relationship ' +
+          'closed-lost, and add timeline notes. Invoicing tools federate to ' +
           'Accounting-Ops (the AR engine / ledger). Outreach tools federate to the ' +
           'Outreach app (Listmonk + Postiz). Email tools federate to the Email-Ops ' +
           'app (Stalwart): list mailbox threads, send/draft an email. The meeting ' +
@@ -322,6 +323,24 @@ export class McpService {
         },
       },
       async (args: any) => wrap(await tools.transitionStage(user, args)),
+    );
+
+    server.registerTool(
+      'mark_customer_lost',
+      {
+        title: 'Mark relationship lost',
+        description:
+          'Mark a relationship closed-lost. transition_customer_stage only allows ' +
+          'LEAD, PROSPECT, and CUSTOMER — there is no LOST or archived stage. This ' +
+          'sets isLost and writes the reason on the timeline (MARKED_LOST). It does ' +
+          'not delete the row and does not touch the Contact-Ops identity.',
+        inputSchema: {
+          customer_id: z.string(),
+          reason: z.string().min(1).max(500),
+          workspace_id: z.string().optional(),
+        },
+      },
+      async (args: any) => wrap(await tools.markCustomerLost(user, args)),
     );
 
     server.registerTool(
@@ -752,8 +771,12 @@ export class McpService {
         title: 'Discard lead intake',
         description:
           'Discard a staged intake (spam / duplicate / opt-out). Terminal — a ' +
-          'discarded intake is never auto-resolved. A RESOLVED intake cannot be ' +
-          'discarded (mark its relationship lost instead).',
+          'discarded intake is never auto-resolved. A RESOLVED intake can be ' +
+          'discarded by an owner or admin who passes reason. If that intake created ' +
+          'the provisional contact and customer and the customer has no other ' +
+          'activity, the relationship is closed-lost (isLost; the funnel has no LOST ' +
+          'or archived stage) with the reason on the timeline. Contact-Ops identity ' +
+          'rows are left alone. A member can still discard a pending or failed intake.',
         inputSchema: {
           intake_id: z.string(),
           workspace_id: z.string().optional(),

@@ -39,6 +39,7 @@ function makeTools() {
     pipelineForUser: jest.fn().mockResolvedValue(SENTINEL),
     updateForUser: jest.fn().mockResolvedValue(SENTINEL),
     transitionForUser: jest.fn().mockResolvedValue(SENTINEL),
+    markLostForUser: jest.fn().mockResolvedValue(SENTINEL),
     addNoteForUser: jest.fn().mockResolvedValue(SENTINEL),
     invoicesForUser: jest.fn().mockResolvedValue(SENTINEL),
     createInvoiceForUser: jest.fn().mockResolvedValue(SENTINEL),
@@ -235,6 +236,17 @@ describe('CustomerOpsTools — MCP arg → DTO delegation mapping', () => {
         'cust-1',
         { toStage: 'CUSTOMER', note: 'signed' },
         WS,
+      );
+    });
+
+    it('markCustomerLost maps reason and defaults the workspace to null', async () => {
+      const { tools, customers } = makeTools();
+      await tools.markCustomerLost(aaron, { customer_id: 'cust-1', reason: 'not-an-email junk' });
+      expect(customers.markLostForUser).toHaveBeenCalledWith(
+        aaron,
+        'cust-1',
+        { reason: 'not-an-email junk' },
+        null,
       );
     });
 
