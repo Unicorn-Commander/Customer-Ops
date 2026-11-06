@@ -24,6 +24,13 @@
   <img src="docs/screenshots/dashboard.webp" width="100%" alt="Customer-Ops dashboard with pipeline metrics, attention items, recent activity, and a relationship graph">
 </p>
 
+## Watch the demo
+
+<p align="center">
+  <a href="https://unicorncommander.com/products/customer-ops"><img src="https://unicorncommander.com/media/products/customer-ops/demo-poster.jpg" width="100%" alt="Customer-Ops demo video: click to watch on the product page"></a>
+</p>
+<p align="center"><sub>69 seconds on a synthetic company's wholesale accounts. Narrated in a machine voice rendered on our own hardware. <a href="https://unicorncommander.com/products/customer-ops">Watch it on the product page</a>.</sub></p>
+
 ## What is Customer-Ops?
 
 Customer-Ops is the relationship and funnel cockpit for turning leads into customers and keeping the work around each relationship visible. It owns the lifecycle — stage, pipeline, notes, next actions, and optional quotes — and reads contact, invoice, meeting, project, email, outreach, and device-conversation context from the apps that own those records. A lead stays a contact in Contact-Ops. Customer-Ops stores the stage and a contact reference, not a second phonebook or a second ledger.
