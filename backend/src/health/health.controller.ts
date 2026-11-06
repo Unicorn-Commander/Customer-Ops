@@ -1,8 +1,11 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, UseGuards } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { SkipThrottle } from '@nestjs/throttler';
 import { HealthCheck, HealthCheckService, MemoryHealthIndicator } from '@nestjs/terminus';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RequireScopes } from '../auth/decorators/require-scopes.decorator';
+import { WorkspaceMembershipGuard } from '../common/workspace/workspace-membership.guard';
 import { PrismaHealthIndicator } from './prisma.health';
 import { SeamHealth } from './seam-health';
 import { ContactOpsPort } from '../contact-ops/contact-ops.port';
@@ -72,13 +75,32 @@ export class HealthController {
    * real read uses) so a SILENT auth failure (a 401/403 that otherwise hides
    * behind a degrade-clean empty panel) becomes visible, PLUS the `m365` connector
    * seam (configuration-only — its target is Microsoft Graph, not a UC seam).
-   * Unauthenticated like the other `/health` routes — it exposes only seam up/down
-   * + a short probe detail, never tenant data. Each `ping()` never throws, so this
-   * always returns 200.
+   * Exposes only seam up/down + a short probe detail, never tenant data. Each
+   * `ping()` never throws, so an authorized call always returns 200.
+   *
+   * Caller: the same pair as the cockpit — `JwtAuthGuard` then
+   * `WorkspaceMembershipGuard`. A session JWT of a workspace member is enough.
+   * A personal access token must also hold `read:overview` (PATs are
+   * deny-by-default). No caller → 401. Membership enforcement follows
+   * `CUSTOMER_OPS_TENANCY_ENABLED`, same as every other guarded cockpit route.
+   *
+   * No public `{ok:true}` stub. Deploy and Traefik probe `GET /health`,
+   * `/health/live`, and `/health/ready` only — those stay public and are not
+   * this route. Nothing in backend, deploy, or the fleet-probe config in this
+   * repo calls this path. The cockpit integrations page fetches it today with
+   * no bearer; it needs the full catalog, so a stub would not serve it.
    */
   @Get('integrations')
+  @UseGuards(JwtAuthGuard, WorkspaceMembershipGuard)
+  @RequireScopes('read:overview')
+  @ApiBearerAuth()
   @ApiOperation({ summary: 'Federation seam health (per sibling-app integration)' })
   @ApiResponse({ status: 200, description: 'Per-seam probe results' })
+  @ApiResponse({ status: 401, description: 'No authenticated caller' })
+  @ApiResponse({
+    status: 403,
+    description: 'Caller is not a workspace member, or the PAT lacks read:overview',
+  })
   async integrations(): Promise<{ seams: SeamHealth[]; checkedAt: string }> {
     const seams = await Promise.all([
       this.contactOps.ping(),
@@ -95,18 +117,30 @@ export class HealthController {
 
   /**
    * Omnichannel channel-status matrix (email + SMS + iMessage + enterprise SMS).
-   * Unauthenticated like other `/health` routes — never includes secrets or tenant
-   * data. Marketing pages and ops runbooks key "live / dogfood / coming" labels from
-   * this payload; the static source of truth is `docs/CHANNEL-STATUS.md`.
+   * Never includes secrets or tenant data. Marketing pages and ops runbooks key
+   * "live / dogfood / coming" labels from this payload; the static source of
+   * truth is `docs/CHANNEL-STATUS.md`.
+   *
+   * Same caller rule as `integrations`: workspace member, `read:overview` for a
+   * PAT, 401 with no caller. No public stub — no probe in this repo calls this
+   * path (see `integrations`).
    *
    * Runtime flags influence dogfood posture; production live claims require explicit
    * CHANNEL_*_PROD_ENABLED=true (never implied by dogfood bridge config alone).
    */
   @Get('channels')
+  @UseGuards(JwtAuthGuard, WorkspaceMembershipGuard)
+  @RequireScopes('read:overview')
+  @ApiBearerAuth()
   @ApiOperation({
     summary: 'Omnichannel messaging status matrix (email / SMS / iMessage) for marketing + ops',
   })
   @ApiResponse({ status: 200, description: 'Channel status rows' })
+  @ApiResponse({ status: 401, description: 'No authenticated caller' })
+  @ApiResponse({
+    status: 403,
+    description: 'Caller is not a workspace member, or the PAT lacks read:overview',
+  })
   channels(): {
     channels: ChannelStatusRow[];
     checkedAt: string;
