@@ -46,7 +46,7 @@ The self-host stack runs Keycloak SSO with Postgres row-level security enforced:
 - **Quotes and proposals.** Quote routes, the renderer, and the quote MCP tools register only when `QUOTES_ENABLED` is `true` or `1`. The flag is not listed in `deploy/.env.example`; unset means off. The workspace stores sections, line items, options, recipients, versions, and events. Sending a quote stages an Email-Ops approval draft (`mode=draft`). It does not deliver the proposal itself.
 - **Agents that prepare a draft or a proposal.** The five relationship agents return a lead assessment, a next action, a meeting brief, a follow-up draft, or a collections draft. Follow-up and collections can stage that draft in the Email-Ops approval inbox. Those runs do not auto-send, post an invoice, or move a stage. The Relations Officer can propose one of four writes — stage change, note, mark lost, or reopen — and runs it only after a person confirms. Separate MCP tools can transition a stage, create an invoice, or send mail when the token's scopes allow it.
 - **Security at the workspace boundary.** Keycloak SSO, membership checks when tenancy is on, Postgres row-level security on workspace-scoped tables, scoped Personal Access Tokens, and an append-only `audit_logs` trail. Relationship writes and agent runs are audited on both the REST and MCP paths. The runtime role is `customer_ops_app` (`NOBYPASSRLS`). Migrations use the owner role.
-- **Optional integrations that fail clearly.** An unconfigured or unreachable seam makes no call and the cockpit shows a connect state. `GET /api/v1/health/integrations` probes contact-ops, accounting-ops, outreach, email-ops, conversations-ops, meeting-ops, project-ops, and the Microsoft 365 connector. Each row includes `configured`, `ok`, HTTP `status`, and a `detail` of `ok`, `not-configured`, `auth-error`, or `unreachable`.
+- **Optional integrations that fail clearly.** An unconfigured or unreachable seam makes no call and the cockpit shows a connect state. `GET /api/v1/health/integrations` probes contact-ops, accounting-ops, outreach, email-ops, conversations-ops, meeting-ops, project-ops, and the Microsoft 365 connector. Each row includes `configured`, `ok`, HTTP `status`, and a `detail` of `ok`, `not-configured`, `auth-error`, or `unreachable`. That route and `GET /api/v1/health/channels` require a signed-in workspace member: `401` with no caller, and `403` for a non-member when tenancy is on. A session JWT of a member is enough. A personal access token must also hold `read:overview`. `GET /api/v1/health`, `/health/live`, and `/health/ready` stay public.
 
 ## Feature tour
 
@@ -80,7 +80,7 @@ With `QUOTES_ENABLED=true` (or `1`), Customer-Ops keeps draft composition, comme
 
 ### Lead intake
 
-The lead intake surface shows what arrived, which identity path succeeded, and what is still pending or failed. `resolve_pending_leads` promotes pending intakes, and with `scope=pending_and_failed` it also promotes failed ones. It upgrades provisional contact ids once Contact-Ops is reachable. Discard sets the intake to `DISCARDED`, and that status is not in the resolve scan. A resolved intake cannot be discarded; mark the relationship lost instead.
+The lead intake surface shows what arrived, which identity path succeeded, and what is still pending or failed. `resolve_pending_leads` promotes pending intakes, and with `scope=pending_and_failed` it also promotes failed ones. It upgrades provisional contact ids once Contact-Ops is reachable. `discard_lead_intake` sets the intake to `DISCARDED`, and that status is not in the resolve scan. A member can discard a pending or failed intake. An owner or admin can also discard a `RESOLVED` intake by passing `reason`. When that intake created the provisional customer and the customer has no other activity, the relationship is closed-lost (`isLost`). Otherwise the intake is discarded and the relationship stays open for `mark_customer_lost`. Contact-Ops identity rows are left alone.
 
 ## Built for agents
 
@@ -105,7 +105,37 @@ plaintext in the local client configuration and never commit it.
 claude mcp add --transport http customer-ops-pat https://api.customer-ops.unicorncommander.ai/api/v1/mcp --header "Authorization: Bearer <co_pat_replace_me>"
 ~~~
 
-The server registers **24 core tools**: `health`, `list_my_workspaces`, `list_customers`, `get_customer_360`, `pipeline_board`, `transition_customer_stage`, `add_customer_note`, `update_customer`, `list_customer_invoices`, `create_customer_invoice`, `list_customer_outreach`, `start_customer_campaign`, `list_customer_email`, `send_customer_email`, `record_customer_engagement`, `list_customer_meetings`, `triage_customer`, `draft_followup`, `draft_collections_nudge`, `ingest_lead`, `lead_intake_stats`, `list_lead_intakes`, `resolve_pending_leads`, and `discard_lead_intake`. When quotes are enabled it adds **20 quote tools** (13 draft and price-book operations plus `render_quote`, `send_quote`, `supersede_quote`, `revoke_share_link`, `record_quote_acceptance`, `list_quote_versions`, and `list_quote_events`). `send_customer_email` defaults to `mode=draft`. `mode=send` queues delivery unless the workspace agent pause switch is on. `record_customer_engagement` can advance the stage on a reply or click.
+The server registers **25 core tools**, implemented on `CustomerOpsTools` in `backend/src/mcp/mcp.tools.ts` and registered in `backend/src/mcp/mcp.service.ts`. PAT scopes are `MCP_TOOL_SCOPE_MAP` and `MCP_TOOL_NO_SCOPE` in `backend/src/auth/pat/pat.constants.ts`. The minimum workspace role is `MCP_TOOL_MIN_ROLE` in `backend/src/mcp/mcp-access.ts` (an unmapped tool is viewer-level). A session JWT uses that role and ignores PAT scopes. A PAT must hold the scope; `write:*` implies the matching `read:*`.
+
+| Tool | PAT scope | Minimum role |
+|---|---|---|
+| `health` | none | any authenticated caller |
+| `list_my_workspaces` | none | any authenticated caller |
+| `list_customers` | `read:customers` | viewer |
+| `get_customer_360` | `read:customers` | viewer |
+| `pipeline_board` | `read:customers` | viewer |
+| `transition_customer_stage` | `write:customers` | member |
+| `mark_customer_lost` | `write:customers` | member |
+| `add_customer_note` | `write:activity` | member |
+| `update_customer` | `write:customers` | member |
+| `list_customer_invoices` | `read:customers` | viewer |
+| `create_customer_invoice` | `write:customers` | member |
+| `list_customer_outreach` | `read:customers` | viewer |
+| `start_customer_campaign` | `write:customers` | member |
+| `list_customer_email` | `read:customers` | viewer |
+| `send_customer_email` | `write:customers` | member |
+| `record_customer_engagement` | `write:activity` | member |
+| `list_customer_meetings` | `read:customers` | viewer |
+| `triage_customer` | `run:agents` | member |
+| `draft_followup` | `run:agents` | member |
+| `draft_collections_nudge` | `run:agents` | member |
+| `ingest_lead` | `write:leads` | member |
+| `lead_intake_stats` | `read:leads` | viewer |
+| `list_lead_intakes` | `read:leads` | viewer |
+| `resolve_pending_leads` | `write:leads` | member |
+| `discard_lead_intake` | `write:leads` | member |
+
+`discard_lead_intake` stays member-level for a pending or failed intake. Discarding a `RESOLVED` intake requires an owner or admin and a `reason` (`LeadIntakeService.discardForUser`). When quotes are enabled the server adds **20 quote tools** (13 draft and price-book operations plus `render_quote`, `send_quote`, `supersede_quote`, `revoke_share_link`, `record_quote_acceptance`, `list_quote_versions`, and `list_quote_events`). `send_customer_email` defaults to `mode=draft`. `mode=send` queues delivery unless the workspace agent pause switch is on. `record_customer_engagement` can advance the stage on a reply or click.
 
 The REST agent routes, all under `/api/v1/workspaces/:workspaceId/customers/:id/agents/`, are `triage` (lead-triage), `follow-up` (follow-up-draft), `collections-nudge`, `next-best-action`, and `meeting-prep`. Each accepts a `tier` of `bundled` or `metered` on the body or `?tier=` query. The body wins. A metered request without the `ai-metered` entitlement is downgraded to bundled, unless `UC_ENTITLEMENT_MODE=open`. Next-best-action and meeting-prep are REST-only. They are not MCP tools.
 
