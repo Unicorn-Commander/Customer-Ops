@@ -100,8 +100,7 @@ describe('AuthService.validateKeycloakUser — signup modes', () => {
         status: 403,
         response: {
           error: 'no_workspace_access',
-          message:
-            'Your account is verified but has no workspace in Customer-Ops yet. Ask your workspace admin for an invite.',
+          message: 'You are signed in but have no Customer-Ops access. Contact your administrator.',
         },
       });
       // The self-serve provisioner is NEVER touched in invite mode.

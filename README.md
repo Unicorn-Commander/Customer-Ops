@@ -91,7 +91,7 @@ For the hosted service, connect an OAuth-capable MCP client to
 Unicorn Commander account (OAuth) or paste a token. The OAuth configuration is
 the header-free form:
 
-If you see 'no workspace access', your sign-in worked; ask your admin for an invite.
+A valid sign-in with no Customer-Ops access answers 403 insufficient_scope: you are signed in, and the account has no Customer-Ops access. Contact your administrator.
 
 ~~~bash
 claude mcp add --transport http customer-ops https://api.customer-ops.unicorncommander.ai/api/v1/mcp
