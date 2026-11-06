@@ -102,6 +102,41 @@ import {
   UpdateCustomerDto,
 } from './dto/customer.dto';
 
+/**
+ * Close a relationship as lost inside an open workspace transaction.
+ *
+ * `transition_customer_stage` only allows LEAD, PROSPECT, and CUSTOMER
+ * (funnel.ts STAGE_ORDER). There is no LOST stage and no archived stage.
+ * Closed-lost is the orthogonal `isLost` flag plus a MARKED_LOST timeline row.
+ * This does not delete the row and does not touch Contact-Ops.
+ */
+export async function markCustomerLostInTx(
+  tx: WorkspaceTxClient,
+  id: string,
+  reason: string,
+  ucUid: string,
+) {
+  const current = await tx.customer.findUnique({ where: { id } });
+  if (!current) throw new NotFoundException(`Customer ${id} not found`);
+  if (current.isLost) {
+    throw new BadRequestException('Relationship is already marked lost');
+  }
+  const updated = await tx.customer.update({
+    where: { id },
+    data: { isLost: true, lostReason: reason, closedLostAt: new Date() },
+  });
+  await tx.customerActivity.create({
+    data: {
+      workspaceId: current.workspaceId,
+      customerId: id,
+      kind: CustomerActivityKind.MARKED_LOST,
+      body: `Closed-lost: ${reason}`,
+      actorUcUid: ucUid || null,
+    },
+  });
+  return updated;
+}
+
 /** A relationship row joined with its (optional) federated contact summary. */
 export interface CustomerWithContact {
   id: string;
@@ -2460,20 +2495,7 @@ export class CustomersService {
   }
 
   async markLostInTx(tx: WorkspaceTxClient, id: string, reason: string, ucUid: string) {
-    const current = await this.getInTx(tx, id);
-    if (current.isLost) {
-      throw new BadRequestException('Relationship is already marked lost');
-    }
-    const updated = await tx.customer.update({
-      where: { id },
-      data: { isLost: true, lostReason: reason, closedLostAt: new Date() },
-    });
-    await this.logActivity(tx, updated.workspaceId, id, {
-      kind: CustomerActivityKind.MARKED_LOST,
-      body: `Closed-lost: ${reason}`,
-      actorUcUid: ucUid,
-    });
-    return updated;
+    return markCustomerLostInTx(tx, id, reason, ucUid);
   }
 
   async reopenInTx(tx: WorkspaceTxClient, id: string, ucUid: string) {

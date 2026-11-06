@@ -16,6 +16,7 @@
  *   - pipeline_board      — relationships bucketed by funnel stage.
  *   - update_customer      — patch relationship-owned fields.
  *   - transition_customer_stage — move a relationship through the funnel.
+ *   - mark_customer_lost  — close a relationship lost (isLost; no LOST stage).
  *   - add_customer_note   — append a note to the relationship timeline.
  *
  * Phase 3 invoicing tools (the AR surface for agents — collections-nudge reads
@@ -132,6 +133,19 @@ export class CustomerOpsTools {
       user,
       args.customer_id,
       { toStage: args.to_stage, note: args.note },
+      args.workspace_id ?? null,
+    );
+  }
+
+  /** Closed-lost. The funnel has no LOST/archived stage; this sets isLost. */
+  async markCustomerLost(
+    user: User,
+    args: { customer_id: string; reason: string; workspace_id?: string },
+  ) {
+    return this.customers.markLostForUser(
+      user,
+      args.customer_id,
+      { reason: args.reason },
       args.workspace_id ?? null,
     );
   }
@@ -499,7 +513,7 @@ export class CustomerOpsTools {
     );
   }
 
-  /** Discard a staged intake (spam/duplicate/opt-out). Terminal. */
+  /** Discard a staged intake. A RESOLVED intake needs owner/admin plus reason. */
   async discardLeadIntake(
     user: User,
     args: { intake_id: string; workspace_id?: string; reason?: string },

@@ -111,7 +111,14 @@ export class LeadIntakeController {
   }
 
   @Post('intakes/:id/discard')
-  @ApiOperation({ summary: 'Discard a staged intake (spam/duplicate/opt-out). Terminal.' })
+  @ApiOperation({
+    summary:
+      'Discard an intake (spam/duplicate/opt-out). Terminal. A RESOLVED intake is ' +
+      'discarded only by an owner or admin who passes reason. When that intake ' +
+      'created the provisional customer and the customer has no other activity, ' +
+      'the relationship is closed-lost (isLost). Contact-Ops identity rows are ' +
+      'left alone.',
+  })
   @RequireScopes('write:leads')
   @RequireWorkspaceRole(WorkspaceRole.MEMBER)
   async discard(

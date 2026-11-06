@@ -1,8 +1,15 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { CustomerActivityKind, LeadIntakeStatus, RelationshipStage, User } from '@prisma/client';
+import {
+  CustomerActivityKind,
+  LeadIntakeStatus,
+  RelationshipStage,
+  User,
+  WorkspaceRole,
+} from '@prisma/client';
 import { LeadIntakeService } from './lead-intake.service';
 import { WorkspaceContextService } from '../common/workspace/workspace-context.service';
+import { MembershipService } from '../common/workspace/membership.service';
 import { ContactOpsPort } from '../contact-ops/contact-ops.port';
 import { isProvisionalContactId } from './lead-label.port';
 
@@ -125,6 +132,7 @@ function makeService(opts?: {
   contact?: Partial<ContactOpsPort>;
   config?: Record<string, string | undefined>;
   tx?: any;
+  role?: WorkspaceRole | null;
 }) {
   const contact: ContactOpsPort = {
     getContact: jest.fn().mockResolvedValue(null),
@@ -145,8 +153,14 @@ function makeService(opts?: {
     runForUser: jest.fn(async (_user: User, fn: any) => fn(opts?.tx)),
   } as unknown as WorkspaceContextService;
 
-  const svc = new LeadIntakeService(workspaces, contact, config);
-  return { svc, contact, config, workspaces };
+  const membership = {
+    roleInWorkspace: jest.fn().mockResolvedValue(
+      opts && 'role' in opts ? opts.role : WorkspaceRole.OWNER,
+    ),
+  } as unknown as MembershipService;
+
+  const svc = new LeadIntakeService(workspaces, contact, config, membership);
+  return { svc, contact, config, workspaces, membership };
 }
 
 describe('LeadIntakeService — ingest_lead keystone', () => {
@@ -890,5 +904,189 @@ describe('structured names through intake staging', () => {
         nicknames: ['Example'],
       }),
     );
+  });
+});
+
+describe('LeadIntakeService — discard a RESOLVED intake', () => {
+  function makeDiscardTx(opts?: {
+    intake?: Record<string, unknown>;
+    customer?: Record<string, unknown> | null;
+    activities?: Array<Record<string, unknown>>;
+    extraIntakes?: Array<Record<string, unknown>>;
+    linkCount?: number;
+  }) {
+    const intake = {
+      id: 'li-junk',
+      workspaceId: WS,
+      status: LeadIntakeStatus.RESOLVED,
+      provisional: true,
+      resolvedContactId: 'prov:deadbeef',
+      customerId: 'cust-junk',
+      source: 'test-junk',
+      sourceDedupKey: 'junk-1',
+      displayName: 'Pat Example',
+      email: 'pat@example.com',
+      phone: null,
+      orgName: null,
+      tags: [],
+      score: null,
+      expectedValue: null,
+      currency: 'USD',
+      priority: 'MEDIUM',
+      ownerUserKey: null,
+      notes: null,
+      statusDetail: 'Resolved via provisional',
+      createdByUcUid: UC_UID,
+      resolvedAt: new Date('2026-10-26T00:00:00Z'),
+      createdAt: new Date('2026-10-26T00:00:00Z'),
+      updatedAt: new Date('2026-10-26T00:00:00Z'),
+      ...(opts?.intake ?? {}),
+    };
+    const customer: Record<string, any> | null =
+      opts?.customer === null
+        ? null
+        : {
+            id: 'cust-junk',
+            workspaceId: WS,
+            contactId: 'prov:deadbeef',
+            stage: RelationshipStage.LEAD,
+            isLost: false,
+            lostReason: null,
+            closedLostAt: null,
+            ...(opts?.customer ?? {}),
+          };
+    const activities = opts?.activities ?? [
+      {
+        id: 'act-1',
+        customerId: customer?.id ?? 'cust-junk',
+        kind: CustomerActivityKind.INGESTED,
+        body: 'Ingested from test-junk (junk-1) via provisional [provisional identity] → contact prov:deadbeef — new lead',
+      },
+    ];
+    const intakes = [intake, ...(opts?.extraIntakes ?? [])];
+    const count = jest.fn(async () => opts?.linkCount ?? 0);
+    const tx: any = {
+      leadIntake: {
+        findUnique: jest.fn(async () => intake),
+        findMany: jest.fn(async () => intakes),
+        update: jest.fn(async ({ data }: any) => Object.assign(intake, data)),
+      },
+      customer: {
+        findUnique: jest.fn(async () => customer),
+        update: jest.fn(async ({ data }: any) => Object.assign(customer ?? {}, data)),
+      },
+      customerActivity: {
+        findMany: jest.fn(async () => activities),
+        create: jest.fn(async ({ data }: any) => {
+          const row = { id: `act-${activities.length + 1}`, ...data };
+          activities.push(row);
+          return row;
+        }),
+      },
+      quote: { count },
+      customerInvoiceLink: { count },
+      customerOutreachLink: { count },
+      customerEmailLink: { count },
+    };
+    return { tx, intake, customer, activities };
+  }
+
+  it('an OWNER discards a provisional junk intake and closes the relationship lost', async () => {
+    const { tx, intake, customer, activities } = makeDiscardTx();
+    const { svc, contact } = makeService({ tx, role: WorkspaceRole.OWNER });
+
+    const res = await svc.discardForUser(aaron, 'li-junk', { reason: 'not-an-email junk' }, WS);
+
+    expect(res.status).toBe(LeadIntakeStatus.DISCARDED);
+    expect(res.customerMarkedLost).toBe(true);
+    expect(res.customerOutcome).toBe('marked-lost');
+    expect(res.contactOpsUntouched).toBe(true);
+    expect(res.statusDetail).toContain('Contact-Ops identity rows were left alone');
+    expect(intake.status).toBe(LeadIntakeStatus.DISCARDED);
+    expect(customer!.isLost).toBe(true);
+    expect(customer!.lostReason).toBe('not-an-email junk');
+    expect(customer!.stage).toBe(RelationshipStage.LEAD);
+    const lost = activities.filter((a) => a.kind === CustomerActivityKind.MARKED_LOST);
+    expect(lost).toHaveLength(1);
+    expect(lost[0].body).toContain('not-an-email junk');
+    expect(contact.upsertContact).not.toHaveBeenCalled();
+  });
+
+  it('an ADMIN can discard a RESOLVED intake the same way', async () => {
+    const { tx, customer } = makeDiscardTx();
+    const { svc } = makeService({ tx, role: WorkspaceRole.ADMIN });
+    const res = await svc.discardForUser(aaron, 'li-junk', { reason: 'spam' }, WS);
+    expect(res.status).toBe(LeadIntakeStatus.DISCARDED);
+    expect(res.customerMarkedLost).toBe(true);
+    expect(customer!.isLost).toBe(true);
+  });
+
+  it('refuses a MEMBER on a RESOLVED intake and does not change it', async () => {
+    const { tx, intake } = makeDiscardTx();
+    const { svc } = makeService({ tx, role: WorkspaceRole.MEMBER });
+    await expect(
+      svc.discardForUser(aaron, 'li-junk', { reason: 'spam' }, WS),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(intake.status).toBe(LeadIntakeStatus.RESOLVED);
+    expect(tx.leadIntake.update).not.toHaveBeenCalled();
+    expect(tx.customer.update).not.toHaveBeenCalled();
+  });
+
+  it('requires reason from an OWNER before discarding a RESOLVED intake', async () => {
+    const { tx, intake } = makeDiscardTx();
+    const { svc } = makeService({ tx, role: WorkspaceRole.OWNER });
+    await expect(svc.discardForUser(aaron, 'li-junk', {}, WS)).rejects.toThrow(
+      /reason is required/,
+    );
+    expect(intake.status).toBe(LeadIntakeStatus.RESOLVED);
+  });
+
+  it('discards a RESOLVED intake but leaves a non-provisional relationship open', async () => {
+    const { tx, customer } = makeDiscardTx({
+      intake: {
+        provisional: false,
+        resolvedContactId: 'co-person-9',
+      },
+      customer: { contactId: 'co-person-9' },
+      activities: [],
+    });
+    const { svc, contact } = makeService({ tx, role: WorkspaceRole.OWNER });
+    const res = await svc.discardForUser(aaron, 'li-junk', { reason: 'duplicate' }, WS);
+    expect(res.status).toBe(LeadIntakeStatus.DISCARDED);
+    expect(res.customerMarkedLost).toBe(false);
+    expect(res.customerOutcome).toContain('not created by this intake');
+    expect(res.contactOpsUntouched).toBe(true);
+    expect(customer!.isLost).toBe(false);
+    expect(contact.upsertContact).not.toHaveBeenCalled();
+  });
+
+  it('discards a RESOLVED intake but leaves a provisional customer with other activity open', async () => {
+    const { tx, customer } = makeDiscardTx({
+      activities: [
+        {
+          kind: CustomerActivityKind.INGESTED,
+          body: 'Ingested from test-junk (junk-1) via provisional — new lead',
+        },
+        { kind: CustomerActivityKind.NOTE, body: 'called them' },
+      ],
+    });
+    const { svc } = makeService({ tx, role: WorkspaceRole.OWNER });
+    const res = await svc.discardForUser(aaron, 'li-junk', { reason: 'oops' }, WS);
+    expect(res.status).toBe(LeadIntakeStatus.DISCARDED);
+    expect(res.customerMarkedLost).toBe(false);
+    expect(res.customerOutcome).toContain('other activity');
+    expect(customer!.isLost).toBe(false);
+  });
+
+  it('still lets a MEMBER discard a PENDING intake without a reason', async () => {
+    const { tx, intake } = makeDiscardTx({
+      intake: { status: LeadIntakeStatus.PENDING, provisional: false, customerId: null },
+    });
+    const { svc } = makeService({ tx, role: WorkspaceRole.MEMBER });
+    const res = await svc.discardForUser(aaron, 'li-junk', {}, WS);
+    expect(res.status).toBe(LeadIntakeStatus.DISCARDED);
+    expect(res.customerMarkedLost).toBe(false);
+    expect(intake.statusDetail).toBe('Discarded');
+    expect(tx.customer.update).not.toHaveBeenCalled();
   });
 });
