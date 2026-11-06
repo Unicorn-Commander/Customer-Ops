@@ -27,7 +27,7 @@ backend/src/
 ├── agents/           Relations Officer sub-agents + the selectable inference lane
 ├── lead-intake/      the ingest_lead front door + provisional-label resolver
 ├── {contact,accounting,email,meeting,project,outreach}-ops/   one federation seam each
-├── health/           liveness · readiness · /health/integrations
+├── health/           public liveness · readiness · member-only /health/integrations · /health/channels
 ├── common/
 │   ├── workspace/    the RLS GUC chokepoint + membership guard
 │   └── federation/   the Brigade token source (RFC-8693 mint/exchange)
@@ -83,9 +83,20 @@ Two things bite here, both learned the hard way:
 
 For the sibling to even *accept* the token it must trust the broker's signing key (`BRIGADE_TRUSTED_ISSUERS`) and expect `aud=<itself>`. A sibling with no federation‑actor handling at all will run the token through its human SSO path and reject it — that app needs to adopt the pattern (see `auth.service.ts buildFederationPrincipal` + `federation-actor.guard.ts` as the reference).
 
-### Observability: `/health/integrations`
+### Observability: `/health/integrations` and `/health/channels`
 
-`GET /api/v1/health/integrations` probes every seam with a side‑effect‑free `tools/list` and reports `{ seam, configured, ok, status, detail, latencyMs }`. This is the antidote to silent federation failure — a `401`/`403` behind a degrade‑clean empty panel is otherwise invisible. It's unauthenticated (status only, no data) and belongs in every consuming app.
+`GET /api/v1/health`, `GET /api/v1/health/live`, and `GET /api/v1/health/ready` are public. Deploy and load-balancer probes use those three only.
+
+`GET /api/v1/health/integrations` and `GET /api/v1/health/channels` require a signed-in workspace member (`JwtAuthGuard`, then `WorkspaceMembershipGuard` in `backend/src/health/health.controller.ts`). No caller is `401`. When `CUSTOMER_OPS_TENANCY_ENABLED` is on, a caller who is not an active member is `403`. A session JWT of a member is enough. A personal access token must also hold `read:overview` (`@RequireScopes`); a PAT without that scope is `403`. Both routes return status only: no tenant data and no secrets.
+
+```bash
+curl -sS -H 'Authorization: Bearer <session or PAT>' \
+  https://customer-ops.magicunicorn.dev/api/v1/health/integrations
+curl -sS -H 'Authorization: Bearer <session or PAT>' \
+  https://customer-ops.magicunicorn.dev/api/v1/health/channels
+```
+
+`/health/integrations` probes every seam with a side‑effect‑free `tools/list` and reports `{ seam, configured, ok, status, detail, latencyMs }`. This is the antidote to silent federation failure — a `401`/`403` from a sibling, behind a degrade‑clean empty panel, is otherwise invisible. `/health/channels` returns the omnichannel matrix in [`CHANNEL-STATUS.md`](CHANNEL-STATUS.md). The same caller rule belongs on every app that exposes a seam or channel catalog.
 
 ---
 
