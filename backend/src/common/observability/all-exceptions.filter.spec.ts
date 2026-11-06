@@ -10,6 +10,7 @@ import { ThrottlerException } from '@nestjs/throttler';
 import { AllExceptionsFilter } from './all-exceptions.filter';
 import { ErrorTrackingService } from './error-tracking.service';
 import { PROBLEM_JSON_CONTENT_TYPE } from './problem-details';
+import { NoWorkspaceAccessException } from '../../auth/auth.service';
 
 /**
  * Pins the single RFC-7807 error envelope.
@@ -82,6 +83,19 @@ describe('AllExceptionsFilter — RFC-7807 envelope', () => {
     expect(capture).not.toHaveBeenCalled();
   });
 
+  it('renders an unprovisioned caller as 403 problem+json that says they are signed in', () => {
+    const { host, reply } = makeHost(REQ());
+    const { filter } = makeFilter(reply);
+
+    filter.catch(new NoWorkspaceAccessException(), host);
+
+    const [, body, status] = reply.mock.calls[0];
+    expect(status).toBe(HttpStatus.FORBIDDEN);
+    expect(body.title).toBe('Forbidden');
+    expect(body.detail).toContain('You are signed in but have no Customer-Ops access.');
+    expect(body.detail).toContain('Contact your administrator.');
+  });
+
   it('joins class-validator constraint arrays into the detail', () => {
     const { host, reply } = makeHost(REQ());
     const { filter } = makeFilter(reply);
@@ -100,7 +114,10 @@ describe('AllExceptionsFilter — RFC-7807 envelope', () => {
     const { host, reply } = makeHost(REQ());
     const { filter } = makeFilter(reply);
 
-    filter.catch(new ThrottlerException('Rate limit exceeded — too many requests. Retry in 5s.'), host);
+    filter.catch(
+      new ThrottlerException('Rate limit exceeded — too many requests. Retry in 5s.'),
+      host,
+    );
 
     const [, body, status] = reply.mock.calls[0];
     expect(status).toBe(HttpStatus.TOO_MANY_REQUESTS);

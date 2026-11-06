@@ -40,6 +40,29 @@ class McpProbeController {
   }
 }
 
+@Controller('customers')
+class RestProbeController {
+  @All()
+  @UseGuards(JwtAuthGuard)
+  handle(@Req() request: any) {
+    return {
+      ok: Boolean(request.user),
+      ucUid: request.user?.__ucUid ?? null,
+    };
+  }
+}
+
+const RESOURCE_METADATA_URL =
+  'https://api.customer-ops.example.com/.well-known/oauth-protected-resource/api/v1/mcp';
+const WWW_AUTHENTICATE_NO_TOKEN = `Bearer realm="customer-ops-mcp", resource_metadata="${RESOURCE_METADATA_URL}"`;
+const WWW_AUTHENTICATE_INVALID_TOKEN = `${WWW_AUTHENTICATE_NO_TOKEN}, error="invalid_token"`;
+const WWW_AUTHENTICATE_INSUFFICIENT_SCOPE =
+  'Bearer realm="customer-ops-mcp", error="insufficient_scope", error_description="You are signed in but have no Customer-Ops access."';
+const NO_CUSTOMER_OPS_ACCESS_BODY = {
+  error: 'no_workspace_access',
+  message: 'You are signed in but have no Customer-Ops access. Contact your administrator.',
+};
+
 describe('Customer-Ops MCP OAuth discovery and resource-server boundary', () => {
   let app: INestApplication;
   let baseUrl = '';
@@ -72,7 +95,7 @@ describe('Customer-Ops MCP OAuth discovery and resource-server boundary', () => 
 
   beforeAll(async () => {
     const module = await Test.createTestingModule({
-      controllers: [OAuthDiscoveryController, McpProbeController],
+      controllers: [OAuthDiscoveryController, McpProbeController, RestProbeController],
       providers: [
         OAuthDiscoveryService,
         JwtStrategy,
@@ -172,7 +195,13 @@ describe('Customer-Ops MCP OAuth discovery and resource-server boundary', () => 
       );
       expect((response.body as any).authorization_servers).toEqual([realmIssuer]);
       // Clients request exactly these; Keycloak's DCR policy refuses any other scope, and `mcp` carries the audience.
-      expect((response.body as any).scopes_supported).toEqual(['openid', 'profile', 'email', 'offline_access', 'mcp']);
+      expect((response.body as any).scopes_supported).toEqual([
+        'openid',
+        'profile',
+        'email',
+        'offline_access',
+        'mcp',
+      ]);
     }
   });
 
@@ -181,7 +210,10 @@ describe('Customer-Ops MCP OAuth discovery and resource-server boundary', () => 
       '/.well-known/oauth-protected-resource',
       '/.well-known/oauth-protected-resource/api/v1/mcp',
     ]) {
-      const response = await call(path, { method: 'OPTIONS', headers: { Origin: 'https://outside.example.com' } });
+      const response = await call(path, {
+        method: 'OPTIONS',
+        headers: { Origin: 'https://outside.example.com' },
+      });
       expect(response.status).toBe(204);
       expect(response.headers.get('access-control-allow-origin')).toBe('*');
       expect(response.headers.get('access-control-allow-credentials')).toBeNull();
@@ -231,22 +263,29 @@ describe('Customer-Ops MCP OAuth discovery and resource-server boundary', () => 
     });
 
     expect(response.status).toBe(401);
-    expect(response.headers.get('www-authenticate')).toBe(
-      'Bearer realm="customer-ops-mcp", ' +
-        'resource_metadata="https://api.customer-ops.example.com/.well-known/oauth-protected-resource/api/v1/mcp"',
-    );
+    expect(response.headers.get('www-authenticate')).toBe(WWW_AUTHENTICATE_NO_TOKEN);
     expect(JSON.stringify(response.body)).not.toContain('co_pat_');
+  });
+
+  it('returns 401 with no discovery challenge for a missing bearer on a REST route', async () => {
+    const response = await call('/api/v1/customers');
+
+    expect(response.status).toBe(401);
+    expect(response.headers.get('www-authenticate')).toBeNull();
   });
 
   it('returns invalid_token discovery for an unknown PAT', async () => {
     const response = await call('/api/v1/mcp', {
       method: 'POST',
-      headers: { Authorization: 'Bearer co_pat_synthetic_invalid', 'Content-Type': 'application/json' },
+      headers: {
+        Authorization: 'Bearer co_pat_synthetic_invalid',
+        'Content-Type': 'application/json',
+      },
       body: jsonBody(),
     });
 
     expect(response.status).toBe(401);
-    expect(response.headers.get('www-authenticate')).toContain('error="invalid_token"');
+    expect(response.headers.get('www-authenticate')).toBe(WWW_AUTHENTICATE_INVALID_TOKEN);
     expect(patService.findByPlaintext).toHaveBeenCalledWith('co_pat_synthetic_invalid');
     expect(JSON.stringify(response.body)).not.toContain('co_pat_synthetic_invalid');
   });
@@ -254,18 +293,24 @@ describe('Customer-Ops MCP OAuth discovery and resource-server boundary', () => 
   it('does not use a browser cookie/session to authenticate the MCP path', async () => {
     const response = await call('/api/v1/mcp', {
       method: 'POST',
-      headers: { Cookie: 'access_token=synthetic-cookie-value', 'Content-Type': 'application/json' },
+      headers: {
+        Cookie: 'access_token=synthetic-cookie-value',
+        'Content-Type': 'application/json',
+      },
       body: jsonBody(),
     });
 
     expect(response.status).toBe(401);
-    expect(response.headers.get('www-authenticate')).not.toContain('error="invalid_token"');
+    expect(response.headers.get('www-authenticate')).toBe(WWW_AUTHENTICATE_NO_TOKEN);
   });
 
   it('accepts a signed Keycloak RS256 token for a user with workspace access', async () => {
     const response = await call('/api/v1/mcp', {
       method: 'POST',
-      headers: { Authorization: `Bearer ${signedKeycloakToken()}`, 'Content-Type': 'application/json' },
+      headers: {
+        Authorization: `Bearer ${signedKeycloakToken()}`,
+        'Content-Type': 'application/json',
+      },
       body: jsonBody(),
     });
 
@@ -274,7 +319,16 @@ describe('Customer-Ops MCP OAuth discovery and resource-server boundary', () => 
     expect(authService.validateJwtPayload).toHaveBeenCalled();
   });
 
-  it('returns 403 insufficient_scope for a valid token with no workspace access', async () => {
+  it('accepts a signed Keycloak RS256 token for a user with workspace access on REST', async () => {
+    const response = await call('/api/v1/customers', {
+      headers: { Authorization: `Bearer ${signedKeycloakToken()}` },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ ok: true, ucUid: 'synthetic-uchub-sub' });
+  });
+
+  it('returns 403 insufficient_scope for a valid token with no Customer-Ops access on MCP', async () => {
     (authService.validateJwtPayload as jest.Mock).mockImplementation(async (payload: any) => {
       if (payload.sub === 'synthetic-no-workspace') {
         throw new NoWorkspaceAccessException();
@@ -285,21 +339,34 @@ describe('Customer-Ops MCP OAuth discovery and resource-server boundary', () => 
     const response = await call('/api/v1/mcp', {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${signedKeycloakToken({ sub: 'synthetic-no-workspace' })}`,
+        Authorization: `Bearer ${signedKeycloakToken({ sub: 'synthetic-no-workspace', email: 'nobody@example.com' })}`,
         'Content-Type': 'application/json',
       },
       body: jsonBody(),
     });
 
     expect(response.status).toBe(403);
-    expect(response.headers.get('www-authenticate')).toBe(
-      'Bearer error="insufficient_scope", error_description="no workspace access"',
-    );
-    expect(response.body).toEqual({
-      error: 'no_workspace_access',
-      message:
-        'Your account is verified but has no workspace in Customer-Ops yet. Ask your workspace admin for an invite.',
+    expect(response.headers.get('www-authenticate')).toBe(WWW_AUTHENTICATE_INSUFFICIENT_SCOPE);
+    expect(response.body).toEqual(NO_CUSTOMER_OPS_ACCESS_BODY);
+  });
+
+  it('returns 403 insufficient_scope for a valid token with no Customer-Ops access on REST', async () => {
+    (authService.validateJwtPayload as jest.Mock).mockImplementation(async (payload: any) => {
+      if (payload.sub === 'synthetic-no-workspace') {
+        throw new NoWorkspaceAccessException();
+      }
+      return fixtureUser;
     });
+
+    const response = await call('/api/v1/customers', {
+      headers: {
+        Authorization: `Bearer ${signedKeycloakToken({ sub: 'synthetic-no-workspace', email: 'nobody@example.com' })}`,
+      },
+    });
+
+    expect(response.status).toBe(403);
+    expect(response.headers.get('www-authenticate')).toBe(WWW_AUTHENTICATE_INSUFFICIENT_SCOPE);
+    expect(response.body).toEqual(NO_CUSTOMER_OPS_ACCESS_BODY);
   });
 
   it('rejects an expired signed Keycloak token', async () => {
@@ -313,18 +380,32 @@ describe('Customer-Ops MCP OAuth discovery and resource-server boundary', () => 
     });
 
     expect(response.status).toBe(401);
-    expect(response.headers.get('www-authenticate')).toContain('error="invalid_token"');
+    expect(response.headers.get('www-authenticate')).toBe(WWW_AUTHENTICATE_INVALID_TOKEN);
+  });
+
+  it('returns 401 invalid_token for an expired token on a REST route', async () => {
+    const response = await call('/api/v1/customers', {
+      headers: {
+        Authorization: `Bearer ${signedKeycloakToken({ iat: Math.floor(Date.now() / 1000) - 600, exp: Math.floor(Date.now() / 1000) - 300 })}`,
+      },
+    });
+
+    expect(response.status).toBe(401);
+    expect(response.headers.get('www-authenticate')).toBeNull();
   });
 
   it('rejects a Keycloak-looking HS256 token even when signed with the local secret', async () => {
     const response = await call('/api/v1/mcp', {
       method: 'POST',
-      headers: { Authorization: `Bearer ${signedKeycloakToken({}, localSecret)}`, 'Content-Type': 'application/json' },
+      headers: {
+        Authorization: `Bearer ${signedKeycloakToken({}, localSecret)}`,
+        'Content-Type': 'application/json',
+      },
       body: jsonBody(),
     });
 
     expect(response.status).toBe(401);
-    expect(response.headers.get('www-authenticate')).toContain('error="invalid_token"');
+    expect(response.headers.get('www-authenticate')).toBe(WWW_AUTHENTICATE_INVALID_TOKEN);
   });
 
   it('rejects an RS256 token from an issuer other than the configured realm', async () => {
@@ -338,7 +419,7 @@ describe('Customer-Ops MCP OAuth discovery and resource-server boundary', () => 
     });
 
     expect(response.status).toBe(401);
-    expect(response.headers.get('www-authenticate')).toContain('error="invalid_token"');
+    expect(response.headers.get('www-authenticate')).toBe(WWW_AUTHENTICATE_INVALID_TOKEN);
   });
 
   it('accepts a wrong Keycloak audience while KEYCLOAK_ENFORCE_AUDIENCE is log-only', async () => {
@@ -358,7 +439,7 @@ describe('Customer-Ops MCP OAuth discovery and resource-server boundary', () => 
   it('rejects a wrong Keycloak audience when enforcement is enabled', async () => {
     const enforcingConfig = {
       get: <T>(key: string, fallback?: T) =>
-        (key === 'KEYCLOAK_ENFORCE_AUDIENCE' ? 'true' : configValues[key] ?? fallback) as T,
+        (key === 'KEYCLOAK_ENFORCE_AUDIENCE' ? 'true' : (configValues[key] ?? fallback)) as T,
     } as unknown as ConfigService;
     const enforcing = new JwtStrategy(enforcingConfig, {
       validateJwtPayload: jest.fn(),
@@ -397,7 +478,8 @@ describe('Customer-Ops MCP OAuth discovery and resource-server boundary', () => 
   it('falls back to forwarded public proto and host when no public URL is configured', () => {
     const forwardedConfig = {
       get: <T>(key: string, fallback?: T) =>
-        (({ KEYCLOAK_URL: 'https://auth.example.com', KEYCLOAK_REALM: 'uchub' })[key] ?? fallback) as T,
+        (({ KEYCLOAK_URL: 'https://auth.example.com', KEYCLOAK_REALM: 'uchub' })[key] ??
+          fallback) as T,
     } as unknown as ConfigService;
     const service = new OAuthDiscoveryService(forwardedConfig);
     const metadata = service.getMetadata({
