@@ -11,9 +11,11 @@
  * key) is enforced in the service so the 400 message is crisp.
  */
 
+import { Transform } from 'class-transformer';
 import {
   ArrayMaxSize,
   IsArray,
+  IsEmail,
   IsEnum,
   IsInt,
   IsNotEmpty,
@@ -31,6 +33,19 @@ import { LeadIntakeStatus, RelationshipPriority } from '@prisma/client';
 const DECIMAL_RE = /^\d{1,16}(\.\d{1,4})?$/;
 /** The slug charset for a leadgen source + the source's dedup key. */
 const SLUG_RE = /^[A-Za-z0-9._:-]+$/;
+
+/**
+ * Trim and lowercase an ingest email. A blank string becomes `undefined` (the
+ * field is absent, not invalid). Non-strings pass through so class-validator
+ * can name the field on the 400. The idempotency key stays
+ * (workspace, source, sourceDedupKey) — this never rewrites it.
+ */
+export function canonicalizeIngestEmailInput(value: unknown): unknown {
+  if (value == null) return undefined;
+  if (typeof value !== 'string') return value;
+  const email = value.trim().toLowerCase();
+  return email.length ? email : undefined;
+}
 
 /**
  * Ingest ONE graduated lead. Idempotent on (workspace, source, sourceDedupKey):
@@ -87,7 +102,9 @@ export class IngestLeadDto {
   nicknames?: string[];
 
   @IsOptional()
+  @Transform(({ value }) => canonicalizeIngestEmailInput(value))
   @IsString()
+  @IsEmail({}, { message: 'email must be an email' })
   @MaxLength(320)
   email?: string;
 

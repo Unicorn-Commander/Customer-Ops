@@ -150,6 +150,45 @@ function makeService(opts?: {
 }
 
 describe('LeadIntakeService — ingest_lead keystone', () => {
+  it('rejects a non-email before staging and names the field (400)', async () => {
+    const { tx } = makeTx();
+    const { svc } = makeService({ tx });
+    await expect(
+      svc.ingestForUser(
+        aaron,
+        { source: 'northwind', sourceDedupKey: 'L-bad', email: 'not-an-email', displayName: 'Pat' },
+        WS,
+      ),
+    ).rejects.toThrow(/email must be an email/);
+    expect(tx.leadIntake.upsert).not.toHaveBeenCalled();
+  });
+
+  it('stores a trimmed lowercase email and does not rewrite the idempotency key', async () => {
+    const { tx, store, customers } = makeTx();
+    const { svc } = makeService({
+      tx,
+      contact: { upsertContact: jest.fn().mockResolvedValue(null) },
+    });
+    await svc.ingestForUser(
+      aaron,
+      { source: 'northwind', sourceDedupKey: 'Dedup-Key', email: '  Lead@Example.com ' },
+      WS,
+    );
+    expect(store.intake.email).toBe('lead@example.com');
+    expect(store.intake.source).toBe('northwind');
+    expect(store.intake.sourceDedupKey).toBe('Dedup-Key');
+
+    await svc.ingestForUser(
+      aaron,
+      { source: 'northwind', sourceDedupKey: 'Dedup-Key', email: 'LEAD@example.com' },
+      WS,
+    );
+    // Same (source, sourceDedupKey) updates the one intake and the one projection.
+    expect(tx.leadIntake.upsert).toHaveBeenCalledTimes(2);
+    expect(customers).toHaveLength(1);
+    expect(store.intake.email).toBe('lead@example.com');
+  });
+
   it('rejects a lead with no contactId and no identity key (400)', async () => {
     const { tx } = makeTx();
     const { svc } = makeService({ tx });

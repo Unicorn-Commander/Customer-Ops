@@ -28,6 +28,7 @@
  */
 
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { isEmail } from 'class-validator';
 import { ConfigService } from '@nestjs/config';
 import { createHash } from 'crypto';
 import {
@@ -50,6 +51,7 @@ import {
   isProvisionalContactId,
 } from './lead-label.port';
 import {
+  canonicalizeIngestEmailInput,
   DiscardIntakeDto,
   IngestLeadDto,
   ListIntakesQueryDto,
@@ -146,8 +148,12 @@ export class LeadIntakeService extends LeadLabelResolver {
   // ========================================================================
 
   async ingestForUser(user: AuthedUser, dto: IngestLeadDto, requestedWorkspaceId?: string | null) {
-    const explicitContactId = dto.contactId?.trim() || null;
-    const hasIdentityKey = !!(dto.email?.trim() || dto.phone?.trim() || dto.displayName?.trim());
+    // MCP calls this service directly (no ValidationPipe). Canonicalize here too
+    // so both surfaces store one email shape and a non-email is a 400 that names
+    // the field. source + sourceDedupKey — the idempotency key — are not touched.
+    const staged: IngestLeadDto = { ...dto, email: this.canonicalEmail(dto.email) };
+    const explicitContactId = staged.contactId?.trim() || null;
+    const hasIdentityKey = !!(staged.email || staged.phone?.trim() || staged.displayName?.trim());
     if (!explicitContactId && !hasIdentityKey) {
       throw new BadRequestException(
         'A lead needs an identity to resolve: pass contactId, or at least one of ' +
@@ -161,7 +167,7 @@ export class LeadIntakeService extends LeadLabelResolver {
     // 1) Land/refresh the staged intake (idempotent on (ws, source, dedupKey)).
     const intake = await this.workspaces.runForUser(
       user,
-      (tx) => this.upsertIntakeInTx(tx, dto, ucUid),
+      (tx) => this.upsertIntakeInTx(tx, staged, ucUid),
       requestedWorkspaceId,
     );
 
@@ -196,6 +202,16 @@ export class LeadIntakeService extends LeadLabelResolver {
       customerId: outcome.customerId ?? null,
       detail: outcome.detail,
     };
+  }
+
+  /** Trim + lowercase, or 400 naming `email`. Blank is absent. */
+  private canonicalEmail(raw: string | undefined): string | undefined {
+    const email = canonicalizeIngestEmailInput(raw);
+    if (email == null) return undefined;
+    if (typeof email !== 'string' || !isEmail(email)) {
+      throw new BadRequestException('email must be an email');
+    }
+    return email;
   }
 
   /** Upsert the staged intake row. Create → PENDING; re-push → refresh the staged
