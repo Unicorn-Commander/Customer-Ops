@@ -1,52 +1,38 @@
 /**
  * The concrete Agent-Inference client.
  *
- * Speaks the control-plane inference gateway — ops-center `uchub-litellm` (LLM
- * routing + metering to local GPUs / external providers), reached as a service
- * (Brigade brokers the agent token in production). litellm is OpenAI-compatible,
- * so this client posts an OpenAI-shaped chat-completions request and lets the
- * gateway pick the lane (1-4) + meter it (SUITE-ARCHITECTURE-MAP §1 + §8):
- *
- *   POST {AGENT_INFERENCE_BASE_URL}/v1/chat/completions
- *     { model, messages, response_format?, max_tokens?, temperature?,
- *       metadata: { workspace_id, uc_uid, task, tier } }   // metering dimensions
- *   -> { choices: [{ message: { content } }], model, usage: {...},
- *        x_uc_lane?, x_uc_metered? }                        // routing/meter echo
- *
- * The `model` we send is a LANE ALIAS, not a concrete model — the gateway maps the
- * alias ('uc-bundled' / 'uc-metered') to whatever model the policy chooses for
- * that workspace/tier. Customer-Ops never names a model (that is the gateway's
- * job); the alias just states the tier. The aliases are overridable via env so an
- * operator can point them at their litellm model groups.
- *
- * AUTH: the bearer is a federation/agent token carrying the addressed
- * `workspace_id` claim + the metered-AI scope. Minting it is Brigade's job
- * (RFC-8693); until that seam is wired this client forwards a configured service
- * token (AGENT_INFERENCE_SERVICE_TOKEN). The mint seam is isolated in
- * `authHeaders()` so swapping to Brigade is a one-method change.
+ * With CUSTOMER_OPS_USE_ORG_ROUTE unset/false, this preserves the existing
+ * OpenAI-shaped instance path and its lane aliases. With the flag enabled, the
+ * client calls ORG_GATEWAY_BASE_URL with an opaque org key from Ops-Center and
+ * sends the bare named route `concierge` or `batch` as the model. The gateway
+ * owns the route target and metering policy.
  *
  * ENTITLEMENT (binding): `customer-ops` is required to run any agent (bundled
  * lanes 1-2); a 'metered' request also requires `ai-metered` (lanes 3-4).
- * `checkEntitlement` is the pure gate; `complete` re-checks (defense-in-depth) and
- * DOWNGRADES a metered request to bundled when the bearer lacks `ai-metered`
- * rather than failing — so an agent still produces a (bundled-lane) draft. The
- * suite verb "enforce" == strict; "open" == the pre-Lago bootstrap (allow+WARN).
+ * `checkEntitlement` is the pure gate; `complete` re-checks (defense-in-depth)
+ * and DOWNGRADES a metered request to bundled when the bearer lacks `ai-metered`.
  *
- * DEGRADE-CLEAN (binding): when AGENT_INFERENCE_BASE_URL is unset, `isConfigured()`
- * is false and `complete` returns null without any fetch. The agents then return a
- * clean "connect inference" result (no draft, no side effect). Best-effort: any
- * transport/HTTP/parse failure returns null (the agent surfaces it), never throws.
+ * FAILURE: the old instance path remains best-effort when the flag is off. The
+ * org path fails visibly with OrgRouteInferenceError when its key or gateway
+ * fails, unless CUSTOMER_OPS_ORG_ROUTE_FALLBACK=instance explicitly enables the
+ * named migration fallback.
  */
 
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AgentInferencePort, InferenceContext } from './agent-inference.port';
 import {
   AgentInferenceRequest,
   AgentInferenceResult,
   InferenceEntitlementDecision,
+  InferenceRoute,
   InferenceTier,
 } from './agent-inference.types';
+import {
+  ORG_GATEWAY_KEY_PROVIDER,
+  OpsCenterOrgGatewayKeyProvider,
+  OrgGatewayKeyProvider,
+} from './org-gateway-key.provider';
 
 interface ChatChoice {
   message?: { content?: string };
@@ -59,8 +45,7 @@ interface ChatResponse {
   choices?: ChatChoice[];
   model?: string;
   usage?: ChatUsage;
-  // ops-center routing/meter echo (litellm custom headers surfaced into the body
-  // by the gateway, or top-level fields — both tolerated).
+  // Ops-Center routing/meter echo. Both body fields are tolerated.
   x_uc_lane?: number;
   x_uc_metered?: boolean;
 }
@@ -69,8 +54,7 @@ interface ChatResponse {
 export const SKU_CUSTOMER_OPS = 'customer-ops';
 export const SKU_AI_METERED = 'ai-metered';
 
-/** SKU spelling/alias tolerance — accept whatever shape the upstream claim lands.
- *  Normalized on read only (mirrors the AO/Email clients). */
+/** SKU spelling/alias tolerance. Normalized on read only. */
 const SKU_ALIASES: Record<string, string> = {
   'customer-ops': SKU_CUSTOMER_OPS,
   customer_ops: SKU_CUSTOMER_OPS,
@@ -89,13 +73,42 @@ function normalizeSku(code: string): string {
   return SKU_ALIASES[key] ?? key;
 }
 
+function truthy(value: unknown): boolean {
+  const normalized = String(value ?? '')
+    .trim()
+    .toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+}
+
+/** A failed org-route call must be visible to the endpoint caller. */
+export class OrgRouteInferenceError extends Error {
+  constructor(feature: string, route: InferenceRoute, reason: string) {
+    const retry = route === 'concierge' ? ' Please retry the interactive request.' : '';
+    super(`Org gateway failure for feature=${feature} on route=${route}: ${reason}.${retry}`);
+    this.name = 'OrgRouteInferenceError';
+  }
+}
+
 @Injectable()
 export class AgentInferenceClient extends AgentInferencePort {
   private readonly logger = new Logger(AgentInferenceClient.name);
+  private readonly orgGatewayKeyProvider: OrgGatewayKeyProvider;
+  private orgRouteFallbackCount = 0;
 
-  constructor(private readonly config: ConfigService) {
+  constructor(
+    private readonly config: ConfigService,
+    @Optional()
+    @Inject(ORG_GATEWAY_KEY_PROVIDER)
+    orgGatewayKeyProvider?: OrgGatewayKeyProvider,
+  ) {
     super();
-    if (!this.baseUrl) {
+    this.orgGatewayKeyProvider =
+      orgGatewayKeyProvider ?? new OpsCenterOrgGatewayKeyProvider(this.config);
+    if (this.useOrgRoute()) {
+      this.logger.log(
+        `Agent inference org route enabled (gatewayConfigured=${Boolean(this.orgGatewayBaseUrl)})`,
+      );
+    } else if (!this.instanceBaseUrl) {
       this.logger.warn(
         'AGENT_INFERENCE_BASE_URL unset — the relationship agents inference lane is ' +
           'DORMANT; lead-triage / follow-up / collections-nudge return a "connect ' +
@@ -103,15 +116,24 @@ export class AgentInferenceClient extends AgentInferencePort {
           'metering live in ops-center uchub-litellm per the 4-lane model.)',
       );
     } else {
-      this.logger.log(`Agent inference gateway: ${this.baseUrl} (mode=${this.mode()})`);
+      this.logger.log(`Agent inference gateway: ${this.instanceBaseUrl} (mode=${this.mode()})`);
     }
   }
 
   // --- configuration seam -------------------------------------------------
 
-  private get baseUrl(): string | null {
+  private useOrgRoute(): boolean {
+    return truthy(this.config.get<string>('CUSTOMER_OPS_USE_ORG_ROUTE'));
+  }
+
+  private get instanceBaseUrl(): string | null {
     const raw = this.config.get<string>('AGENT_INFERENCE_BASE_URL');
     return raw && raw.trim() ? raw.trim().replace(/\/$/, '') : null;
+  }
+
+  private get orgGatewayBaseUrl(): string | null {
+    const raw = this.config.get<string>('ORG_GATEWAY_BASE_URL');
+    return raw && raw.trim() ? raw.trim().replace(/\/+$/, '') : null;
   }
 
   private get timeoutMs(): number {
@@ -120,8 +142,7 @@ export class AgentInferenceClient extends AgentInferencePort {
     return Number.isFinite(n) && n > 0 ? n : 30000;
   }
 
-  /** The lane-alias model name the gateway maps to a concrete model for the tier.
-   *  Overridable per node so an operator can point at their litellm model groups. */
+  /** The legacy lane-alias model name used only by the instance path. */
   private modelAlias(tier: InferenceTier): string {
     if (tier === 'metered') {
       return this.config.get<string>('AGENT_INFERENCE_METERED_MODEL')?.trim() || 'uc-metered';
@@ -131,8 +152,8 @@ export class AgentInferenceClient extends AgentInferencePort {
 
   /**
    * Entitlement mode. Suite var `UC_ENTITLEMENT_MODE` wins, falling back to an
-   * inference-specific `AGENT_INFERENCE_ENTITLEMENT_MODE`. "open" => bootstrap
-   * (allow+WARN); anything else (incl. "enforce", the default) => strict.
+   * inference-specific `AGENT_INFERENCE_ENTITLEMENT_MODE`. "open" means allow
+   * with a warning; anything else, including the default, is strict.
    */
   private mode(): 'enforce' | 'open' {
     const raw =
@@ -143,7 +164,10 @@ export class AgentInferenceClient extends AgentInferencePort {
   }
 
   isConfigured(): boolean {
-    return this.baseUrl !== null;
+    // Once the org route is explicitly enabled, report it as active so missing
+    // gateway/key configuration fails visibly from complete() instead of being
+    // mistaken for the old cleanly dormant instance path.
+    return this.useOrgRoute() ? true : this.instanceBaseUrl !== null;
   }
 
   private authHeaders(ctx: InferenceContext): Record<string, string> {
@@ -152,6 +176,26 @@ export class AgentInferenceClient extends AgentInferencePort {
     if (token && token.trim()) headers['Authorization'] = `Bearer ${token.trim()}`;
     headers['X-Workspace-Id'] = ctx.workspaceId;
     if (ctx.ucUid) headers['X-Uc-Uid'] = ctx.ucUid;
+    return headers;
+  }
+
+  private orgAuthHeaders(
+    ctx: InferenceContext,
+    orgId: string,
+    request: AgentInferenceRequest,
+    key: string,
+  ): Record<string, string> {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${key}`,
+      'X-UC-Org-Id': orgId,
+      'X-UC-App': 'customer-ops',
+      'X-UC-Feature': request.task,
+      // Keep the existing workspace hint for gateway deployments that use it for
+      // request routing. It is never used as the bearer or org identity.
+      'X-Workspace-Id': ctx.workspaceId,
+    };
+    if (ctx.ucUid) headers['X-UC-User-Id'] = ctx.ucUid;
     return headers;
   }
 
@@ -220,7 +264,9 @@ export class AgentInferenceClient extends AgentInferencePort {
     ctx: InferenceContext,
     request: AgentInferenceRequest,
   ): Promise<AgentInferenceResult | null> {
-    const base = this.baseUrl;
+    if (this.useOrgRoute()) return this.completeViaOrgRoute(ctx, request);
+
+    const base = this.instanceBaseUrl;
     if (!base) return null;
 
     // Defense-in-depth: the agents pre-check, but never call without the gate
@@ -233,28 +279,169 @@ export class AgentInferenceClient extends AgentInferencePort {
     }
     const effectiveTier = gate.tierAllowed;
 
+    return this.postCompletion(
+      base,
+      this.requestBody(ctx, request, this.modelAlias(effectiveTier), effectiveTier, true),
+      this.authHeaders(ctx),
+      effectiveTier,
+    );
+  }
+
+  /**
+   * Resolve the org key and call the named route. The existing five agents are
+   * interactive and therefore use concierge; a future bulk caller sets bulk=true
+   * and uses batch. The workspace id is the org id here because AuthService's
+   * entitled path provisions Workspace.id directly from AuthService's
+   * resolveOrgEntitlement().orgId via WorkspaceProvisioningService.
+   */
+  private async completeViaOrgRoute(
+    ctx: InferenceContext,
+    request: AgentInferenceRequest,
+  ): Promise<AgentInferenceResult | null> {
+    const gate = this.checkEntitlement(ctx, request.tier);
+    if (!gate.allowed) {
+      this.logger.warn(`Agent inference DENIED for workspace=${ctx.workspaceId}: ${gate.reason}`);
+      return null;
+    }
+    const effectiveTier = gate.tierAllowed;
+    const route = this.routeFor(request);
+    const orgId = ctx.workspaceId.trim();
+    if (!orgId) {
+      throw new OrgRouteInferenceError(request.task, route, 'the resolved workspace has no org id');
+    }
+
+    const base = this.orgGatewayBaseUrl;
+    if (!base) {
+      return this.orgRouteFailure(
+        ctx,
+        request,
+        effectiveTier,
+        orgId,
+        route,
+        'gateway URL is not configured',
+      );
+    }
+
+    let gatewayKey: string;
+    try {
+      const supplied = await this.orgGatewayKeyProvider.getKey(orgId);
+      gatewayKey = supplied?.key?.trim() ?? '';
+      if (!gatewayKey) throw new Error('empty gateway key');
+    } catch {
+      return this.orgRouteFailure(
+        ctx,
+        request,
+        effectiveTier,
+        orgId,
+        route,
+        'org key fetch failed',
+      );
+    }
+
+    const result = await this.postCompletion(
+      base,
+      this.requestBody(ctx, request, route, effectiveTier, false),
+      this.orgAuthHeaders(ctx, orgId, request, gatewayKey),
+      effectiveTier,
+    );
+    if (result) return result;
+    return this.orgRouteFailure(
+      ctx,
+      request,
+      effectiveTier,
+      orgId,
+      route,
+      'gateway request failed',
+    );
+  }
+
+  private routeFor(request: AgentInferenceRequest): InferenceRoute {
+    return request.bulk === true ? 'batch' : 'concierge';
+  }
+
+  private requestBody(
+    ctx: InferenceContext,
+    request: AgentInferenceRequest,
+    model: string,
+    effectiveTier: InferenceTier,
+    includeLegacyMetadata: boolean,
+  ): Record<string, unknown> {
     const body: Record<string, unknown> = {
-      model: this.modelAlias(effectiveTier),
+      model,
       messages: request.messages.map((m) => ({ role: m.role, content: m.content })),
       max_tokens: request.maxOutputTokens ?? 1024,
       temperature: request.temperature ?? 0.3,
-      // Metering dimensions ops-center keys the meter on.
-      metadata: {
+    };
+    if (includeLegacyMetadata) {
+      // Preserve the old instance-path request shape while the flag is off.
+      body['metadata'] = {
         workspace_id: ctx.workspaceId,
         uc_uid: ctx.ucUid ?? null,
         task: request.task,
         tier: effectiveTier,
-      },
-    };
+      };
+    }
     if (request.responseFormat === 'json') {
       body['response_format'] = { type: 'json_object' };
     }
+    return body;
+  }
 
+  private async orgRouteFailure(
+    ctx: InferenceContext,
+    request: AgentInferenceRequest,
+    effectiveTier: InferenceTier,
+    orgId: string,
+    route: InferenceRoute,
+    reason: string,
+  ): Promise<AgentInferenceResult> {
+    const fallbackBase = this.instanceBaseUrl;
+    if (this.orgRouteFallback() === 'instance' && fallbackBase) {
+      this.orgRouteFallbackCount += 1;
+      this.logger.warn(
+        JSON.stringify({
+          event: 'customer_ops_org_route_fallback',
+          app: 'customer-ops',
+          orgId,
+          feature: request.task,
+          fallback: 'instance',
+          count: this.orgRouteFallbackCount,
+        }),
+      );
+      const result = await this.postCompletion(
+        fallbackBase,
+        this.requestBody(ctx, request, this.modelAlias(effectiveTier), effectiveTier, true),
+        this.authHeaders(ctx),
+        effectiveTier,
+      );
+      if (result) return result;
+    }
+    throw new OrgRouteInferenceError(request.task, route, reason);
+  }
+
+  private orgRouteFallback(): 'instance' | null {
+    return this.config.get<string>('CUSTOMER_OPS_ORG_ROUTE_FALLBACK')?.trim().toLowerCase() ===
+      'instance'
+      ? 'instance'
+      : null;
+  }
+
+  /** Number of calls that used the explicitly configured migration fallback. */
+  getOrgRouteFallbackCount(): number {
+    return this.orgRouteFallbackCount;
+  }
+
+  private async postCompletion(
+    base: string,
+    body: Record<string, unknown>,
+    headers: Record<string, string>,
+    effectiveTier: InferenceTier,
+  ): Promise<AgentInferenceResult | null> {
     let res: Response;
     try {
       res = await this.fetchWithTimeout(`${base}/v1/chat/completions`, {
         method: 'POST',
-        headers: this.authHeaders(ctx),
+        headers,
         body: JSON.stringify(body),
       });
     } catch (err) {

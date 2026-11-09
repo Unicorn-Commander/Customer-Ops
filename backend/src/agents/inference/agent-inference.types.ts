@@ -38,6 +38,9 @@
  *  3-4) which the entitlement gate then requires `ai-metered` for. */
 export type InferenceTier = 'bundled' | 'metered';
 
+/** Named routes understood by the Ops-Center org gateway. */
+export type InferenceRoute = 'concierge' | 'batch';
+
 /** One chat message handed to the inference gateway (system/user/assistant). */
 export interface AgentMessage {
   role: 'system' | 'user' | 'assistant';
@@ -69,6 +72,8 @@ export interface AgentInferenceRequest {
   maxOutputTokens?: number;
   /** Optional sampling temperature (the gateway clamps/defaults). */
   temperature?: number;
+  /** Set only for a bulk execution path; interactive agent calls use concierge. */
+  bulk?: boolean;
 }
 
 /**
