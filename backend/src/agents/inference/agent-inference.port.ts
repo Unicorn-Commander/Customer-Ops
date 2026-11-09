@@ -14,7 +14,9 @@
  *      never auto-sends.
  *   2. The transport (an OpenAI-compatible `/v1/chat/completions` over the
  *      gateway today; a Brigade-brokered MCP/agent transport later) is swappable
- *      without touching agent logic.
+ *      without touching agent logic. When CUSTOMER_OPS_USE_ORG_ROUTE is enabled,
+ *      the concrete client uses the org key and the bare `concierge`/`batch`
+ *      gateway route names.
  *   3. Customer-Ops never runs a model, never routes, never meters — the gateway
  *      owns the lane → model mapping + the meter. The agents only assemble a
  *      prompt + state a tier hint.
@@ -26,12 +28,12 @@
  * The agents call it to gate AND to render the affordance; `complete` re-checks
  * as defense-in-depth. `UC_ENTITLEMENT_MODE=open` is the pre-Lago bootstrap.
  *
- * DEGRADE-CLEAN (binding): when the inference gateway is not configured
- * (AGENT_INFERENCE_BASE_URL unset), `isConfigured()` is false; an agent then
- * returns a structured result flagged `inferenceConfigured:false` ("connect
- * inference") and makes NO call. Every method is also individually safe to call
- * when unconfigured (returns null / a not-configured decision), so a missing
- * config can never throw — an agent always returns a clean, draft-only result.
+ * DEGRADE-CLEAN (binding): with the org route flag off, when the inference
+ * gateway is not configured (AGENT_INFERENCE_BASE_URL unset), `isConfigured()`
+ * is false; an agent returns a structured "connect inference" result and makes
+ * NO call. With the org route flag on, key/gateway failures are visible errors
+ * naming the org gateway, with a retry instruction for interactive calls; the
+ * old instance path is used only for the explicit migration fallback.
  */
 
 import {
@@ -76,9 +78,11 @@ export abstract class AgentInferencePort {
 
   /**
    * Run one inference request through the control-plane gateway (it picks the
-   * lane + meters). Returns the result, or null when not configured / not
-   * entitled / the call fails (the agent decides how to surface that — always as
-   * a clean, draft-only, no-side-effect result). The entitlement gate is enforced
+   * lane + meters). Returns the result, or null when the legacy path is not
+   * configured / not entitled / the call fails (the agent decides how to surface
+   * that — always as a clean, draft-only, no-side-effect result). The org route
+   * path throws a visible gateway error on key/transport failure unless its
+   * explicit migration fallback is enabled. The entitlement gate is enforced
    * INSIDE this call as defense-in-depth even though the agents also pre-check.
    * This is READ-ONLY w.r.t. the outside world — it produces text/JSON; it never
    * sends mail, posts an invoice, or mutates anything (the human-in-the-loop

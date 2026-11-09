@@ -1,6 +1,10 @@
 import { Module } from '@nestjs/common';
 import { AgentInferencePort } from './agent-inference.port';
 import { AgentInferenceClient } from './agent-inference.client';
+import {
+  ORG_GATEWAY_KEY_PROVIDER,
+  OpsCenterOrgGatewayKeyProvider,
+} from './org-gateway-key.provider';
 
 /**
  * The Agent-Inference seam (Phase 5) — the 4-lane inference port.
@@ -17,7 +21,10 @@ import { AgentInferenceClient } from './agent-inference.client';
  * owns the lane → model mapping + the meter (SUITE-ARCHITECTURE-MAP §1 + §8).
  */
 @Module({
-  providers: [{ provide: AgentInferencePort, useClass: AgentInferenceClient }],
+  providers: [
+    { provide: ORG_GATEWAY_KEY_PROVIDER, useClass: OpsCenterOrgGatewayKeyProvider },
+    { provide: AgentInferencePort, useClass: AgentInferenceClient },
+  ],
   exports: [AgentInferencePort],
 })
 export class AgentInferenceModule {}
