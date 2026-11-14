@@ -50,7 +50,9 @@ describe('AuditService', () => {
       details: { kind: 'transition', toStage: 'QUALIFIED' },
     });
 
-    expect(runInWorkspace).toHaveBeenCalledWith(WS, UC_UID, expect.any(Function));
+    expect(runInWorkspace).toHaveBeenCalledWith(WS, UC_UID, expect.any(Function), {
+      allowWhenWriteLocked: true,
+    });
     expect(row).toMatchObject({
       workspaceId: WS,
       userId: UC_UID,

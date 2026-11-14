@@ -1,5 +1,44 @@
-import { Injectable, OnModuleInit, OnModuleDestroy, Logger, Optional } from '@nestjs/common';
+import {
+  HttpException,
+  Injectable,
+  OnModuleInit,
+  OnModuleDestroy,
+  Logger,
+  Optional,
+} from '@nestjs/common';
 import { Prisma, PrismaClient } from '@prisma/client';
+import { provisioningEnabled, WRITE_LOCKED_STATUSES } from '../provisioning/provisioning.config';
+
+/** Options for withWorkspace beyond Prisma's own transaction options. */
+export interface WorkspaceTxOptions {
+  maxWait?: number;
+  timeout?: number;
+  isolationLevel?: Prisma.TransactionIsolationLevel;
+  /**
+   * Bookkeeping that must keep working while the workspace is suspended or
+   * archived (the audit trail of the reads it still serves). Not for user writes.
+   */
+  allowWhenWriteLocked?: boolean;
+}
+
+/** 423: the workspace is suspended or archived by the control plane; reads still work. */
+export class WorkspaceReadOnlyException extends HttpException {
+  constructor(status: string) {
+    super(
+      {
+        error: 'workspace_read_only',
+        message: `This workspace is ${status}: it can be read but not changed.`,
+      },
+      423,
+    );
+  }
+}
+
+function isReadOnlyViolation(error: unknown): boolean {
+  const e = error as { code?: unknown; meta?: { code?: unknown }; message?: unknown };
+  if (e?.meta?.code === '25006' || e?.code === '25006') return true;
+  return typeof e?.message === 'string' && e.message.includes('read-only transaction');
+}
 
 /**
  * The subset of PrismaClient passed into a withWorkspace() callback: a
@@ -123,17 +162,20 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
    * @param ucUid       acting user's uchub `sub` (for `app.uc_uid` attribution);
    *                    pass '' / null when unknown (e.g. system jobs).
    * @param fn          handler receiving the transaction-scoped Prisma client.
+   * WRITE LOCK (PROVISIONING_ENABLED only): when the control plane has set the
+   * workspace `suspended` or `archived`, the transaction is switched to READ
+   * ONLY after the GUCs are set. Reads inside it work unchanged; the first write
+   * makes Postgres refuse it and the caller gets a 423 `workspace_read_only`.
+   * This is the one place every tenant write passes (RLS makes a write outside
+   * it fail once the runtime role is live). Flag off: no extra query, no change.
+   *
    * @param options     optional Prisma interactive-transaction options.
    */
   async withWorkspace<T>(
     workspaceId: string,
     ucUid: string | null | undefined,
     fn: (tx: WorkspaceTxClient) => Promise<T>,
-    options?: {
-      maxWait?: number;
-      timeout?: number;
-      isolationLevel?: Prisma.TransactionIsolationLevel;
-    },
+    options?: WorkspaceTxOptions,
   ): Promise<T> {
     return this.runWithWorkspace(workspaceId, ucUid, fn, false, options);
   }
@@ -162,11 +204,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     ucUid: string | null | undefined,
     fn: (tx: WorkspaceTxClient) => Promise<T>,
     readOnly: boolean,
-    options?: {
-      maxWait?: number;
-      timeout?: number;
-      isolationLevel?: Prisma.TransactionIsolationLevel;
-    },
+    options?: WorkspaceTxOptions,
   ): Promise<T> {
     if (!workspaceId || !workspaceId.trim()) {
       // Fail closed: an empty workspace id would set the GUC to '' (==NULL via
@@ -175,6 +213,9 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
       // misconfiguration loud instead of a confusing empty result set.
       throw new Error('withWorkspace requires a non-empty workspaceId');
     }
+
+    const { allowWhenWriteLocked, ...txOptions } = options ?? {};
+    const checkLock = !readOnly && !allowWhenWriteLocked && provisioningEnabled();
 
     return this.$transaction(async (tx) => {
       // READ ONLY must precede the first snapshot-taking query, so issue it first.
@@ -190,7 +231,28 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
       // scoped to this transaction only. Parameterized to prevent injection.
       await tx.$executeRaw`SELECT set_config('app.current_workspace', ${workspaceId}, true)`;
       await tx.$executeRaw`SELECT set_config('app.uc_uid', ${ucUid ?? ''}, true)`;
-      return fn(tx);
-    }, options);
+      const lockedStatus = checkLock ? await this.writeLockedStatus(tx, workspaceId) : null;
+      if (!lockedStatus) return fn(tx);
+      // Switching a transaction TO read-only is allowed at any point in Postgres.
+      await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+      try {
+        return await fn(tx);
+      } catch (error) {
+        if (isReadOnlyViolation(error)) throw new WorkspaceReadOnlyException(lockedStatus);
+        throw error;
+      }
+    }, txOptions);
+  }
+
+  /** The workspace's status when it refuses writes (suspended / archived), else null. */
+  private async writeLockedStatus(
+    tx: WorkspaceTxClient,
+    workspaceId: string,
+  ): Promise<string | null> {
+    const rows = await tx.$queryRaw<
+      { status: string }[]
+    >`SELECT status FROM workspaces WHERE id = ${workspaceId}`;
+    const status = rows[0]?.status;
+    return status && WRITE_LOCKED_STATUSES.has(status) ? status : null;
   }
 }
