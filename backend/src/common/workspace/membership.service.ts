@@ -505,7 +505,10 @@ export class MembershipService {
       const outcome = await this.removeMember(workspaceId, targetUserKey, {
         protectLastOwner: true,
       });
-      if (!outcome.membership) throw new NotFoundException('Member not found in this workspace');
+      // Same answer as before for a person who is not (or no longer) a member.
+      if (!outcome.membership || !outcome.plan.revokes.membership) {
+        throw new NotFoundException('Member not found in this workspace');
+      }
       return outcome.membership;
     }
     const target = await this.prisma.membership.findUnique({

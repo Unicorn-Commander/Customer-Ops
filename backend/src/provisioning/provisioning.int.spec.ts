@@ -480,6 +480,11 @@ suite('contract D provisioning on a real PostgreSQL', () => {
       );
       expect(removed.status).toBe(204);
       expect(await asUser(token.plaintext, `/workspaces/${orgId}`)).toBe(401);
+      const again = await fetch(`${base}/api/v1/workspaces/${orgId}/members/${member.keycloakId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${session}` },
+      });
+      expect(again.status).toBe(404); // unchanged answer for a member already removed
     });
   });
 
