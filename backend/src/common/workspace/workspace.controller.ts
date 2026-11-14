@@ -19,6 +19,7 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  NotFoundException,
   Param,
   Patch,
   UseGuards,
@@ -37,6 +38,7 @@ import { WorkspaceRoleGuard } from './workspace-role.guard';
 import { ucUidOf, WithWorkspaceClaim } from './workspace.util';
 import { UpdateMemberRoleDto } from './dto/update-member-role.dto';
 import { SetAgentPauseDto } from './dto/set-agent-pause.dto';
+import { provisioningEnabled } from '../../provisioning/provisioning.config';
 
 type AuthedUser = User & Partial<WithWorkspaceClaim>;
 
@@ -143,6 +145,25 @@ export class WorkspaceController {
       role: String(updated.role).toLowerCase(),
       status: String(updated.status).toLowerCase(),
     };
+  }
+
+  @Get('members/:userKey/removal')
+  @JwtOnly()
+  @RequireWorkspaceRole(WorkspaceRole.OWNER)
+  @ApiOperation({
+    summary:
+      'What removing this member would revoke (owner only; PROVISIONING_ENABLED). ' +
+      'Shown before the removal is confirmed.',
+  })
+  async removalPlan(
+    @CurrentUser() user: AuthedUser,
+    @Param('workspaceId') workspaceId: string,
+    @Param('userKey') userKey: string,
+  ) {
+    if (!provisioningEnabled())
+      throw new NotFoundException(`Cannot GET members/${userKey}/removal`);
+    await this.membership.assertOwner(user, workspaceId);
+    return this.membership.planMemberRemoval(workspaceId, userKey);
   }
 
   @Delete('members/:userKey')

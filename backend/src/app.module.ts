@@ -44,6 +44,7 @@ import { M365Module } from './m365/m365.module';
 import { EntitlementsModule } from './entitlements/entitlements.module';
 import { FederationWorkspaceMapModule } from './common/federation/federation-workspace-map.module';
 import { EntitlementsInterceptor } from './entitlements/entitlements.interceptor';
+import { ProvisioningModule } from './provisioning/provisioning.module';
 
 @Module({
   imports: [
@@ -153,6 +154,9 @@ import { EntitlementsInterceptor } from './entitlements/entitlements.interceptor
     // / graph-repair per workspace on an interval (flag-gated OFF by default via
     // RECONCILE_SCHEDULER_ENABLED). After the feature modules it composes.
     ReconciliationSchedulerModule,
+    // Control-plane provisioning (contract D). Empty module unless
+    // PROVISIONING_ENABLED is on: no route, no provider, today's 404.
+    ProvisioningModule.register(),
   ],
   providers: [
     // Rate limiting globally via the friendly guard (same limiting as the stock
