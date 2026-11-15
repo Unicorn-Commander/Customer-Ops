@@ -15,6 +15,7 @@ import { ProvisioningTokenService } from './provisioning-token.service';
 import { ProvisioningGuard } from './provisioning.guard';
 import { ProvisioningModule } from './provisioning.module';
 import { ProvisioningController } from './provisioning.controller';
+import { MemberPauseController } from './member-pause.controller';
 import { provisioningEnabled } from './provisioning.config';
 
 const SECRET = 'unit-test-provisioning-secret-0123456789abcdef'; // fictional, > 32 bytes
@@ -162,6 +163,9 @@ describe('PROVISIONING_ENABLED', () => {
     expect(provisioningEnabled(() => 'false')).toBe(false);
     expect(provisioningEnabled(() => 'true')).toBe(true);
     expect(ProvisioningModule.register(false).controllers ?? []).toHaveLength(0);
-    expect(ProvisioningModule.register(true).controllers).toEqual([ProvisioningController]);
+    expect(ProvisioningModule.register(true).controllers).toEqual([
+      ProvisioningController,
+      MemberPauseController,
+    ]);
   });
 });

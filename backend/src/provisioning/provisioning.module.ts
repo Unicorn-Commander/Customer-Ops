@@ -1,6 +1,10 @@
 import { DynamicModule, Module } from '@nestjs/common';
 import { WorkspaceModule } from '../common/workspace/workspace.module';
 import { UcRegistryModule } from '../common/uc-registry/uc-registry.module';
+import { AuditModule } from '../audit/audit.module';
+import { FederationAuthModule } from '../common/federation/federation-auth.module';
+import { FederationWorkspaceMapModule } from '../common/federation/federation-workspace-map.module';
+import { MemberPauseController } from './member-pause.controller';
 import { provisioningEnabled } from './provisioning.config';
 import { ProvisioningController } from './provisioning.controller';
 import { ProvisioningGuard } from './provisioning.guard';
@@ -19,8 +23,14 @@ export class ProvisioningModule {
     if (!enabled) return { module: ProvisioningModule };
     return {
       module: ProvisioningModule,
-      imports: [WorkspaceModule, UcRegistryModule],
-      controllers: [ProvisioningController],
+      imports: [
+        WorkspaceModule,
+        UcRegistryModule,
+        AuditModule,
+        FederationAuthModule,
+        FederationWorkspaceMapModule,
+      ],
+      controllers: [ProvisioningController, MemberPauseController],
       providers: [
         ProvisioningService,
         ProvisioningTokenService,
