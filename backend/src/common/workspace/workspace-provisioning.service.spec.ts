@@ -81,17 +81,20 @@ describe('WorkspaceProvisioningService', () => {
           }
           return null;
         }),
-        upsert: jest.fn(async ({ where, update, create }: any) => {
-          const key = `${where.userKey_workspaceId.userKey}:${where.userKey_workspaceId.workspaceId}`;
-          const existing = memberships.get(key);
-          if (existing) {
-            const updated = { ...existing, ...update };
-            memberships.set(key, updated);
-            return updated;
-          }
-          const created = { ...create };
-          memberships.set(key, created);
-          return created;
+        findUnique: jest.fn(async ({ where }: any) => {
+          const k = where.userKey_workspaceId;
+          return memberships.get(`${k.userKey}:${k.workspaceId}`) ?? null;
+        }),
+        update: jest.fn(async ({ where, data }: any) => {
+          const k = where.userKey_workspaceId;
+          const key = `${k.userKey}:${k.workspaceId}`;
+          const updated = { ...memberships.get(key), ...data };
+          memberships.set(key, updated);
+          return updated;
+        }),
+        create: jest.fn(async ({ data }: any) => {
+          memberships.set(`${data.userKey}:${data.workspaceId}`, { ...data });
+          return { ...data };
         }),
       },
     };
@@ -264,5 +267,36 @@ describe('WorkspaceProvisioningService', () => {
     expect(result.workspaceId).toBe(orgId);
     expect(result.workspaceIdSource).toBe('local-fallback');
     expect(workspaces.has(orgId)).toBe(true);
+  });
+
+  it('sign-in leaves a paused membership paused and reactivates a revoked one', async () => {
+    const orgId = '6e40af62-214d-4155-86f1-37dea8bcc53b';
+    const { prisma, tx, workspaces, memberships } = makeEntitledPrisma();
+    workspaces.set(orgId, { id: orgId });
+    const registry = makeRegistry({ workspaceId: orgId, source: 'local-fallback' });
+    const svc = new WorkspaceProvisioningService(prisma, registry);
+    const paused = { id: 'local-p', keycloakId: 'kc-paused', email: 'p@example.com' } as User;
+    const revoked = { id: 'local-r', keycloakId: 'kc-revoked', email: 'r@example.com' } as User;
+    const row = (userKey: string, status: MembershipStatus) => ({
+      userKey,
+      workspaceId: orgId,
+      role: WorkspaceRole.MEMBER,
+      status,
+      isDefault: false,
+    });
+    memberships.set(`kc-paused:${orgId}`, row('kc-paused', MembershipStatus.SUSPENDED));
+    memberships.set(`kc-revoked:${orgId}`, row('kc-revoked', MembershipStatus.REVOKED));
+
+    const p = await svc.provisionEntitledOrgWorkspace({ user: paused, orgId, role: 'member' });
+    expect(p.membership.status).toBe(MembershipStatus.SUSPENDED);
+    expect(memberships.get(`kc-paused:${orgId}`).status).toBe(MembershipStatus.SUSPENDED);
+
+    const r = await svc.provisionEntitledOrgWorkspace({ user: revoked, orgId, role: 'member' });
+    expect(r.membership.status).toBe(MembershipStatus.ACTIVE);
+    expect(tx.membership.update).toHaveBeenCalledTimes(1); // only the revoked one
+    // Membership bookkeeping runs even while the workspace refuses tenant writes.
+    for (const call of (prisma.withWorkspace as jest.Mock).mock.calls) {
+      expect(call[3]).toEqual({ allowWhenWriteLocked: true });
+    }
   });
 });

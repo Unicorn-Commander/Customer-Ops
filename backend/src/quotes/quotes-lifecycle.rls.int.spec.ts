@@ -221,6 +221,24 @@ describeDb('M2 lifecycle through real PostgreSQL RLS and public HTTP', () => {
       1,
     );
   });
+  it('the public quote page keeps working while the workspace is suspended (write lock)', async () => {
+    const q = await quote(),
+      s = await send(q);
+    const flag = process.env.PROVISIONING_ENABLED;
+    process.env.PROVISIONING_ENABLED = 'true';
+    await owner.workspace.update({ where: { id: ws }, data: { status: 'suspended' } });
+    try {
+      items.get(s.message.id).status = 'approved';
+      expect((await service.lookup(s.token, meta())).found).toBe(true); // observe + first view
+      expect((await service.lookup(s.token, meta())).found).toBe(true);
+      const t = await owner.quoteShareToken.findFirstOrThrow({ where: { versionId: s.versionId } });
+      expect(t.viewCount).toBe(2);
+    } finally {
+      await owner.workspace.update({ where: { id: ws }, data: { status: 'active' } });
+      if (flag === undefined) delete process.env.PROVISIONING_ENABLED;
+      else process.env.PROVISIONING_ENABLED = flag;
+    }
+  });
   it('rejects a mismatched inbox observation and revokes on an observed rejection', async () => {
     const q = await quote(),
       s = await send(q);

@@ -296,66 +296,73 @@ export class QuotesLifecycleService {
         : this.email.findAgentInboxItem(ctx, version.emailOpsMessageId)
     ).catch(() => null);
     if (!item || item.messageId !== version.emailOpsMessageId || item.status === 'pending') return;
-    await this.db.withWorkspace(workspace, null, async (tx) => {
-      const q = await this.lock(tx, workspace, version.quoteId);
-      const current = await tx.quoteVersion.findUnique({ where: { id: versionId } });
-      if (
-        !current ||
-        current.approvalState !== 'pending' ||
-        current.versionNo !== q.currentVersionNo ||
-        !q.sendPendingApproval
-      )
-        return;
-      const now = new Date();
-      if (item.status === 'rejected') {
-        await tx.quoteShareToken.updateMany({
-          where: { versionId, revokedAt: null },
-          data: { revokedAt: now },
-        });
-        await tx.quoteVersion.update({
-          where: { id: versionId },
-          data: { approvalState: 'rejected', emailOpsItemId: item.id },
-        });
-        await tx.quote.update({
-          where: { id: q.id },
-          data: { status: 'draft', lockedForSend: false, sendPendingApproval: false },
-        });
-        await this.event(tx, workspace, q.id, 'send_rejected', {}, versionId);
-      } else if (['approved', 'sent'].includes(item.status)) {
-        if (q.validUntil <= now) return;
-        await tx.quoteVersion.update({
-          where: { id: versionId },
-          data: { approvalState: 'approved', emailOpsItemId: item.id },
-        });
-        await tx.quoteShareToken.updateMany({
-          where: { versionId, revokedAt: null, activatedAt: null },
-          data: { activatedAt: now },
-        });
-        await tx.quote.update({
-          where: { id: q.id },
-          data: { status: 'sent', sentAt: now, lockedForSend: false, sendPendingApproval: false },
-        });
-        await tx.customer.updateMany({
-          where: { id: q.customerId, workspaceId: workspace, stage: 'LEAD' },
-          data: { stage: 'PROSPECT' },
-        });
-        await this.event(tx, workspace, q.id, 'send_approved', {}, versionId);
-        await this.event(tx, workspace, q.id, 'sent', {}, versionId);
-        if (current.versionNo > 1)
-          await this.event(
-            tx,
-            workspace,
-            q.id,
-            'quote.superseded',
-            {
-              quote_ref: q.id,
-              prior_version: current.versionNo - 1,
-              new_version: current.versionNo,
-            },
-            versionId,
-          );
-      }
-    });
+    await this.db.withWorkspace(
+      workspace,
+      null,
+      async (tx) => {
+        const q = await this.lock(tx, workspace, version.quoteId);
+        const current = await tx.quoteVersion.findUnique({ where: { id: versionId } });
+        if (
+          !current ||
+          current.approvalState !== 'pending' ||
+          current.versionNo !== q.currentVersionNo ||
+          !q.sendPendingApproval
+        )
+          return;
+        const now = new Date();
+        if (item.status === 'rejected') {
+          await tx.quoteShareToken.updateMany({
+            where: { versionId, revokedAt: null },
+            data: { revokedAt: now },
+          });
+          await tx.quoteVersion.update({
+            where: { id: versionId },
+            data: { approvalState: 'rejected', emailOpsItemId: item.id },
+          });
+          await tx.quote.update({
+            where: { id: q.id },
+            data: { status: 'draft', lockedForSend: false, sendPendingApproval: false },
+          });
+          await this.event(tx, workspace, q.id, 'send_rejected', {}, versionId);
+        } else if (['approved', 'sent'].includes(item.status)) {
+          if (q.validUntil <= now) return;
+          await tx.quoteVersion.update({
+            where: { id: versionId },
+            data: { approvalState: 'approved', emailOpsItemId: item.id },
+          });
+          await tx.quoteShareToken.updateMany({
+            where: { versionId, revokedAt: null, activatedAt: null },
+            data: { activatedAt: now },
+          });
+          await tx.quote.update({
+            where: { id: q.id },
+            data: { status: 'sent', sentAt: now, lockedForSend: false, sendPendingApproval: false },
+          });
+          await tx.customer.updateMany({
+            where: { id: q.customerId, workspaceId: workspace, stage: 'LEAD' },
+            data: { stage: 'PROSPECT' },
+          });
+          await this.event(tx, workspace, q.id, 'send_approved', {}, versionId);
+          await this.event(tx, workspace, q.id, 'sent', {}, versionId);
+          if (current.versionNo > 1)
+            await this.event(
+              tx,
+              workspace,
+              q.id,
+              'quote.superseded',
+              {
+                quote_ref: q.id,
+                prior_version: current.versionNo - 1,
+                new_version: current.versionNo,
+              },
+              versionId,
+            );
+        }
+      },
+      // Bookkeeping, not a user write: it records a send Email-Ops already made,
+      // and runs from the public quote page, a read a suspended workspace still serves.
+      { allowWhenWriteLocked: true },
+    );
   }
   private async tokenScope(token: string) {
     this.enabled();
@@ -404,50 +411,57 @@ export class QuotesLifecycleService {
     );
     if (initial && !initial.activatedAt && !initial.revokedAt)
       await this.observe(workspace, initial.versionId);
-    const resolved = await this.db.withWorkspace(workspace, null, async (tx) => {
-      const r = await this.tokenRows(tx, workspace, token);
-      if (!r) return null;
-      if (!r.token.activatedAt && !r.token.revokedAt) {
-        await this.event(
-          tx,
-          workspace,
-          r.q.id,
-          'view_unavailable',
-          {},
-          r.version.id,
-          'public',
-          meta,
-        );
-        return { unavailable: true as const };
-      }
-      if (!r.token.activatedAt) return null;
-      const state =
-        r.version.disposition === 'superseded'
-          ? 'superseded'
-          : r.token.revokedAt
-            ? 'revoked'
-            : r.token.expiresAt <= new Date()
-              ? 'expired'
-              : r.q.status === 'voided'
-                ? 'voided'
-                : r.version.acceptedAt
-                  ? 'accepted'
-                  : 'open';
-      await tx.quoteShareToken.update({
-        where: { id: r.token.id },
-        data: { viewCount: { increment: 1 }, lastViewedAt: new Date() },
-      });
-      if (state === 'open' && r.q.status === 'sent')
-        await tx.quote.update({ where: { id: r.q.id }, data: { status: 'viewed' } });
-      await this.event(tx, workspace, r.q.id, 'viewed', {}, r.version.id, 'public', meta);
-      return {
-        unavailable: false as const,
-        snapshot: (r.version.acceptedSnapshot ?? r.version.snapshot) as unknown as QuoteSnapshot,
-        state,
-        version: r.version,
-        recipients: r.q.recipients.length > 0,
-      };
-    });
+    const resolved = await this.db.withWorkspace(
+      workspace,
+      null,
+      async (tx) => {
+        const r = await this.tokenRows(tx, workspace, token);
+        if (!r) return null;
+        if (!r.token.activatedAt && !r.token.revokedAt) {
+          await this.event(
+            tx,
+            workspace,
+            r.q.id,
+            'view_unavailable',
+            {},
+            r.version.id,
+            'public',
+            meta,
+          );
+          return { unavailable: true as const };
+        }
+        if (!r.token.activatedAt) return null;
+        const state =
+          r.version.disposition === 'superseded'
+            ? 'superseded'
+            : r.token.revokedAt
+              ? 'revoked'
+              : r.token.expiresAt <= new Date()
+                ? 'expired'
+                : r.q.status === 'voided'
+                  ? 'voided'
+                  : r.version.acceptedAt
+                    ? 'accepted'
+                    : 'open';
+        await tx.quoteShareToken.update({
+          where: { id: r.token.id },
+          data: { viewCount: { increment: 1 }, lastViewedAt: new Date() },
+        });
+        if (state === 'open' && r.q.status === 'sent')
+          await tx.quote.update({ where: { id: r.q.id }, data: { status: 'viewed' } });
+        await this.event(tx, workspace, r.q.id, 'viewed', {}, r.version.id, 'public', meta);
+        return {
+          unavailable: false as const,
+          snapshot: (r.version.acceptedSnapshot ?? r.version.snapshot) as unknown as QuoteSnapshot,
+          state,
+          version: r.version,
+          recipients: r.q.recipients.length > 0,
+        };
+      },
+      // Bookkeeping of a read (view counter, `viewed` status and event): the
+      // public quote page keeps working while the workspace is suspended or archived.
+      { allowWhenWriteLocked: true },
+    );
     if (!resolved) return { found: false };
     if (resolved.unavailable) throw new QuoteNotAvailable();
     const vendor = await this.presentation.letterhead(workspace);

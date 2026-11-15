@@ -69,8 +69,13 @@ export class AuditService {
         userAgent: dto.userAgent,
       };
 
-      return await this.workspaces.runInWorkspace(dto.workspaceId, dto.userId ?? '', (tx) =>
-        tx.auditLog.create({ data }),
+      // The audit trail keeps recording while a workspace is suspended/archived
+      // (it still serves reads, and those reads are audited).
+      return await this.workspaces.runInWorkspace(
+        dto.workspaceId,
+        dto.userId ?? '',
+        (tx) => tx.auditLog.create({ data }),
+        { allowWhenWriteLocked: true },
       );
     } catch (error) {
       // Audit logging must never break application flow.

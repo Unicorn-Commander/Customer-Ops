@@ -145,6 +145,24 @@ export class WorkspaceController {
     };
   }
 
+  @Get('members/:userKey/removal')
+  @JwtOnly()
+  @RequireWorkspaceRole(WorkspaceRole.OWNER)
+  @ApiOperation({
+    summary:
+      'What removing this member would revoke (owner only). Shown before the removal is confirmed.',
+  })
+  async removalPlan(
+    @CurrentUser() user: AuthedUser,
+    @Param('workspaceId') workspaceId: string,
+    @Param('userKey') userKey: string,
+  ) {
+    // Not behind PROVISIONING_ENABLED: the app's own removal revokes credentials
+    // with the flag off too, so an owner must see what it revokes before confirming.
+    await this.membership.assertOwner(user, workspaceId);
+    return this.membership.planMemberRemoval(workspaceId, userKey, { requireLiveMember: true });
+  }
+
   @Delete('members/:userKey')
   @JwtOnly()
   @RequireWorkspaceRole(WorkspaceRole.OWNER)

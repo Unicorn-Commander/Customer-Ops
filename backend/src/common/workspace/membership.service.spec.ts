@@ -252,20 +252,44 @@ describe('MembershipService', () => {
       expect(prisma.membership.update).not.toHaveBeenCalled();
     });
 
-    it('revokeMember soft-revokes, but refuses to remove the LAST owner', async () => {
-      const update = jest.fn().mockResolvedValue(m('kc-bob', WorkspaceRole.MEMBER, MembershipStatus.REVOKED));
-      const okPrisma = {
-        membership: { findUnique: jest.fn().mockResolvedValue(m('kc-bob', WorkspaceRole.MEMBER)), count: jest.fn().mockResolvedValue(1), update },
+    it('revokeMember soft-revokes and revokes credentials, but refuses to remove the LAST owner', async () => {
+      // revokeMember always runs the one-transaction removal (flag on or off).
+      const tx = (membership: any, owners: number) => {
+        const t: any = {
+          membership: {
+            findUnique: jest.fn().mockResolvedValue(membership),
+            findUniqueOrThrow: jest.fn().mockResolvedValue(membership),
+            count: jest.fn().mockResolvedValue(owners),
+            update: jest
+              .fn()
+              .mockResolvedValue({ ...membership, status: MembershipStatus.REVOKED }),
+          },
+          user: {
+            findUnique: jest.fn().mockResolvedValue(null),
+            findFirst: jest.fn().mockResolvedValue(null),
+          },
+          personalAccessToken: { count: jest.fn(), updateMany: jest.fn() },
+          m365Connection: { count: jest.fn(), deleteMany: jest.fn() },
+        };
+        t.$transaction = jest.fn((fn: any) => fn(t));
+        return t;
       };
-      const revoked = await make({}, okPrisma).revokeMember(BOOTSTRAP, 'kc-bob');
+      const ok = tx(m('kc-bob', WorkspaceRole.MEMBER), 1);
+      const revoked = await make({}, ok).revokeMember(BOOTSTRAP, 'kc-bob');
       expect(revoked.status).toBe(MembershipStatus.REVOKED);
-      expect(update).toHaveBeenCalledWith(
+      expect(ok.membership.update).toHaveBeenCalledWith(
         expect.objectContaining({ data: { status: MembershipStatus.REVOKED, isDefault: false } }),
       );
-      const lastOwnerPrisma = {
-        membership: { findUnique: jest.fn().mockResolvedValue(m('kc-aaron-sub', WorkspaceRole.OWNER)), count: jest.fn().mockResolvedValue(1), update: jest.fn() },
-      };
-      await expect(make({}, lastOwnerPrisma).revokeMember(BOOTSTRAP, 'kc-aaron-sub')).rejects.toThrow(BadRequestException);
+      const lastOwner = tx(m('kc-aaron-sub', WorkspaceRole.OWNER), 1);
+      await expect(make({}, lastOwner).revokeMember(BOOTSTRAP, 'kc-aaron-sub')).rejects.toThrow(
+        BadRequestException,
+      );
+      expect(lastOwner.membership.update).not.toHaveBeenCalled();
+      const gone = tx(null, 1);
+      await expect(make({}, gone).revokeMember(BOOTSTRAP, 'kc-nobody')).rejects.toThrow(
+        NotFoundException,
+      );
+      expect(gone.personalAccessToken.updateMany).not.toHaveBeenCalled();
     });
   });
 

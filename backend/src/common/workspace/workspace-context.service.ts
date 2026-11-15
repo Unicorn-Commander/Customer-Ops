@@ -1,7 +1,7 @@
 import { Injectable, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { User } from '@prisma/client';
-import { PrismaService, WorkspaceTxClient } from '../../prisma/prisma.service';
+import { PrismaService, WorkspaceTxClient, WorkspaceTxOptions } from '../../prisma/prisma.service';
 import { MembershipService } from './membership.service';
 import {
   defaultWorkspaceId as defaultWorkspaceIdFromEnv,
@@ -213,7 +213,8 @@ export class WorkspaceContextService {
     workspaceId: string,
     ucUid: string | null | undefined,
     fn: (tx: WorkspaceTxClient) => Promise<T>,
+    options?: WorkspaceTxOptions,
   ): Promise<T> {
-    return this.prisma.withWorkspace(workspaceId, ucUid, fn);
+    return this.prisma.withWorkspace(workspaceId, ucUid, fn, options);
   }
 }

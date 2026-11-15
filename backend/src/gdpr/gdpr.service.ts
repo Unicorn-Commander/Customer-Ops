@@ -165,6 +165,9 @@ export class GdprService {
           },
         };
       },
+      // A legal erasure duty does not pause with the plan: it runs on a
+      // suspended or archived workspace too (an erase, not a user write).
+      { allowWhenWriteLocked: true },
     );
 
     if (!tx) {
