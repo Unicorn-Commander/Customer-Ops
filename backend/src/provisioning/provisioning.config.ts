@@ -3,8 +3,11 @@
  *
  * PROVISIONING_ENABLED is OFF by default. With it off the provisioning module
  * is not registered at all (its routes answer the framework's own 404, exactly
- * as today), the workspace write lock is inert, and member removal behaves as
- * it did before (membership status only).
+ * as today), the workspace write lock is inert, and the pause/resume routes do
+ * not exist. One change is NOT behind the flag: the app's own member removal
+ * (DELETE workspaces/:id/members/:userKey) always revokes the removed person's
+ * credentials by the removal rule (MembershipService.removeMember), and its
+ * preview route is served with the flag off too.
  */
 
 type EnvGetter = (key: string) => string | undefined;

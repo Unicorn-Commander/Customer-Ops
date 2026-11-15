@@ -19,7 +19,6 @@ import {
   Get,
   HttpCode,
   HttpStatus,
-  NotFoundException,
   Param,
   Patch,
   UseGuards,
@@ -38,7 +37,6 @@ import { WorkspaceRoleGuard } from './workspace-role.guard';
 import { ucUidOf, WithWorkspaceClaim } from './workspace.util';
 import { UpdateMemberRoleDto } from './dto/update-member-role.dto';
 import { SetAgentPauseDto } from './dto/set-agent-pause.dto';
-import { provisioningEnabled } from '../../provisioning/provisioning.config';
 
 type AuthedUser = User & Partial<WithWorkspaceClaim>;
 
@@ -152,18 +150,17 @@ export class WorkspaceController {
   @RequireWorkspaceRole(WorkspaceRole.OWNER)
   @ApiOperation({
     summary:
-      'What removing this member would revoke (owner only; PROVISIONING_ENABLED). ' +
-      'Shown before the removal is confirmed.',
+      'What removing this member would revoke (owner only). Shown before the removal is confirmed.',
   })
   async removalPlan(
     @CurrentUser() user: AuthedUser,
     @Param('workspaceId') workspaceId: string,
     @Param('userKey') userKey: string,
   ) {
-    if (!provisioningEnabled())
-      throw new NotFoundException(`Cannot GET members/${userKey}/removal`);
+    // Not behind PROVISIONING_ENABLED: the app's own removal revokes credentials
+    // with the flag off too, so an owner must see what it revokes before confirming.
     await this.membership.assertOwner(user, workspaceId);
-    return this.membership.planMemberRemoval(workspaceId, userKey);
+    return this.membership.planMemberRemoval(workspaceId, userKey, { requireLiveMember: true });
   }
 
   @Delete('members/:userKey')
