@@ -24,6 +24,12 @@ import { __resetAccessListCacheForTests } from '../auth/access-list';
 import { ProvisioningModule } from './provisioning.module';
 import { PROVISIONING_JTI_STORE } from './provisioning-token.service';
 import { ProvisioningJtiStore } from './provisioning-jti.store';
+import { AuthService } from '../auth/auth.service';
+import * as orgEntitlements from '../auth/org-entitlements.client';
+import { MembershipService } from '../common/workspace/membership.service';
+import { WorkspaceContextService } from '../common/workspace/workspace-context.service';
+import { AuditService } from '../audit/audit.service';
+import { GdprService } from '../gdpr/gdpr.service';
 
 const dbUrl =
   process.env.PROVISIONING_TEST_DATABASE_URL ?? process.env.CUSTOMER_OPS_RLS_OWNER_DATABASE_URL;
@@ -148,6 +154,36 @@ suite('contract D provisioning on a real PostgreSQL', () => {
     });
   }
 
+  function ownerSession(owner: User): string {
+    return app.get(JwtService).sign({
+      sub: owner.id,
+      email: owner.email,
+      username: owner.username,
+      entitlements: [],
+    });
+  }
+
+  async function asOwner(session: string, method: string, path: string) {
+    const res = await fetch(`${base}/api/v1${path}`, {
+      method,
+      headers: { Authorization: `Bearer ${session}` },
+    });
+    const text = await res.text();
+    return { status: res.status, body: text ? JSON.parse(text) : null };
+  }
+
+  async function membershipOf(user: User, workspaceId: string) {
+    return db.membership.findUnique({
+      where: { userKey_workspaceId: { userKey: user.keycloakId!, workspaceId } },
+    });
+  }
+
+  async function lockedWrite(orgId: string) {
+    return db.withWorkspace(orgId, null, (tx) =>
+      tx.auditLog.create({ data: { workspaceId: orgId, action: 'UPDATE', resource: 'fixture' } }),
+    );
+  }
+
   beforeAll(async () => {
     process.env.DATABASE_URL = dbUrl;
     process.env.PROVISIONING_ENABLED = 'true';
@@ -171,6 +207,7 @@ suite('contract D provisioning on a real PostgreSQL', () => {
       await db.personalAccessToken.deleteMany({ where: { userId: { in: users } } });
       await db.m365Connection.deleteMany({ where: { userId: { in: users } } });
       await db.auditLog.deleteMany({ where: { workspaceId: { in: workspaces } } });
+      await db.customer.deleteMany({ where: { workspaceId: { in: workspaces } } });
       await db.membership.deleteMany({ where: { workspaceId: { in: workspaces } } });
       await db.workspace.deleteMany({ where: { id: { in: workspaces } } });
       await db.user.deleteMany({ where: { id: { in: users } } });
@@ -327,6 +364,181 @@ suite('contract D provisioning on a real PostgreSQL', () => {
     });
   });
 
+  describe('sign-in to a suspended or archived workspace', () => {
+    it('an existing and a new member both get in; a tenant write is still refused with 423', async () => {
+      const orgId = randomUUID();
+      await provision(orgId);
+      const existing = await person('kai.existing');
+      await join(existing, orgId);
+      const signin = app.get(WorkspaceProvisioningService);
+      for (const state of ['suspended', 'archived']) {
+        await call('PATCH', `${BASE}/${orgId}`, { state });
+        const newcomer = await person(`nia.new.${state}`);
+        for (const user of [existing, newcomer]) {
+          const result = await signin.provisionEntitledOrgWorkspace({
+            user,
+            orgId,
+            role: 'member',
+          });
+          expect(result.workspaceId).toBe(orgId);
+          expect(result.membership.status).toBe(MembershipStatus.ACTIVE);
+        }
+        await expect(lockedWrite(orgId)).rejects.toMatchObject({ status: 423 });
+      }
+      await call('PATCH', `${BASE}/${orgId}`, { state: 'active' });
+    });
+
+    it('a GDPR erase still runs on a suspended workspace', async () => {
+      const orgId = randomUUID();
+      await provision(orgId);
+      const customer = await db.customer.create({
+        data: { workspaceId: orgId, contactId: randomUUID() },
+      });
+      await call('PATCH', `${BASE}/${orgId}`, { state: 'suspended' });
+      const gdpr = new GdprService(
+        db,
+        app.get(WorkspaceContextService),
+        app.get(MembershipService),
+        app.get(AuditService, { strict: false }),
+      );
+      const result = await gdpr.eraseCustomerCore(orgId, customer.id, null, 'erasure-request');
+      expect(result.erased).toBe(true);
+      expect(await db.customer.count({ where: { id: customer.id } })).toBe(0);
+      await expect(lockedWrite(orgId)).rejects.toMatchObject({ status: 423 });
+    });
+  });
+
+  describe('pause and resume', () => {
+    it('a paused member stays paused through a sign-in and is refused at request time; tokens are kept', async () => {
+      const orgId = randomUUID();
+      await provision(orgId);
+      const owner = await person('pia.owner');
+      const member = await person('pat.paused');
+      await join(owner, orgId, WorkspaceRole.OWNER);
+      await join(member, orgId);
+      const token = await pat(member, orgId);
+      const session = ownerSession(owner);
+      expect(await asUser(token.plaintext, `/workspaces/${orgId}`)).toBe(200);
+
+      const paused = await asOwner(
+        session,
+        'POST',
+        `/workspaces/${orgId}/members/${member.keycloakId}/pause`,
+      );
+      expect(paused).toEqual({
+        status: 200,
+        body: { user_key: member.keycloakId, role: 'member', status: 'suspended' },
+      });
+      expect(await asUser(token.plaintext, `/workspaces/${orgId}`)).toBe(403);
+      expect(
+        (await db.personalAccessToken.findUniqueOrThrow({ where: { id: token.id } })).revokedAt,
+      ).toBeNull();
+
+      // A sign-in with a positive entitlement answer does not undo the pause.
+      await app.get(WorkspaceProvisioningService).provisionEntitledOrgWorkspace({
+        user: member,
+        orgId,
+        role: 'member',
+      });
+      expect((await membershipOf(member, orgId))!.status).toBe(MembershipStatus.SUSPENDED);
+      expect(await asUser(token.plaintext, `/workspaces/${orgId}`)).toBe(403);
+
+      const resumed = await asOwner(
+        session,
+        'POST',
+        `/workspaces/${orgId}/members/${member.keycloakId}/resume`,
+      );
+      expect(resumed.body.status).toBe('active');
+      expect(await asUser(token.plaintext, `/workspaces/${orgId}`)).toBe(200);
+    });
+
+    it('refuses to pause the last owner, 404s a non-member, and is owner only', async () => {
+      const orgId = randomUUID();
+      await provision(orgId);
+      const owner = await person('olu.owner');
+      const member = await person('mo.member');
+      await join(owner, orgId, WorkspaceRole.OWNER);
+      await join(member, orgId);
+      const session = ownerSession(owner);
+      expect(
+        (await asOwner(session, 'POST', `/workspaces/${orgId}/members/${owner.keycloakId}/pause`))
+          .status,
+      ).toBe(400);
+      expect((await membershipOf(owner, orgId))!.status).toBe(MembershipStatus.ACTIVE);
+      expect(
+        (await asOwner(session, 'POST', `/workspaces/${orgId}/members/${randomUUID()}/pause`))
+          .status,
+      ).toBe(404);
+      expect(
+        (
+          await asOwner(
+            ownerSession(member),
+            'POST',
+            `/workspaces/${orgId}/members/${owner.keycloakId}/pause`,
+          )
+        ).status,
+      ).toBe(403);
+    });
+  });
+
+  describe('a revoked member returning at sign-in', () => {
+    const verdict = (orgId: string | null, allowed: boolean) => ({
+      outcome: allowed ? ('allowed' as const) : ('denied' as const),
+      allowed,
+      entitled: allowed,
+      orgId,
+      tier: null,
+      role: 'member',
+      orgName: null,
+      reason: 'integration fixture',
+    });
+
+    it('returns only on a positive entitlement answer, and with no old token back', async () => {
+      const orgId = randomUUID();
+      await provision(orgId);
+      const member = await person('rae.returning');
+      await join(member, orgId);
+      const token = await pat(member, orgId);
+      expect((await call('DELETE', `${BASE}/${orgId}/members/${member.keycloakId}`)).status).toBe(
+        204,
+      );
+      expect((await membershipOf(member, orgId))!.status).toBe(MembershipStatus.REVOKED);
+
+      const saved = {
+        on: process.env.CUSTOMER_OPS_ENTITLEMENTS_ENABLED,
+        url: process.env.UC_ENTITLEMENTS_URL,
+      };
+      process.env.CUSTOMER_OPS_ENTITLEMENTS_ENABLED = 'true';
+      process.env.UC_ENTITLEMENTS_URL = 'https://entitlements.example.com/api/v1/me/entitlements';
+      const spy = jest.spyOn(orgEntitlements, 'resolveOrgEntitlement');
+      const signIn = () =>
+        app
+          .get(AuthService)
+          .validateKeycloakUser(
+            member.keycloakId!,
+            { email: member.email, email_verified: true },
+            'fixture-forwarded-bearer',
+          );
+      try {
+        spy.mockResolvedValue(verdict(orgId, false));
+        await signIn().catch(() => undefined); // denied: may or may not admit by other rules
+        expect((await membershipOf(member, orgId))!.status).toBe(MembershipStatus.REVOKED);
+
+        spy.mockResolvedValue(verdict(orgId, true));
+        await signIn();
+        expect((await membershipOf(member, orgId))!.status).toBe(MembershipStatus.ACTIVE);
+      } finally {
+        spy.mockRestore();
+        process.env.CUSTOMER_OPS_ENTITLEMENTS_ENABLED = saved.on;
+        process.env.UC_ENTITLEMENTS_URL = saved.url;
+        if (saved.on === undefined) delete process.env.CUSTOMER_OPS_ENTITLEMENTS_ENABLED;
+        if (saved.url === undefined) delete process.env.UC_ENTITLEMENTS_URL;
+      }
+      // Back as a member, but the token revoked at removal stays revoked.
+      expect(await asUser(token.plaintext, `/workspaces/${orgId}`)).toBe(401);
+    });
+  });
+
   describe('DELETE /provisioning/workspaces/{id}/members/{subject}', () => {
     it('revokes the workspace token: a request that worked before is refused after', async () => {
       const orgId = randomUUID();
@@ -421,6 +633,75 @@ suite('contract D provisioning on a real PostgreSQL', () => {
       ).toBe(404);
     });
 
+    it('revokes the credentials of a person with no membership row here, and only once', async () => {
+      const orgId = randomUUID();
+      const otherOrg = randomUUID();
+      await provision(orgId);
+      await provision(otherOrg);
+      const membershipSvc = app.get(MembershipService);
+      for (const enforced of [true, false]) {
+        const ghost = await person(`gus.norow.${enforced}`);
+        await join(ghost, otherOrg); // another active membership elsewhere
+        const bound = await pat(ghost, orgId);
+        const unbound = await pat(ghost, null);
+        await db.m365Connection.create({
+          data: {
+            userId: ghost.id,
+            workspaceId: orgId,
+            m365UserId: `graph-${ghost.id}`,
+            scopes: [],
+            refreshTokenEnc: 'fixture-ciphertext',
+          },
+        });
+        process.env.CUSTOMER_OPS_TENANCY_ENABLED = String(enforced);
+        try {
+          const preview = await membershipSvc.planMemberRemoval(orgId, ghost.keycloakId!);
+          expect(preview).toMatchObject({
+            is_member: false,
+            revokes: {
+              membership: false,
+              workspace_tokens: 1,
+              unbound_tokens: enforced ? 0 : 1,
+              m365_connections: 1,
+            },
+            keeps: { unbound_tokens: enforced ? 1 : 0 },
+          });
+          expect(
+            (await call('DELETE', `${BASE}/${orgId}/members/${ghost.keycloakId}`)).status,
+          ).toBe(204);
+          const snapshot = await db.personalAccessToken.findMany({
+            where: { userId: ghost.id },
+            orderBy: { id: 'asc' },
+          });
+          expect(
+            (await db.personalAccessToken.findUniqueOrThrow({ where: { id: bound.id } })).revokedAt,
+          ).not.toBeNull();
+          const unboundAfter = await db.personalAccessToken.findUniqueOrThrow({
+            where: { id: unbound.id },
+          });
+          expect(unboundAfter.revokedAt === null).toBe(enforced);
+          expect(
+            await db.m365Connection.count({ where: { userId: ghost.id, workspaceId: orgId } }),
+          ).toBe(0);
+          expect(await membershipOf(ghost, orgId)).toBeNull(); // no row created
+
+          // The second call revokes nothing more.
+          expect(
+            (await call('DELETE', `${BASE}/${orgId}/members/${ghost.keycloakId}`)).status,
+          ).toBe(204);
+          expect(
+            await db.personalAccessToken.findMany({
+              where: { userId: ghost.id },
+              orderBy: { id: 'asc' },
+            }),
+          ).toEqual(snapshot);
+          expect((await membershipOf(ghost, otherOrg))!.status).toBe(MembershipStatus.ACTIVE);
+        } finally {
+          process.env.CUSTOMER_OPS_TENANCY_ENABLED = 'true';
+        }
+      }
+    });
+
     it('revokes an unbound token on the first removal when membership is not enforced', async () => {
       const orgId = randomUUID();
       const otherOrg = randomUUID();
@@ -485,6 +766,49 @@ suite('contract D provisioning on a real PostgreSQL', () => {
         headers: { Authorization: `Bearer ${session}` },
       });
       expect(again.status).toBe(404); // unchanged answer for a member already removed
+    });
+    it("with PROVISIONING_ENABLED off, the app's own removal still revokes the person's credentials", async () => {
+      const orgId = randomUUID();
+      await provision(orgId);
+      const owner = await person('fay.owner');
+      const member = await person('flo.member');
+      await join(owner, orgId, WorkspaceRole.OWNER);
+      await join(member, orgId);
+      const token = await pat(member, orgId);
+      const session = ownerSession(owner);
+      process.env.PROVISIONING_ENABLED = 'false';
+      try {
+        const plan = await asOwner(
+          session,
+          'GET',
+          `/workspaces/${orgId}/members/${member.keycloakId}/removal`,
+        );
+        expect(plan.status).toBe(200);
+        expect(plan.body.revokes).toMatchObject({ membership: true, workspace_tokens: 1 });
+        // The preview never probes someone who is not on the roster.
+        expect(
+          (await asOwner(session, 'GET', `/workspaces/${orgId}/members/${randomUUID()}/removal`))
+            .status,
+        ).toBe(404);
+        expect(
+          (await asOwner(session, 'DELETE', `/workspaces/${orgId}/members/${member.keycloakId}`))
+            .status,
+        ).toBe(204);
+        expect(
+          (await db.personalAccessToken.findUniqueOrThrow({ where: { id: token.id } })).revokedAt,
+        ).not.toBeNull();
+        // Same answers as before: 404 the second time, 400 for the last owner.
+        expect(
+          (await asOwner(session, 'DELETE', `/workspaces/${orgId}/members/${member.keycloakId}`))
+            .status,
+        ).toBe(404);
+        expect(
+          (await asOwner(session, 'DELETE', `/workspaces/${orgId}/members/${owner.keycloakId}`))
+            .status,
+        ).toBe(400);
+      } finally {
+        process.env.PROVISIONING_ENABLED = 'true';
+      }
     });
   });
 
