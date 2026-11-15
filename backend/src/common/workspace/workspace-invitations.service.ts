@@ -206,6 +206,9 @@ export class WorkspaceInvitationsService {
           orderBy: { createdAt: 'desc' },
         });
       },
+      // A read: owner()'s FOR SHARE row lock is not a write, and owner() answers
+      // a non-active workspace itself (403), so the write lock must not turn it into 423.
+      { allowWhenWriteLocked: true },
     );
   }
 
