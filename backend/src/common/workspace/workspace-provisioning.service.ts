@@ -225,32 +225,53 @@ export class WorkspaceProvisioningService {
     slug: string;
     displayName: string;
   }): Promise<{ membership: Membership }> {
-    return this.prisma.withWorkspace(fields.orgId, fields.userKey, async (tx) => {
-      const workspace =
-        (await tx.workspace.findUnique({ where: { id: fields.orgId } })) ??
-        (await tx.workspace.create({
+    // allowWhenWriteLocked: the workspace mirror and membership rows are sign-in
+    // bookkeeping (control-plane tables), not tenant data. A suspended or archived
+    // workspace still serves reads, so its members must still be able to sign in.
+    return this.prisma.withWorkspace(
+      fields.orgId,
+      fields.userKey,
+      async (tx) => {
+        const workspace =
+          (await tx.workspace.findUnique({ where: { id: fields.orgId } })) ??
+          (await tx.workspace.create({
+            data: {
+              id: fields.orgId,
+              slug: fields.slug,
+              displayName: fields.displayName,
+            },
+          }));
+        const key = { userKey: fields.userKey, workspaceId: workspace.id };
+        const current = await tx.membership.findUnique({ where: { userKey_workspaceId: key } });
+        if (current) {
+          // A paused (SUSPENDED) member stays paused until an owner resumes them:
+          // sign-in never changes a SUSPENDED membership.
+          if (current.status === MembershipStatus.SUSPENDED) return { membership: current };
+          if (current.status === MembershipStatus.ACTIVE) return { membership: current };
+          // REVOKED -> ACTIVE only because this call follows the control plane's
+          // FRESH entitlement answer listing the person in this organization (the
+          // caller, auth.service, only gets here on a positive answer). Tokens
+          // revoked at removal stay revoked: the person comes back with no old token.
+          return {
+            membership: await tx.membership.update({
+              where: { userKey_workspaceId: key },
+              data: { status: MembershipStatus.ACTIVE },
+            }),
+          };
+        }
+        const hasAny = await tx.membership.findFirst({ where: { userKey: fields.userKey } });
+        const membership = await tx.membership.create({
           data: {
-            id: fields.orgId,
-            slug: fields.slug,
-            displayName: fields.displayName,
+            ...key,
+            role: fields.role,
+            status: MembershipStatus.ACTIVE,
+            isDefault: !hasAny,
           },
-        }));
-      const hasAny = await tx.membership.findFirst({ where: { userKey: fields.userKey } });
-      const membership = await tx.membership.upsert({
-        where: {
-          userKey_workspaceId: { userKey: fields.userKey, workspaceId: workspace.id },
-        },
-        update: { status: MembershipStatus.ACTIVE },
-        create: {
-          userKey: fields.userKey,
-          workspaceId: workspace.id,
-          role: fields.role,
-          status: MembershipStatus.ACTIVE,
-          isDefault: !hasAny,
-        },
-      });
-      return { membership };
-    });
+        });
+        return { membership };
+      },
+      { allowWhenWriteLocked: true },
+    );
   }
 
   /**
