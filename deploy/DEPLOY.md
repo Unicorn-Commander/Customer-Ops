@@ -208,9 +208,14 @@ Do these as a deliberate, separately-reviewed change — **not** at first bring-
    add `-- --apply` to write them. A row that disagrees with the lookup keeps
    its tenant but is marked in conflict (`conflict_tenant_id`, migration
    `20261118000000`) and is NOT routable: that workspace answers 409
-   not-connected and no Contact-Ops tenant is contacted until a later lookup
-   confirms the row (a person re-verifies it). A row the lookup cannot confirm
-   (no tenant / unavailable) stays routable as before.
+   not-connected and no Contact-Ops tenant is contacted. The mark is cleared
+   only by a lookup that confirms a tenant for that org: a provisioning replay
+   or `--apply` when the lookup names the row's own tenant again, or the owner
+   connection route when the lookup names the tenant the owner asks for (the
+   row is then re-pointed to it and the mark cleared in one transaction; any
+   other answer is 409 and nothing changes). A row the lookup cannot confirm
+   (no tenant / unavailable) stays routable as before. Tenant ids are compared
+   lowercase.
    Both modes also re-check every EXISTING row (section `EXISTING ROWS`:
    confirmed / CONFLICT / UNCONFIRMED) and never change a tenant; only
    `--apply` sets or clears the conflict mark. The command exits 2 when any row
@@ -220,7 +225,8 @@ Do these as a deliberate, separately-reviewed change — **not** at first bring-
    skips (and logs) contact-ops entries and never overwrites an existing row,
    and the owner connection route writes only the tenant the lookup names for
    that workspace (else 409; dormant lookup -> 409 "Contact-Ops link is not
-   available yet").
+   available yet"). It never re-points a row that is NOT marked in conflict
+   (409 before any lookup).
 2. **Turn the tenant fence live** (the security flip — do both together):
    - point the runtime at the NOBYPASSRLS role:
      `DATABASE_URL=postgresql://localhost:5432/customer_ops<app-pw>@customer-ops-postgres:5432/customerops?schema=public`
