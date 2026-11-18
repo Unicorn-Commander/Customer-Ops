@@ -16,8 +16,17 @@ const TENANT = 'aaaaaaaa-0000-4000-8000-00000000000a';
 const OTHER = 'bbbbbbbb-0000-4000-8000-00000000000b';
 const owner = { id: 'local-ada', keycloakId: 'kc-ada' } as User;
 
-function setup(answer: OrgTenantLookup) {
+type Row = {
+  localWorkspaceId: string;
+  targetApp: string;
+  targetWorkspaceId: string;
+  conflictTenantId: string | null;
+};
+
+function setup(answer: OrgTenantLookup, pre: Row | null = null) {
   const rows: Array<Record<string, unknown>> = [];
+  /** The one contact-ops row, as the fake database holds it. */
+  let row: Row | null = pre ? { ...pre } : null;
   const tx = {
     $queryRaw: jest.fn().mockResolvedValue([]),
     $executeRaw: jest.fn().mockResolvedValue(0),
@@ -26,17 +35,21 @@ function setup(answer: OrgTenantLookup) {
       findUnique: jest.fn().mockResolvedValue({ role: 'OWNER', status: 'ACTIVE' }),
     },
     federationWorkspaceMap: {
-      findUnique: jest.fn().mockResolvedValue(null),
-      upsert: jest.fn(async ({ create }: any) => {
-        rows.push(create);
-        return create;
+      findUnique: jest.fn(async () => (row ? { ...row } : null)),
+      upsert: jest.fn(async ({ create, update }: any) => {
+        if (row) Object.assign(row, update);
+        else {
+          rows.push(create);
+          row = { conflictTenantId: null, ...create };
+        }
+        return row;
       }),
     },
     auditLog: { create: jest.fn().mockResolvedValue({}) },
   };
   const prisma = {
     workspace: { findUnique: jest.fn().mockResolvedValue({ id: WS, status: 'active' }) },
-    federationWorkspaceMap: { findUnique: jest.fn().mockResolvedValue(null) },
+    federationWorkspaceMap: { findUnique: jest.fn(async () => (row ? { ...row } : null)) },
     withWorkspace: jest.fn(async (_ws: string, _k: string, fn: any) => fn(tx)),
   };
   const lookup = { lookupTenant: jest.fn(async () => answer) };
@@ -54,7 +67,7 @@ function setup(answer: OrgTenantLookup) {
     mapping as any,
     lookup as any,
   );
-  return { ctl, rows, lookup, brigade, tx };
+  return { ctl, rows, lookup, brigade, tx, mapping, row: () => row };
 }
 
 function dto(target = TENANT): ConnectContactDto {
@@ -126,5 +139,58 @@ describe('ContactLinkController contact-ops writes are fenced by the org lookup 
     expect(err.message).toBe('Contact-Ops link is not available yet');
     expect(rows).toEqual([]);
     expect(remote).not.toHaveBeenCalled();
+  });
+
+  describe('R4-1: the owner repairs a row marked in conflict', () => {
+    // R3-1 kept the old tenant (OTHER) and marked the row: the lookup said TENANT.
+    const conflicted: Row = {
+      localWorkspaceId: WS,
+      targetApp: 'contact-ops',
+      targetWorkspaceId: OTHER,
+      conflictTenantId: TENANT,
+    };
+
+    it('lookup confirms the target -> row re-pointed to it, mark cleared, map reloaded (routable)', async () => {
+      const { ctl, row, lookup, tx, mapping } = setup(
+        { kind: 'tenant', tenantId: TENANT, tenantSlug: 'a' },
+        conflicted,
+      );
+      await expect(ctl.connect(owner, WS, dto())).resolves.toMatchObject({
+        target_workspace_id: TENANT,
+      });
+      expect(lookup.lookupTenant).toHaveBeenCalledWith(WS);
+      expect(row()).toEqual({ ...conflicted, targetWorkspaceId: TENANT, conflictTenantId: null });
+      // One write, inside the owner transaction, and audited.
+      expect(tx.federationWorkspaceMap.upsert).toHaveBeenCalledTimes(1);
+      expect(tx.auditLog.create).toHaveBeenCalledTimes(1);
+      expect(mapping.reload).toHaveBeenCalled();
+    });
+
+    it.each<[string, OrgTenantLookup]>([
+      ['names another tenant', { kind: 'tenant', tenantId: OTHER, tenantSlug: 'b' }],
+      ['has no tenant', { kind: 'no_tenant' }],
+      ['is unavailable', { kind: 'unavailable', detail: 'timeout' }],
+    ])('lookup %s -> 409 and the row is unchanged', async (_label, answer) => {
+      const { ctl, row, tx, brigade } = setup(answer, conflicted);
+      const err = await ctl.connect(owner, WS, dto()).catch((e) => e);
+      expect(err).toBeInstanceOf(ConflictException);
+      expect(row()).toEqual(conflicted);
+      expect(tx.federationWorkspaceMap.upsert).not.toHaveBeenCalled();
+      expect(brigade.exchangedToken).not.toHaveBeenCalled();
+      expect(remote).not.toHaveBeenCalled();
+    });
+
+    it('a row that differs and is NOT conflicted keeps the 409 before any lookup (no silent re-point)', async () => {
+      const plain: Row = { ...conflicted, conflictTenantId: null };
+      const { ctl, row, lookup, tx } = setup(
+        { kind: 'tenant', tenantId: TENANT, tenantSlug: 'a' },
+        plain,
+      );
+      const err = await ctl.connect(owner, WS, dto()).catch((e) => e);
+      expect(err).toBeInstanceOf(ConflictException);
+      expect(lookup.lookupTenant).not.toHaveBeenCalled();
+      expect(row()).toEqual(plain);
+      expect(tx.federationWorkspaceMap.upsert).not.toHaveBeenCalled();
+    });
   });
 });

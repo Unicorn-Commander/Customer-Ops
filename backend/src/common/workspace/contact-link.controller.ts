@@ -59,7 +59,12 @@ export class ContactLinkController {
       localWorkspaceId_targetApp: { localWorkspaceId: workspaceId, targetApp: 'contact-ops' },
     };
     const existing = await this.prisma.federationWorkspaceMap.findUnique({ where });
-    if (existing && existing.targetWorkspaceId !== target) {
+    // A row that differs is replaced only when it is MARKED in conflict (R4-1):
+    // the lookup below must then name exactly this target, and a person (this
+    // owner) chose it. An unmarked row is never silently re-pointed.
+    const repairFrom =
+      existing && existing.targetWorkspaceId !== target ? existing.targetWorkspaceId : null;
+    if (repairFrom && !existing!.conflictTenantId) {
       throw new ConflictException(
         'An existing Contact connection cannot be replaced by this action.',
       );
@@ -146,8 +151,15 @@ export class ContactLinkController {
       // Serialize competing target connections and refuse an implicit overwrite.
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${workspaceId + ':contact-ops'}))`;
       const current = await tx.federationWorkspaceMap.findUnique({ where });
-      if (current && current.targetWorkspaceId !== target)
-        throw new ConflictException('Contact connection changed concurrently.');
+      const currentTarget = current?.targetWorkspaceId ?? null;
+      // Proceed only over the row as it was checked: absent, already this
+      // target, or the same conflicted row the lookup has just overruled.
+      const stillAsChecked =
+        currentTarget === target ||
+        (currentTarget === null
+          ? repairFrom === null
+          : currentTarget === repairFrom && !!current!.conflictTenantId);
+      if (!stillAsChecked) throw new ConflictException('Contact connection changed concurrently.');
       await tx.federationWorkspaceMap.upsert({
         where,
         create: {
@@ -155,8 +167,9 @@ export class ContactLinkController {
           targetApp: 'contact-ops',
           targetWorkspaceId: target,
         },
-        // The lookup just confirmed this exact row: a previous conflict mark is cleared.
-        update: { conflictTenantId: null },
+        // The lookup just confirmed this tenant for this org: the row points at
+        // it (a conflicted row is re-pointed) and any conflict mark is cleared.
+        update: { targetWorkspaceId: target, conflictTenantId: null },
       });
       await tx.auditLog.create({
         data: {
@@ -168,6 +181,7 @@ export class ContactLinkController {
           details: {
             targetApp: 'contact-ops',
             targetWorkspaceId: target,
+            ...(repairFrom ? { repairedConflictFrom: repairFrom } : {}),
             serviceSubject: grant.service_subject!,
             role: 'viewer',
           },
