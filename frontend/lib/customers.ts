@@ -11,7 +11,7 @@
  */
 
 import { apiGet, apiPatch, apiPost, MyWorkspace } from './api';
-import type { ContactOption } from './contactPicker';
+import type { ContactSearchResult } from './contactPicker';
 
 export type Stage = 'LEAD' | 'PROSPECT' | 'CUSTOMER';
 export type Priority = 'LOW' | 'MEDIUM' | 'HIGH';
@@ -525,8 +525,8 @@ export async function getCustomer360(ws: string, id: string): Promise<Customer36
 }
 
 /** Type-ahead search of this workspace's Contact-Ops contacts (name + email). */
-export async function searchContacts(ws: string, q: string): Promise<ContactOption[]> {
-  return apiGet<ContactOption[]>(`${base(ws)}/contact-search?q=${encodeURIComponent(q)}`);
+export async function searchContacts(ws: string, q: string): Promise<ContactSearchResult> {
+  return apiGet<ContactSearchResult>(`${base(ws)}/contact-search?q=${encodeURIComponent(q)}`);
 }
 
 export async function createCustomer(
