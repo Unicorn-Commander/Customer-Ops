@@ -68,31 +68,43 @@ export class ContactOpsOrgLookupClient {
     if (!this.isConfigured()) return { kind: 'dormant' };
     // Contact-Ops answers 422 for a non-uuid; no tenant can exist for one.
     if (!UUID_RE.test(orgId)) return { kind: 'no_tenant' };
+    // ONE deadline for the whole request (R3-4): the token mint, the lookup and
+    // reading both bodies. It stays armed until the last body is consumed.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs());
     try {
-      return await this.ask(orgId);
+      return await this.ask(orgId, controller.signal);
     } catch (err) {
       return { kind: 'unavailable', detail: (err as Error).message || 'transport error' };
+    } finally {
+      clearTimeout(timer);
     }
   }
 
-  private async ask(orgId: string): Promise<OrgTenantLookup> {
+  private timeoutMs(): number {
+    const raw = Number(this.config.get<string>('CONTACT_OPS_TIMEOUT_MS'));
+    return Number.isFinite(raw) && raw > 0 ? raw : 8000;
+  }
+
+  private async ask(orgId: string, signal: AbortSignal): Promise<OrgTenantLookup> {
     const base = this.env('CONTACT_OPS_BASE_URL')!.replace(/\/$/, '');
 
-    const token = await this.lookupToken();
+    const token = await this.lookupToken(signal);
     if (!token) return { kind: 'unavailable', detail: 'no lookup token' };
 
-    const res = await this.fetchWithTimeout(
+    const res = await fetch(
       `${base}/api/service/ops-center-orgs/${encodeURIComponent(orgId)}/tenant`,
       {
         method: 'GET',
         redirect: 'error',
         headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+        signal,
       },
     );
     if (res.status === 404 || res.status === 422) return { kind: 'no_tenant' };
     if (res.status === 401) this.cached = null;
     if (res.status !== 200) return { kind: 'unavailable', detail: `HTTP ${res.status}` };
-    const body = (await res.json()) as Record<string, unknown>;
+    const body = (await readJson(res, signal)) as Record<string, unknown>;
 
     const answeredOrg = body?.['ops_center_org_id'];
     const tenantId = body?.['tenant_id'];
@@ -111,10 +123,11 @@ export class ContactOpsOrgLookupClient {
   }
 
   /** Client-credentials token of the dedicated lookup client, cached by exp. */
-  private async lookupToken(): Promise<string | null> {
+  private async lookupToken(signal: AbortSignal): Promise<string | null> {
     if (this.cached && this.cached.expMs - 30_000 > Date.now()) return this.cached.token;
-    const res = await this.fetchWithTimeout(this.env('CONTACT_OPS_LOOKUP_TOKEN_URL')!, {
+    const res = await fetch(this.env('CONTACT_OPS_LOOKUP_TOKEN_URL')!, {
       method: 'POST',
+      signal,
       redirect: 'error',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
@@ -124,22 +137,32 @@ export class ContactOpsOrgLookupClient {
       }).toString(),
     });
     if (!res.ok) return null;
-    const json = (await res.json()) as { access_token?: string; expires_in?: number };
+    const json = (await readJson(res, signal)) as { access_token?: string; expires_in?: number };
     if (!json.access_token) return null;
     const ttl = typeof json.expires_in === 'number' ? json.expires_in : 300;
     this.cached = { token: json.access_token, expMs: Date.now() + ttl * 1000 };
     return json.access_token;
   }
+}
 
-  private async fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
-    const raw = Number(this.config.get<string>('CONTACT_OPS_TIMEOUT_MS'));
-    const ms = Number.isFinite(raw) && raw > 0 ? raw : 8000;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), ms);
-    try {
-      return await fetch(url, { ...init, signal: controller.signal });
-    } finally {
-      clearTimeout(timer);
-    }
-  }
+/**
+ * res.json(), ended by the request's deadline even if the body stalls: real
+ * fetch aborts a body read on the signal, and the race makes that certain.
+ */
+function readJson(res: Response, signal: AbortSignal): Promise<unknown> {
+  if (signal.aborted) return Promise.reject(new Error('timeout'));
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(new Error('timeout'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    res.json().then(
+      (v) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(v);
+      },
+      (e) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(e);
+      },
+    );
+  });
 }

@@ -163,5 +163,40 @@ describe('ContactOpsOrgLookupClient', () => {
       );
       await expect(client.lookupTenant(ORG_A)).resolves.toMatchObject({ kind: 'unavailable' });
     });
+
+    it.each(['the lookup', 'the token mint'])(
+      'a body that never finishes (%s) is "unavailable" within the timeout (R3-4)',
+      async (which) => {
+        // Headers arrive; json() only ends when the request's abort signal fires,
+        // as with real fetch. One deadline must cover the whole request.
+        const stalled = (init: any) =>
+          ({
+            ok: true,
+            status: 200,
+            json: () =>
+              new Promise((_resolve, reject) =>
+                init.signal?.addEventListener('abort', () => reject(new Error('aborted'))),
+              ),
+          }) as unknown as Response;
+        global.fetch = jest.fn(async (url: string, init: any) => {
+          if (url === TOKEN_URL) {
+            return which === 'the token mint'
+              ? stalled(init)
+              : res(200, { access_token: 'lookup-cc-token' });
+          }
+          return stalled(init);
+        }) as any;
+        const client = new ContactOpsOrgLookupClient(
+          makeConfig({ ...LIVE, CONTACT_OPS_TIMEOUT_MS: '30' }),
+        );
+        const started = Date.now();
+        const answer = await Promise.race([
+          client.lookupTenant(ORG_A),
+          new Promise((r) => setTimeout(() => r({ kind: 'still-waiting' }), 1000)),
+        ]);
+        expect(answer).toMatchObject({ kind: 'unavailable' });
+        expect(Date.now() - started).toBeLessThan(1000);
+      },
+    );
   });
 });

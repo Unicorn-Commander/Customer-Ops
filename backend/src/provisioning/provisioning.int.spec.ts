@@ -317,6 +317,7 @@ suite('contract D provisioning on a real PostgreSQL', () => {
     let answers: Record<string, () => Response | Promise<Response>>;
     let asked: string[];
     const HANG = () => json(599, {});
+    const STALL_BODY = () => json(598, {});
 
     function json(status: number, body: unknown): Response {
       return new Response(JSON.stringify(body), {
@@ -356,6 +357,16 @@ suite('contract D provisioning on a real PostgreSQL', () => {
             return new Promise<Response>((_resolve, reject) =>
               init?.signal?.addEventListener('abort', () => reject(new Error('aborted'))),
             );
+          }
+          // Headers arrive, the body never finishes: only the abort signal ends it (R3-4).
+          if (answer === STALL_BODY) {
+            const body = new ReadableStream<Uint8Array>({
+              start(c) {
+                c.enqueue(new TextEncoder().encode('{"ops_center_org_id":'));
+                init?.signal?.addEventListener('abort', () => c.error(new Error('aborted')));
+              },
+            });
+            return new Response(body, { status: 200 });
           }
           return answer();
         }
@@ -413,12 +424,13 @@ suite('contract D provisioning on a real PostgreSQL', () => {
       expect(await mapOf(orgId)).toBeNull();
     });
 
-    it('C2: 401, 503, a timeout or a refused connection writes no row; provisioning succeeds', async () => {
+    it('C2: 401, 503, a timeout, a stalled body or a refused connection writes no row; provisioning succeeds', async () => {
       process.env.CONTACT_OPS_TIMEOUT_MS = '50';
       const failures: Array<() => Response | Promise<Response>> = [
         () => json(401, { detail: 'bad token' }),
         () => json(503, { detail: 'cannot verify tokens' }),
         HANG,
+        STALL_BODY,
         () => {
           throw new TypeError('fetch failed');
         },
