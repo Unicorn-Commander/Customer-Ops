@@ -207,6 +207,9 @@ suite('contract D provisioning on a real PostgreSQL', () => {
       await db.personalAccessToken.deleteMany({ where: { userId: { in: users } } });
       await db.m365Connection.deleteMany({ where: { userId: { in: users } } });
       await db.auditLog.deleteMany({ where: { workspaceId: { in: workspaces } } });
+      await db.federationWorkspaceMap.deleteMany({
+        where: { localWorkspaceId: { in: workspaces } },
+      });
       await db.customer.deleteMany({ where: { workspaceId: { in: workspaces } } });
       await db.membership.deleteMany({ where: { workspaceId: { in: workspaces } } });
       await db.workspace.deleteMany({ where: { id: { in: workspaces } } });
@@ -297,6 +300,111 @@ suite('contract D provisioning on a real PostgreSQL', () => {
       expect(wrongKey.status).toBe(400);
       expect((await call('POST', BASE, createBody(orgId))).status).toBe(400);
       expect(await db.workspace.count({ where: { id: orgId } })).toBe(0);
+    });
+  });
+
+  describe("the contact-ops map from Contact-Ops' org lookup (C1)", () => {
+    const CO = 'https://contacts.example.com';
+    const TOKEN_URL = 'https://sso.example.com/realms/uchub/protocol/openid-connect/token';
+    const LOOKUP_ENV = {
+      CONTACT_OPS_BASE_URL: CO,
+      CONTACT_OPS_LOOKUP_CLIENT_ID: 'contact-ops-org-lookup-client',
+      CONTACT_OPS_LOOKUP_CLIENT_SECRET: 'fixture-secret-not-real',
+      CONTACT_OPS_LOOKUP_TOKEN_URL: TOKEN_URL,
+    };
+    const realFetch = global.fetch;
+    /** org id -> what the fake Contact-Ops lookup answers next (default 404). */
+    let answers: Record<string, () => Response | Promise<Response>>;
+    let asked: string[];
+
+    function json(status: number, body: unknown): Response {
+      return new Response(JSON.stringify(body), {
+        status,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    function tenantOf(orgId: string, tenantId: string, echo = orgId) {
+      return () => json(200, { ops_center_org_id: echo, tenant_id: tenantId, tenant_slug: 'acme' });
+    }
+    async function mapOf(orgId: string) {
+      return db.federationWorkspaceMap.findUnique({
+        where: {
+          localWorkspaceId_targetApp: { localWorkspaceId: orgId, targetApp: 'contact-ops' },
+        },
+      });
+    }
+
+    beforeEach(() => {
+      Object.assign(process.env, LOOKUP_ENV);
+      answers = {};
+      asked = [];
+      global.fetch = (async (input: any, init?: any) => {
+        const url = String(input);
+        if (url === TOKEN_URL) return json(200, { access_token: 'lookup-cc', expires_in: 300 });
+        const m =
+          /^https:\/\/contacts\.example\.com\/api\/service\/ops-center-orgs\/([^/]+)\/tenant$/.exec(
+            url,
+          );
+        if (m) {
+          expect(init?.headers?.Authorization).toBe('Bearer lookup-cc');
+          const org = decodeURIComponent(m[1]);
+          asked.push(org);
+          return (answers[org] ?? (() => json(404, { detail: 'no tenant' })))();
+        }
+        return realFetch(input, init);
+      }) as typeof fetch;
+    });
+    afterEach(() => {
+      global.fetch = realFetch;
+      for (const k of Object.keys(LOOKUP_ENV)) delete process.env[k];
+    });
+
+    it('a new workspace gets its map row from the lookup answer for THAT org id', async () => {
+      const orgId = randomUUID();
+      const tenant = randomUUID();
+      answers[orgId] = tenantOf(orgId, tenant);
+      expect((await provision(orgId)).status).toBe(201);
+      expect(asked).toEqual([orgId]);
+      expect(await mapOf(orgId)).toMatchObject({ targetWorkspaceId: tenant });
+    });
+
+    it('a replay writes the row when the first provisioning could not', async () => {
+      const orgId = randomUUID();
+      const tenant = randomUUID();
+      answers[orgId] = () => json(503, { detail: 'cannot verify tokens' });
+      expect((await provision(orgId)).status).toBe(201);
+      expect(await mapOf(orgId)).toBeNull();
+      answers[orgId] = tenantOf(orgId, tenant);
+      expect((await provision(orgId)).status).toBe(200);
+      expect(await mapOf(orgId)).toMatchObject({ targetWorkspaceId: tenant });
+    });
+
+    it('an answer for another org id writes no row', async () => {
+      const orgId = randomUUID();
+      answers[orgId] = tenantOf(orgId, randomUUID(), randomUUID());
+      expect((await provision(orgId)).status).toBe(201);
+      expect(await mapOf(orgId)).toBeNull();
+    });
+
+    it('an existing row that disagrees with the lookup is left as it is', async () => {
+      const orgId = randomUUID();
+      const kept = randomUUID();
+      expect((await provision(orgId)).status).toBe(201);
+      await db.federationWorkspaceMap.create({
+        data: { localWorkspaceId: orgId, targetApp: 'contact-ops', targetWorkspaceId: kept },
+      });
+      answers[orgId] = tenantOf(orgId, randomUUID());
+      expect((await provision(orgId)).status).toBe(200);
+      expect(await mapOf(orgId)).toMatchObject({ targetWorkspaceId: kept });
+    });
+
+    it('DORMANT: with the lookup client unset, no lookup is made and no row is written', async () => {
+      delete process.env.CONTACT_OPS_LOOKUP_CLIENT_SECRET;
+      const orgId = randomUUID();
+      answers[orgId] = tenantOf(orgId, randomUUID());
+      expect((await provision(orgId)).status).toBe(201);
+      expect(asked).toEqual([]);
+      expect(await mapOf(orgId)).toBeNull();
     });
   });
 

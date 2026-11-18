@@ -4,6 +4,7 @@ import { UcRegistryModule } from '../common/uc-registry/uc-registry.module';
 import { AuditModule } from '../audit/audit.module';
 import { FederationAuthModule } from '../common/federation/federation-auth.module';
 import { FederationWorkspaceMapModule } from '../common/federation/federation-workspace-map.module';
+import { ContactOpsMapModule } from '../contact-ops/contact-ops-map.module';
 import { MemberPauseController } from './member-pause.controller';
 import { provisioningEnabled } from './provisioning.config';
 import { ProvisioningController } from './provisioning.controller';
@@ -29,6 +30,7 @@ export class ProvisioningModule {
         AuditModule,
         FederationAuthModule,
         FederationWorkspaceMapModule,
+        ContactOpsMapModule,
       ],
       controllers: [ProvisioningController, MemberPauseController],
       providers: [
