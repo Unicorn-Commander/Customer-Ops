@@ -135,6 +135,7 @@ describe('contact-ops map isolation across orgs (C3)', () => {
   let txs: Record<string, ReturnType<typeof makeTx>>;
   let svc: CustomersService;
   let prisma: ReturnType<typeof makePrisma>;
+  let contact: ContactOpsClient;
 
   /** Boot the chain over `pre` (rows that existed before provisioning), then provision every org. */
   async function setup(pre: MapRow[] = []) {
@@ -190,7 +191,7 @@ describe('contact-ops map isolation across orgs (C3)', () => {
     );
     for (const org of [ORG_A, ORG_B, ORG_NONE, ORG_LIAR]) await writer.ensureForOrg(org);
 
-    const contact = new ContactOpsClient(
+    contact = new ContactOpsClient(
       config,
       { exchangedToken: jest.fn().mockResolvedValue(null) } as unknown as BrigadeTokenSource,
       fedMap,
@@ -292,6 +293,55 @@ describe('contact-ops map isolation across orgs (C3)', () => {
       const b = await svc.searchContactsForUser(user, 'b', ORG_B);
       expect(b.items.map((c) => c.contactId)).toEqual(['pb-1']);
       expect(addressed).toEqual([TENANT_B]);
+    });
+
+    it('every public read and write through the contact-ops client (list, get, search, create) makes no request at all', async () => {
+      await setup([wrongA]);
+      // From here on, ANY fetch (a tenant, the projection, even the lookup) is recorded.
+      const inner = global.fetch;
+      const fetched: string[] = [];
+      global.fetch = jest.fn((url: string, init: any) => {
+        fetched.push(String(url));
+        return inner(url, init);
+      }) as any;
+      const ctx = { workspaceId: ORG_A, ucUid: 'kc-ada-sub' };
+
+      // list
+      expect(await contact.listContacts(ctx, {})).toEqual({
+        items: [],
+        count: 0,
+        nextCursor: null,
+      });
+      expect(await contact.getContactSummaries(ctx, ['pa-1', 'pb-1'])).toEqual(new Map());
+      // get
+      expect(await contact.getContact(ctx, 'pa-1')).toBeNull();
+      expect(await contact.verifyContact(ctx, 'pa-1')).toBe('not_connected');
+      expect(await contact.getWorkspaceProjection(ctx)).toBeNull();
+      // search
+      expect(await contact.listContacts(ctx, { query: 'b' })).toEqual({
+        items: [],
+        count: 0,
+        nextCursor: null,
+      });
+      expect(await svc.searchContactsForUser(user, 'b', ORG_A)).toEqual({
+        items: [],
+        notConnected: true,
+      });
+      // create
+      expect(
+        await contact.upsertContact(ctx, {
+          source: 'lead-intake',
+          sourceDedupKey: 'lead-ada-example',
+          displayName: 'Ada Example',
+          email: 'ada@example.com',
+        }),
+      ).toBeNull();
+      const err = await svc.createForUser(user, { contactId: 'pa-1' }, ORG_A).catch((e) => e);
+      expect(err).toBeInstanceOf(ConflictException);
+
+      expect(fetched).toEqual([]);
+      expect(addressed).toEqual([]);
+      expect(txs[ORG_A]).toBeUndefined();
     });
 
     it('a later lookup that confirms the row clears the conflict and routes it again', async () => {
