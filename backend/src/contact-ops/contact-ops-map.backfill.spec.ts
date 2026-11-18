@@ -1,5 +1,12 @@
 import { ContactOpsMapProvisioner } from './contact-ops-map.provisioner';
-import { backfillExitCode, formatBackfill, parseBackfillArgs } from './contact-ops-map.backfill';
+import { Test } from '@nestjs/testing';
+import { PrismaService } from '../prisma/prisma.service';
+import {
+  backfillExitCode,
+  ContactOpsMapBackfillModule,
+  formatBackfill,
+  parseBackfillArgs,
+} from './contact-ops-map.backfill';
 import { OrgTenantLookup } from './contact-ops-org-lookup.client';
 
 /**
@@ -324,4 +331,86 @@ describe('the backfill command', () => {
     expect(out).toContain(`${ORG_B} skipped: no_tenant`);
     expect(out).toMatch(/DRY RUN/);
   });
+});
+
+/**
+ * R3-3: booting the command must not write. The federation map's boot
+ * lifecycle (FEDERATION_WORKSPACE_MAP_SEED upserts, refresh timer) is not run
+ * in command context, so a default dry run writes nothing even with a seed set.
+ */
+describe('the backfill command boots without seeding (R3-3)', () => {
+  const env = { ...process.env };
+  const origFetch = global.fetch;
+  afterEach(() => {
+    process.env = { ...env };
+    global.fetch = origFetch;
+  });
+
+  it.each([
+    ['dormant lookup', false],
+    ['configured lookup', true],
+  ])(
+    '%s: a dry run with FEDERATION_WORKSPACE_MAP_SEED set writes nothing',
+    async (_l, configured) => {
+      process.env.FEDERATION_WORKSPACE_MAP_SEED = JSON.stringify({
+        [ORG_MAPPED]: { 'contact-ops': TENANT_A, 'email-ops': 'seed-email' },
+        [ORG_A]: { 'project-ops': 'seed-project' },
+      });
+      for (const k of [
+        'CONTACT_OPS_BASE_URL',
+        'CONTACT_OPS_LOOKUP_CLIENT_ID',
+        'CONTACT_OPS_LOOKUP_CLIENT_SECRET',
+        'CONTACT_OPS_LOOKUP_TOKEN_URL',
+      ]) {
+        if (configured)
+          process.env[k] = k.endsWith('_URL') ? 'https://co.example.com/t' : 'fixture';
+        else delete process.env[k];
+      }
+      global.fetch = jest.fn(async (url: string) => ({
+        ok: true,
+        status: 200,
+        json: async () =>
+          String(url).endsWith('/t')
+            ? { access_token: 'lookup-cc', expires_in: 300 }
+            : { ops_center_org_id: ORG_A, tenant_id: TENANT_A },
+      })) as any;
+      const rows = [
+        { localWorkspaceId: ORG_MAPPED, targetApp: 'contact-ops', targetWorkspaceId: TENANT_KEPT },
+      ];
+      const before = JSON.stringify(rows);
+      const writes = [
+        'create',
+        'createMany',
+        'update',
+        'updateMany',
+        'upsert',
+        'delete',
+        'deleteMany',
+      ];
+      const fwm: Record<string, jest.Mock> = {
+        findMany: jest.fn(async () => rows.map((r) => ({ ...r }))),
+        findUnique: jest.fn(async () => null),
+      };
+      for (const m of writes) fwm[m] = jest.fn();
+      const prisma = {
+        federationWorkspaceMap: fwm,
+        workspace: { findMany: jest.fn(async () => [{ id: ORG_A, status: 'active' }]) },
+      };
+      const mod = await Test.createTestingModule({ imports: [ContactOpsMapBackfillModule] })
+        .overrideProvider(PrismaService)
+        .useValue(prisma)
+        .compile();
+      const app = mod.createNestApplication({ logger: false });
+      await app.init();
+      try {
+        const report = await app.get(ContactOpsMapProvisioner).backfill({ apply: false });
+        expect(report.apply).toBe(false);
+        expect(report.dormant).toBe(!configured);
+        for (const m of writes) expect(fwm[m]).not.toHaveBeenCalled();
+        expect(JSON.stringify(rows)).toBe(before);
+      } finally {
+        await app.close();
+      }
+    },
+  );
 });

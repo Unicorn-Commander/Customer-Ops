@@ -14,13 +14,21 @@
  * and print it as confirmed / CONFLICT / UNCONFIRMED (GATE-212); nothing is
  * changed. Exit 0 when every existing row is confirmed, 2 when any is not,
  * 1 when the lookup is dormant.
+ *
+ * Booting the command writes nothing: the federation map's boot seed and
+ * refresh timer are off in this context (R3-3).
  */
 
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { PrismaModule } from '../prisma/prisma.module';
-import { ContactOpsMapModule } from './contact-ops-map.module';
+import {
+  FEDERATION_MAP_OPTIONS,
+  FederationMapOptions,
+  FederationWorkspaceMapService,
+} from '../common/federation/federation-workspace-map.service';
+import { ContactOpsOrgLookupClient } from './contact-ops-org-lookup.client';
 import {
   ContactOpsMapBackfillReport,
   ContactOpsMapProvisioner,
@@ -73,10 +81,22 @@ export function backfillExitCode(report: ContactOpsMapBackfillReport): number {
   return report.existing.every((e) => e.status === 'confirmed') ? 0 : 2;
 }
 
+/**
+ * The command's own wiring: NOT ContactOpsMapModule, whose global
+ * FederationWorkspaceMapModule runs the FEDERATION_WORKSPACE_MAP_SEED upserts
+ * at boot. Here the map service is built with its boot lifecycle off, so
+ * nothing is written before (or unless) `--apply` is given (R3-3).
+ */
 @Module({
-  imports: [ConfigModule.forRoot({ isGlobal: true }), PrismaModule, ContactOpsMapModule],
+  imports: [ConfigModule.forRoot({ isGlobal: true }), PrismaModule],
+  providers: [
+    { provide: FEDERATION_MAP_OPTIONS, useValue: { bootLifecycle: false } as FederationMapOptions },
+    FederationWorkspaceMapService,
+    ContactOpsOrgLookupClient,
+    ContactOpsMapProvisioner,
+  ],
 })
-class ContactOpsMapBackfillModule {}
+export class ContactOpsMapBackfillModule {}
 
 async function main(): Promise<void> {
   const args = parseBackfillArgs(process.argv.slice(2));
