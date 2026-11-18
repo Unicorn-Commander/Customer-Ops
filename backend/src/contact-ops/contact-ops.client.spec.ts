@@ -95,6 +95,23 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
     });
   });
 
+  describe('dormant (no base URL) + MAPPED workspace (audit 9c049f6d Q2)', () => {
+    // A mapped workspace whose CO base URL has been cleared (maintenance window):
+    // "connected" must be FALSE so create answers 409 not_connected, not 503.
+    const client = new ContactOpsClient(makeConfig({}), makeBrigade(), makeFedMap('co-tenant-a'));
+
+    it('isWorkspaceConnected is false (mapped but no base URL)', () => {
+      expect(client.isWorkspaceConnected(CTX)).toBe(false);
+    });
+
+    it('verifyContact -> not_connected (no fetch), NOT unavailable', async () => {
+      const fetchSpy = jest.fn();
+      global.fetch = fetchSpy as any;
+      await expect(client.verifyContact(CTX, 'p1')).resolves.toBe('not_connected');
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+  });
+
   describe('with CONTACT_OPS_BASE_URL set', () => {
     const env = {
       CONTACT_OPS_BASE_URL: 'https://contacts.example.test/',
@@ -130,14 +147,16 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
         await expect(c.verifyContact(CTX, 'prov:abc')).resolves.toBe('missing');
         expect(global.fetch).not.toHaveBeenCalled();
       });
-      it('unavailable on HTTP 500, transport failure, and when dormant', async () => {
+      it('unavailable on HTTP 500 and transport failure; not_connected when dormant (audit 9c049f6d Q2)', async () => {
         const c500 = mk(jsonResponse({}, false, 500));
         await expect(c500.verifyContact(CTX, 'p1')).resolves.toBe('unavailable');
         global.fetch = jest.fn().mockRejectedValue(new Error('boom')) as any;
         const c = new ContactOpsClient(makeConfig(env), makeBrigade(), makeFedMap('co-tenant-a'));
         await expect(c.verifyContact(CTX, 'p1')).resolves.toBe('unavailable');
+        // Dormant (no base URL) but MAPPED: "connected" is now false, so the
+        // create path answers 409 not_connected instead of 503 unavailable.
         const dormant = new ContactOpsClient(makeConfig({}), makeBrigade(), makeFedMap('co-tenant-a'));
-        await expect(dormant.verifyContact(CTX, 'p1')).resolves.toBe('unavailable');
+        await expect(dormant.verifyContact(CTX, 'p1')).resolves.toBe('not_connected');
       });
 
       it('not_connected (no fetch) when the workspace has no contact-ops mapping', async () => {

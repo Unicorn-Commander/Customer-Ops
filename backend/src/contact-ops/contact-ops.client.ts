@@ -417,6 +417,11 @@ export class ContactOpsClient extends ContactOpsPort {
   }
 
   isWorkspaceConnected(ctx: FederationContext): boolean {
+    // A mapped workspace is only "connected" when there is also a reachable
+    // target: with CONTACT_OPS_BASE_URL unset (dormant), no Contact-Ops call
+    // could ever land, so the create path must answer 409 not_connected
+    // (audit 9c049f6d Q2) instead of 503 unavailable.
+    if (!this.baseUrl) return false;
     return this.federationMap.resolveSync(ctx.workspaceId, 'contact-ops') !== null;
   }
 
