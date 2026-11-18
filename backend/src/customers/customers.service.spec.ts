@@ -9,7 +9,7 @@ import {
 import { AuditAction, CustomerActivityKind, RelationshipStage, User } from '@prisma/client';
 import { CustomersService } from './customers.service';
 import { WorkspaceContextService } from '../common/workspace/workspace-context.service';
-import { entitlementsOf } from '../common/workspace/workspace.util';
+import { entitlementsOf, WithWorkspaceClaim } from '../common/workspace/workspace.util';
 import { ContactOpsPort } from '../contact-ops/contact-ops.port';
 import { AccountingOpsPort } from '../accounting-ops/accounting-ops.port';
 import { OutreachPort } from '../outreach-ops/outreach-ops.port';
@@ -37,6 +37,8 @@ const WS = '0190a000-7e57-7000-8000-00000000c007';
 const UC_UID = 'kc-aaron-sub';
 
 const aaron = { id: 'local-aaron', email: 'aaron@magicunicorn.tech', keycloakId: UC_UID } as User;
+/** The same MEMBER whose token carries the customer-ops SKU (today's default). */
+const entitledAaron = { ...aaron, __entitlements: ['customer-ops'] } as User & Partial<WithWorkspaceClaim>;
 
 function makeRow(over: Partial<Record<string, any>> = {}) {
   return {
@@ -1747,7 +1749,7 @@ describe('CustomersService — *ForUser audit side-effects (Phase 7; AuditServic
     const { tx } = makeTx(makeRow());
     lastTx.current = tx;
 
-    const created = await svc.createForUser(aaron, { contactId: 'contact-9', source: 'webform' }, WS);
+    const created = await svc.createForUser(entitledAaron, { contactId: 'contact-9', source: 'webform' }, WS);
 
     expect(audit.log).toHaveBeenCalledTimes(1);
     expect(audit.log).toHaveBeenCalledWith(
@@ -1769,7 +1771,7 @@ describe('CustomersService — *ForUser audit side-effects (Phase 7; AuditServic
       const { tx } = makeTx(makeRow());
       lastTx.current = tx;
       const err = await svc
-        .createForUser(aaron, { contactId: 'E2E Test Contact' }, WS)
+        .createForUser(entitledAaron, { contactId: 'E2E Test Contact' }, WS)
         .catch((e) => e);
       expect(err).toBeInstanceOf(UnprocessableEntityException);
       expect(err.getStatus()).toBe(422);
@@ -1786,7 +1788,7 @@ describe('CustomersService — *ForUser audit side-effects (Phase 7; AuditServic
       const { svc, lastTx } = makeAuditedService({ contact: { verifyContact } });
       const { tx } = makeTx(makeRow());
       lastTx.current = tx;
-      const err = await svc.createForUser(aaron, { contactId: 'c-1' }, WS).catch((e) => e);
+      const err = await svc.createForUser(entitledAaron, { contactId: 'c-1' }, WS).catch((e) => e);
       expect(err).toBeInstanceOf(ConflictException);
       expect(err.getStatus()).toBe(409);
       expect(err.getResponse()).toMatchObject({
@@ -1801,16 +1803,52 @@ describe('CustomersService — *ForUser audit side-effects (Phase 7; AuditServic
       const { svc, lastTx } = makeAuditedService({ contact: { verifyContact } });
       const { tx } = makeTx(makeRow());
       lastTx.current = tx;
-      const err = await svc.createForUser(aaron, { contactId: 'c-1' }, WS).catch((e) => e);
+      const err = await svc.createForUser(entitledAaron, { contactId: 'c-1' }, WS).catch((e) => e);
       expect(err).toBeInstanceOf(ServiceUnavailableException);
       expect(tx.customer.create).not.toHaveBeenCalled();
     });
 
     it('a real contact id -> row created', async () => {
+    const { svc, lastTx } = makeAuditedService();
+    const { tx } = makeTx(makeRow());
+    lastTx.current = tx;
+    await svc.createForUser(entitledAaron, { contactId: 'c-1' }, WS);
+    expect(tx.customer.create).toHaveBeenCalledTimes(1);
+  });
+});
+
+  describe('createForUser — the customer-ops entitlement gate (audit 9c049f6d Q1)', () => {
+    it('no customer-ops entitlement -> 403 (same refusal shape as the invoicing gate), verifyContact NOT called, NO row written', async () => {
+      const verifyContact = jest.fn().mockResolvedValue('exists');
+      const { svc, lastTx, workspaces } = makeAuditedService({ contact: { verifyContact } });
+      const { tx } = makeTx(makeRow());
+      lastTx.current = tx;
+      // aaron (above) is a MEMBER whose token carries NO entitlements.
+      const err = await svc.createForUser(aaron, { contactId: 'c-1' }, WS).catch((e) => e);
+      expect(err).toBeInstanceOf(ForbiddenException);
+      expect(err.getStatus()).toBe(403);
+      expect(err.message).toBe(
+        'not entitled: creating a relationship requires the customer-ops ' +
+          'entitlement in this workspace; the acting user does not carry it.',
+      );
+      // The gate runs BEFORE any Contact-Ops call: no verify, no row.
+      expect(workspaces.effectiveEntitlements).toHaveBeenCalledWith(aaron, WS);
+      expect(verifyContact).not.toHaveBeenCalled();
+      expect(tx.customer.create).not.toHaveBeenCalled();
+    });
+
+    it('UC_ENTITLEMENT_MODE=open bypasses the gate with today\'s behavior (allow + loud WARN)', async () => {
       const { svc, lastTx } = makeAuditedService();
       const { tx } = makeTx(makeRow());
       lastTx.current = tx;
-      await svc.createForUser(aaron, { contactId: 'c-1' }, WS);
+      const prev = process.env.UC_ENTITLEMENT_MODE;
+      process.env.UC_ENTITLEMENT_MODE = 'open';
+      try {
+        await svc.createForUser(aaron, { contactId: 'c-1' }, WS);
+      } finally {
+        if (prev === undefined) delete process.env.UC_ENTITLEMENT_MODE;
+        else process.env.UC_ENTITLEMENT_MODE = prev;
+      }
       expect(tx.customer.create).toHaveBeenCalledTimes(1);
     });
   });
@@ -2026,7 +2064,7 @@ describe('CustomersService — *ForUser audit side-effects (Phase 7; AuditServic
     const { tx } = makeTx(makeRow());
     lastTx.current = tx;
 
-    await svc.createForUser(aaron, { contactId: 'contact-9' }, 'requested-but-overridden');
+    await svc.createForUser(entitledAaron, { contactId: 'contact-9' }, 'requested-but-overridden');
     expect(workspaces.resolveAuthorized).toHaveBeenCalledTimes(1);
     expect((audit.log as jest.Mock).mock.calls[0][0].workspaceId).toBe(WS);
   });

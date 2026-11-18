@@ -37,6 +37,7 @@ import {
 } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { AuditAction, CustomerActivityKind, Prisma, RelationshipStage, User } from '@prisma/client';
+import { SKU_CUSTOMER_OPS } from '../outreach-ops/outreach-ops.client';
 import { WorkspaceContextService } from '../common/workspace/workspace-context.service';
 import { WorkspaceTxClient } from '../prisma/prisma.service';
 import { WithWorkspaceClaim, ucUidOf } from '../common/workspace/workspace.util';
@@ -212,6 +213,54 @@ function pipelineMaxCards(): number {
   if (raw === undefined || raw.trim() === '') return PIPELINE_MAX_CARDS_DEFAULT;
   const n = Number(raw);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : PIPELINE_MAX_CARDS_DEFAULT;
+}
+
+/**
+ * The customer-ops SKU gate for a MUTATING relationship entry point (the
+ * audit 9c049f6d Q1 fix). Every mutating surface of this app (invoicing,
+ * outreach, email, device sends) refuses with ForbiddenException(gate.reason)
+ * when the acting (user, workspace) does not hold the `customer-ops` SKU; the
+ * relationship CREATE route enforced only the MEMBER role, so a member whose
+ * token was minted before the workspace lost the SKU could still write rows.
+ *
+ * The check reuses the SAME entitlement source the dual-SKU federation gates
+ * consume (WorkspaceContextService.effectiveEntitlements: the verified token
+ * claim bound to the workspace's server-side entitlements), so a revocation
+ * takes effect on the very next request exactly like the invoicing gate. The
+ * decision mirrors the client-side checkEntitlement shape (allowed/mode/
+ * reason): the suite bootstrap `UC_ENTITLEMENT_MODE=open` (read at call time)
+ * bypasses with a loud WARN, everything else (the default) is strict.
+ */
+/** Spelling/alias tolerance for the customer-ops SKU (mirrors the client SKU_ALIASES). */
+const SKU_CUSTOMER_OPS_ALIASES = new Set([SKU_CUSTOMER_OPS, 'customer_ops', 'customerops', 'co']);
+
+async function assertCustomerOpsEntitled(
+  workspaces: WorkspaceContextService,
+  user: User & Partial<WithWorkspaceClaim>,
+  workspaceId: string,
+  ucUid: string,
+): Promise<void> {
+  const entitlements = await workspaces.effectiveEntitlements(user, workspaceId);
+  const modeRaw = (process.env.UC_ENTITLEMENT_MODE ?? '').trim().toLowerCase();
+  const mode = modeRaw === 'open' ? 'open' : 'enforce';
+  const entitled = entitlements.some((sku) => SKU_CUSTOMER_OPS_ALIASES.has(sku));
+  if (entitled) return;
+  if (mode === 'open') {
+    // Pre-Lago bootstrap: allow but log loudly so operators see the gate is
+    // running open until the billing claim is wired (mirrors the client gates).
+    Logger.warn(
+      `Relationship create gate is OPEN (UC_ENTITLEMENT_MODE=open) - allowing a ` +
+        `create for workspace=${workspaceId} WITHOUT the customer-ops SKU check. ` +
+        `Set the mode to 'enforce' once Lago emits entitlements.`,
+      'CustomersService',
+    );
+    return;
+  }
+  Logger.warn(`Relationship create denied for ${ucUid} (ws=${workspaceId}): not entitled`);
+  throw new ForbiddenException(
+    'not entitled: creating a relationship requires the customer-ops ' +
+      'entitlement in this workspace; the acting user does not carry it.',
+  );
 }
 
 /** Shown verbatim by the web form when the workspace has no Contact-Ops mapping. */
@@ -475,6 +524,11 @@ export class CustomersService {
   ) {
     const ucUid = ucUidOf(user);
     const workspaceId = await this.workspaces.resolveAuthorized(user, requestedWorkspaceId);
+    // Entitlement FIRST (audit 9c049f6d Q1): a caller without the customer-ops
+    // SKU in this workspace is refused with the same 403 shape as the
+    // invoicing/outreach/email gates, BEFORE any Contact-Ops call and before
+    // any row is written.
+    await assertCustomerOpsEntitled(this.workspaces, user, workspaceId, ucUid);
     // The manual create path must point at a REAL Contact-Ops person for THIS
     // workspace — never a dangling lead. Checked before any row is written.
     const verdict = await this.contactOps.verifyContact(
