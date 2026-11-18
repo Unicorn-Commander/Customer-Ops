@@ -416,7 +416,12 @@ export class ContactOpsClient extends ContactOpsPort {
     };
   }
 
+  isWorkspaceConnected(ctx: FederationContext): boolean {
+    return this.federationMap.resolveSync(ctx.workspaceId, 'contact-ops') !== null;
+  }
+
   async verifyContact(ctx: FederationContext, contactId: string): Promise<ContactVerdict> {
+    if (!this.isWorkspaceConnected(ctx)) return 'not_connected';
     if (!contactId || contactId.startsWith('prov:')) return 'missing';
     const r = await this.callToolOutcome(ctx, 'get_person', { person_id: contactId });
     if (r.kind === 'rejected') return 'missing';

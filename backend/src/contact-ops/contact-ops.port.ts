@@ -37,10 +37,21 @@ export interface FederationContext {
   ucUid: string | null;
 }
 
-/** Result of an existence check: Contact-Ops confirmed / denied / could not answer. */
-export type ContactVerdict = 'exists' | 'missing' | 'unavailable';
+/**
+ * Result of an existence check: Contact-Ops confirmed / denied / could not
+ * answer / this workspace has no Contact-Ops mapping at all (`not_connected`,
+ * distinct from an outage: nothing was asked).
+ */
+export type ContactVerdict = 'exists' | 'missing' | 'unavailable' | 'not_connected';
 
 export abstract class ContactOpsPort {
+  /**
+   * Does ctx.workspaceId have a contact-ops mapping (federation_workspace_map)?
+   * Pure in-memory; false means every Contact-Ops call for it would address the
+   * wrong tenant, so callers answer "not connected" instead of asking.
+   */
+  abstract isWorkspaceConnected(ctx: FederationContext): boolean;
+
   /**
    * Does this contact id exist in Contact-Ops for ctx.workspaceId? Unlike
    * getContact (degrade-clean null), this distinguishes "Contact-Ops says no"
