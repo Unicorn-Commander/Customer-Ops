@@ -75,7 +75,10 @@ export function formatBackfill(report: ContactOpsMapBackfillReport): string {
   return lines.join('\n');
 }
 
-/** 1 dormant; 2 when any existing row is conflict or unconfirmed; else 0. */
+/**
+ * 1 dormant; 2 when any existing row is conflict or unconfirmed — including a
+ * row another writer installed during --apply (R3-6); else 0.
+ */
 export function backfillExitCode(report: ContactOpsMapBackfillReport): number {
   if (report.dormant) return 1;
   return report.existing.every((e) => e.status === 'confirmed') ? 0 : 2;

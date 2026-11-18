@@ -1,4 +1,5 @@
 import { ContactOpsMapProvisioner } from './contact-ops-map.provisioner';
+import { Prisma } from '@prisma/client';
 import { Test } from '@nestjs/testing';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -100,7 +101,7 @@ function setup() {
   };
   const fedMap = { reload: jest.fn().mockResolvedValue(undefined) };
   const svc = new ContactOpsMapProvisioner(prisma as any, lookup as any, fedMap as any);
-  return { svc, rows, lookup, fedMap };
+  return { svc, rows, lookup, fedMap, prisma, answers };
 }
 
 describe('ContactOpsMapProvisioner.backfill (C4)', () => {
@@ -163,6 +164,43 @@ describe('ContactOpsMapProvisioner.backfill (C4)', () => {
     expect(report.dormant).toBe(true);
     expect(lookup.lookupTenant).not.toHaveBeenCalled();
     expect(rows).toHaveLength(1);
+  });
+});
+
+describe('a conflict discovered during --apply counts (R3-6)', () => {
+  it('a row another writer installed with ANOTHER tenant between check and write -> CONFLICT, exit 2', async () => {
+    const { svc, rows, prisma, answers } = setup();
+    // The only pre-existing row is confirmed, so the run would otherwise exit 0.
+    answers[ORG_MAPPED] = { kind: 'tenant', tenantId: TENANT_KEPT, tenantSlug: 'kept' };
+    const RACED = 'abababab-0000-4000-8000-00000000000a';
+    prisma.federationWorkspaceMap.create.mockImplementation(async ({ data }: any) => {
+      if (data.localWorkspaceId === ORG_A) {
+        rows.push({ localWorkspaceId: ORG_A, targetApp: 'contact-ops', targetWorkspaceId: RACED });
+        throw new Prisma.PrismaClientKnownRequestError('unique', {
+          code: 'P2002',
+          clientVersion: 'test',
+        });
+      }
+      rows.push({ ...data });
+      return data;
+    });
+    const report = await svc.backfill({ apply: true });
+    expect(report.written).toBe(0);
+    expect(report.existing).toContainEqual({
+      orgId: ORG_A,
+      rowTenantId: RACED,
+      status: 'conflict',
+      lookupTenantId: TENANT_A,
+    });
+    expect(formatBackfill(report)).toContain(
+      `${ORG_A} -> ${RACED}: CONFLICT (lookup answers ${TENANT_A})`,
+    );
+    expect(backfillExitCode(report)).toBe(2);
+    // the raced row keeps its tenant and is marked unroutable (R3-1)
+    expect(rows.find((r) => r.localWorkspaceId === ORG_A)).toMatchObject({
+      targetWorkspaceId: RACED,
+      conflictTenantId: TENANT_A,
+    });
   });
 });
 

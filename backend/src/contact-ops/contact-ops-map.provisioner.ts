@@ -122,7 +122,23 @@ export class ContactOpsMapProvisioner {
       if (!apply) continue;
       const outcome = await this.writeRow(orgId, answer.tenantId);
       if (outcome.kind === 'written') report.written += 1;
-      if (outcome.kind === 'conflict') report.skipped.push({ orgId, reason: 'conflict' });
+      // Another writer got there first (R3-6): that row is now an EXISTING row,
+      // verified like the others, so a conflict counts in the exit code.
+      if (outcome.kind === 'conflict') {
+        report.existing.push({
+          orgId,
+          rowTenantId: outcome.existingTenantId,
+          status: 'conflict',
+          lookupTenantId: outcome.lookupTenantId,
+        });
+      } else if (outcome.kind === 'already') {
+        report.existing.push({
+          orgId,
+          rowTenantId: outcome.tenantId,
+          status: 'confirmed',
+          lookupTenantId: outcome.tenantId,
+        });
+      }
     }
     return report;
   }
