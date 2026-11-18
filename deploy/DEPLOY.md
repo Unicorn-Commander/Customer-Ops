@@ -204,11 +204,23 @@ Do these as a deliberate, separately-reviewed change — **not** at first bring-
    one WARN at boot, no row written, unmapped workspaces keep answering 409.
    Existing workspaces: `docker compose -f deploy/docker-compose.dogfood.yml exec
    backend npm run contact-ops:map-backfill` prints the org id -> tenant id
-   pairs (dry run); add `-- --apply` to write them. A row that disagrees with
-   the lookup is never overwritten: it is logged for a person to re-verify.
+   pairs (dry run; booting it writes nothing, the map seed does not run there);
+   add `-- --apply` to write them. A row that disagrees with the lookup keeps
+   its tenant but is marked in conflict (`conflict_tenant_id`, migration
+   `20261118000000`) and is NOT routable: that workspace answers 409
+   not-connected and no Contact-Ops tenant is contacted until a later lookup
+   confirms the row (a person re-verifies it). A row the lookup cannot confirm
+   (no tenant / unavailable) stays routable as before.
    Both modes also re-check every EXISTING row (section `EXISTING ROWS`:
-   confirmed / CONFLICT / UNCONFIRMED) and change none of them; the command
-   exits 2 when any row is not confirmed (0 all confirmed, 1 lookup dormant).
+   confirmed / CONFLICT / UNCONFIRMED) and never change a tenant; only
+   `--apply` sets or clears the conflict mark. The command exits 2 when any row
+   is not confirmed, including a conflict found during `--apply` (0 all
+   confirmed, 1 lookup dormant).
+   Every contact-ops writer follows the same rule: `FEDERATION_WORKSPACE_MAP_SEED`
+   skips (and logs) contact-ops entries and never overwrites an existing row,
+   and the owner connection route writes only the tenant the lookup names for
+   that workspace (else 409; dormant lookup -> 409 "Contact-Ops link is not
+   available yet").
 2. **Turn the tenant fence live** (the security flip — do both together):
    - point the runtime at the NOBYPASSRLS role:
      `DATABASE_URL=postgresql://localhost:5432/customer_ops<app-pw>@customer-ops-postgres:5432/customerops?schema=public`
