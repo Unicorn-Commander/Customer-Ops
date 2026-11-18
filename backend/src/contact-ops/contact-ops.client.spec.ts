@@ -101,6 +101,46 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
       CONTACT_OPS_SERVICE_TOKEN: 'svc-token-xyz',
     };
 
+    describe('verifyContact (CO-1)', () => {
+      const mk = (resp: any) => {
+        global.fetch = jest.fn().mockResolvedValue(resp) as any;
+        return new ContactOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
+      };
+
+      it('exists when get_person returns the person', async () => {
+        const c = mk(jsonResponse(rpcOk({ person_id: 'p1', display_name: 'Jane' })));
+        await expect(c.verifyContact(CTX, 'p1')).resolves.toBe('exists');
+      });
+      it('missing when Contact-Ops answers not-found / invalid-params', async () => {
+        const toolErr = jsonResponse({
+          jsonrpc: '2.0',
+          id: 1,
+          result: { isError: true, content: [{ type: 'text', text: 'Person not found' }] },
+        });
+        await expect(mk(toolErr).verifyContact(CTX, 'p1')).resolves.toBe('missing');
+        const rpcErr = jsonResponse({
+          jsonrpc: '2.0',
+          id: 1,
+          error: { code: -32602, message: 'invalid person_id' },
+        });
+        await expect(mk(rpcErr).verifyContact(CTX, 'E2E Test Contact')).resolves.toBe('missing');
+      });
+      it('missing for a provisional prov: id without a round-trip', async () => {
+        const c = mk(jsonResponse(rpcOk({ person_id: 'x' })));
+        await expect(c.verifyContact(CTX, 'prov:abc')).resolves.toBe('missing');
+        expect(global.fetch).not.toHaveBeenCalled();
+      });
+      it('unavailable on HTTP 500, transport failure, and when dormant', async () => {
+        const c500 = mk(jsonResponse({}, false, 500));
+        await expect(c500.verifyContact(CTX, 'p1')).resolves.toBe('unavailable');
+        global.fetch = jest.fn().mockRejectedValue(new Error('boom')) as any;
+        const c = new ContactOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
+        await expect(c.verifyContact(CTX, 'p1')).resolves.toBe('unavailable');
+        const dormant = new ContactOpsClient(makeConfig({}), makeBrigade(), makeFedMap());
+        await expect(dormant.verifyContact(CTX, 'p1')).resolves.toBe('unavailable');
+      });
+    });
+
     it('get_person: posts JSON-RPC tools/call and maps GetPersonOutput → FederatedContact', async () => {
       const fetchSpy = jest.fn().mockResolvedValue(
         jsonResponse(

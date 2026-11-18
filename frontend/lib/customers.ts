@@ -11,6 +11,7 @@
  */
 
 import { apiGet, apiPatch, apiPost, MyWorkspace } from './api';
+import type { ContactOption } from './contactPicker';
 
 export type Stage = 'LEAD' | 'PROSPECT' | 'CUSTOMER';
 export type Priority = 'LOW' | 'MEDIUM' | 'HIGH';
@@ -521,6 +522,11 @@ export async function getPipeline(ws: string): Promise<PipelineBoard> {
 
 export async function getCustomer360(ws: string, id: string): Promise<Customer360> {
   return apiGet<Customer360>(`${base(ws)}/${encodeURIComponent(id)}/360`);
+}
+
+/** Type-ahead search of this workspace's Contact-Ops contacts (name + email). */
+export async function searchContacts(ws: string, q: string): Promise<ContactOption[]> {
+  return apiGet<ContactOption[]>(`${base(ws)}/contact-search?q=${encodeURIComponent(q)}`);
 }
 
 export async function createCustomer(

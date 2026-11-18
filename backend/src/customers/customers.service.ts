@@ -33,6 +33,7 @@ import {
   NotFoundException,
   Optional,
   ServiceUnavailableException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { AuditAction, CustomerActivityKind, Prisma, RelationshipStage, User } from '@prisma/client';
@@ -470,6 +471,22 @@ export class CustomersService {
   ) {
     const ucUid = ucUidOf(user);
     const workspaceId = await this.workspaces.resolveAuthorized(user, requestedWorkspaceId);
+    // The manual create path must point at a REAL Contact-Ops person for THIS
+    // workspace — never a dangling lead. Checked before any row is written.
+    const verdict = await this.contactOps.verifyContact(
+      { workspaceId, ucUid: ucUid || null },
+      dto.contactId,
+    );
+    if (verdict === 'missing') {
+      throw new UnprocessableEntityException(
+        'That contact does not exist in your Contact-Ops workspace',
+      );
+    }
+    if (verdict === 'unavailable') {
+      throw new ServiceUnavailableException(
+        'Contact-Ops is unavailable, so the contact could not be verified. Try again shortly.',
+      );
+    }
     const row = await this.workspaces.runInWorkspace(workspaceId, ucUid, (tx) =>
       this.createInTx(tx, dto, ucUid),
     );
@@ -479,6 +496,29 @@ export class CustomersService {
       stage: row.stage,
     });
     return this.serialize(row);
+  }
+
+  /**
+   * Type-ahead feed for the "New relationship" contact picker: the workspace's
+   * Contact-Ops contacts matching `query` (CO search_people), projected to the
+   * three fields the picker shows. Read-only, nothing persisted. Degrade-clean:
+   * Contact-Ops down/dormant yields no matches (the create itself still verifies
+   * and fails closed with a 503).
+   */
+  async searchContactsForUser(
+    user: User & Partial<WithWorkspaceClaim>,
+    query: string,
+    requestedWorkspaceId?: string | null,
+  ): Promise<Array<{ contactId: string; displayName: string; primaryEmail: string | null }>> {
+    const q = (query ?? '').trim().slice(0, 100);
+    if (!q) return [];
+    const fedCtx = await this.federationContext(user, requestedWorkspaceId);
+    const page = await this.contactOps.listContacts(fedCtx, { query: q, limit: 10 });
+    return page.items.map((c) => ({
+      contactId: c.contactId,
+      displayName: c.displayName,
+      primaryEmail: c.primaryEmail,
+    }));
   }
 
   async updateForUser(

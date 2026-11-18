@@ -37,7 +37,18 @@ export interface FederationContext {
   ucUid: string | null;
 }
 
+/** Result of an existence check: Contact-Ops confirmed / denied / could not answer. */
+export type ContactVerdict = 'exists' | 'missing' | 'unavailable';
+
 export abstract class ContactOpsPort {
+  /**
+   * Does this contact id exist in Contact-Ops for ctx.workspaceId? Unlike
+   * getContact (degrade-clean null), this distinguishes "Contact-Ops says no"
+   * (`missing`) from "could not ask" (`unavailable`: dormant, transport, auth,
+   * 5xx). Never throws.
+   */
+  abstract verifyContact(ctx: FederationContext, contactId: string): Promise<ContactVerdict>;
+
   /**
    * Probe this seam's transport + auth with a lightweight, side-effect-free MCP
    * `tools/list` and report a SeamHealth (so a silent 401/403 becomes visible via

@@ -7,7 +7,13 @@ import { IconTile } from '@/components/ui/IconTile';
 import { cn } from '@/components/ui/cn';
 import { RelationshipsTable } from '@/components/dashboard/RelationshipsTable';
 import { useWorkspace } from '@/lib/useWorkspace';
-import { createCustomer, listCustomers, type CustomerRow } from '@/lib/customers';
+import { createCustomer, listCustomers, searchContacts, type CustomerRow } from '@/lib/customers';
+import {
+  contactOptionLabel,
+  createPayloadFor,
+  searchContactOptions,
+  type ContactOption,
+} from '@/lib/contactPicker';
 
 /**
  * Relationships — the funnel cockpit's master list. THIN live wrapper: it
@@ -26,7 +32,10 @@ export default function CustomersPage() {
   const [error, setError] = useState<string | null>(null);
 
   const [creating, setCreating] = useState(false);
-  const [newContactId, setNewContactId] = useState('');
+  const [query, setQuery] = useState('');
+  const [picked, setPicked] = useState<ContactOption | null>(null);
+  const [options, setOptions] = useState<ContactOption[]>([]);
+  const [searching, setSearching] = useState(false);
   const [busy, setBusy] = useState(false);
   const createInputRef = useRef<HTMLInputElement>(null);
 
@@ -44,6 +53,27 @@ export default function CustomersPage() {
     void load();
   }, [load]);
 
+  // Debounced type-ahead against the workspace's Contact-Ops contacts.
+  useEffect(() => {
+    if (!workspaceId || picked) return;
+    let live = true;
+    const t = setTimeout(async () => {
+      setSearching(true);
+      try {
+        const found = await searchContactOptions(workspaceId, query, searchContacts);
+        if (live) setOptions(found);
+      } catch {
+        if (live) setOptions([]);
+      } finally {
+        if (live) setSearching(false);
+      }
+    }, 250);
+    return () => {
+      live = false;
+      clearTimeout(t);
+    };
+  }, [workspaceId, query, picked]);
+
   const openCreate = () => {
     setCreating(true);
     // Focus the field on the next paint so it's ready to type into.
@@ -51,12 +81,15 @@ export default function CustomersPage() {
   };
 
   const submitCreate = async () => {
-    if (!workspaceId || !newContactId.trim()) return;
+    const payload = createPayloadFor(picked);
+    if (!workspaceId || !payload) return;
     setBusy(true);
     setError(null);
     try {
-      await createCustomer(workspaceId, { contactId: newContactId.trim() });
-      setNewContactId('');
+      await createCustomer(workspaceId, payload);
+      setQuery('');
+      setPicked(null);
+      setOptions([]);
       setCreating(false);
       await load();
     } catch (e) {
@@ -112,20 +145,27 @@ export default function CustomersPage() {
       {canWrite && creating && (
         <div className="rounded-token-lg border border-subtle bg-surface-raised p-4 shadow-token">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-            <div className="flex-1">
+            <div className="relative flex-1">
               <label htmlFor="co-new-contact" className="mb-1.5 block text-xs font-semibold text-secondary">
-                Contact-Ops contact id
+                Contact
               </label>
               <input
                 id="co-new-contact"
                 ref={createInputRef}
-                value={newContactId}
-                onChange={(e) => setNewContactId(e.target.value)}
+                role="combobox"
+                aria-expanded={!picked && options.length > 0}
+                aria-controls="co-new-contact-options"
+                autoComplete="off"
+                value={picked ? picked.displayName : query}
+                onChange={(e) => {
+                  setPicked(null);
+                  setQuery(e.target.value);
+                }}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') void submitCreate();
                   if (e.key === 'Escape') setCreating(false);
                 }}
-                placeholder="person_id from Contact-Ops (federated; not copied)"
+                placeholder="Search your Contact-Ops contacts by name or email"
                 className={cn(
                   'h-10 w-full rounded-token border border-subtle bg-surface-overlay/60 px-3 text-sm text-primary',
                   'placeholder:text-muted',
@@ -133,8 +173,39 @@ export default function CustomersPage() {
                   'focus:border-accent/60 focus:outline-none focus:ring-2 focus:ring-accent/30',
                 )}
               />
+              {!picked && options.length > 0 && (
+                <ul
+                  id="co-new-contact-options"
+                  role="listbox"
+                  className="absolute z-10 mt-1 max-h-60 w-full overflow-auto rounded-token border border-subtle bg-surface-raised shadow-token"
+                >
+                  {options.map((o) => {
+                    const { title, subtitle } = contactOptionLabel(o);
+                    return (
+                      <li key={o.contactId} role="option" aria-selected={false}>
+                        <button
+                          type="button"
+                          className="flex w-full flex-col items-start px-3 py-2 text-left hover:bg-surface-overlay/60"
+                          onClick={() => {
+                            setPicked(o);
+                            setOptions([]);
+                          }}
+                        >
+                          <span className="text-sm font-medium text-primary">{title}</span>
+                          {subtitle && <span className="text-xs text-tertiary">{subtitle}</span>}
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+              {!picked && !searching && query.trim().length >= 2 && options.length === 0 && (
+                <p className="mt-1.5 text-xs text-tertiary">
+                  No matching contact in Contact-Ops. Create the person there first, then come back.
+                </p>
+              )}
             </div>
-            <Button onClick={submitCreate} disabled={busy || !newContactId.trim()}>
+            <Button onClick={submitCreate} disabled={busy || !picked}>
               {busy ? 'Creating…' : 'Create as Lead'}
             </Button>
           </div>
