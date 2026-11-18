@@ -26,6 +26,8 @@ suite('Contact connection actual HTTP and isolated PostgreSQL', () => {
   const originalFetch = global.fetch;
   let remoteCalls = 0;
   let mode = 'valid';
+  let lookupTenant: string | null = null;
+  const LOOKUP_TOKEN_URL = 'https://sso.example.com/realms/uchub/protocol/openid-connect/token';
   async function request(token: string, path = ws, patch = {}) {
     return originalFetch(base + '/workspaces/' + path + '/contact-connection', {
       method: 'POST',
@@ -46,6 +48,9 @@ suite('Contact connection actual HTTP and isolated PostgreSQL', () => {
     process.env.CUSTOMER_OPS_SIGNUP_MODE = 'invite';
     process.env.JWT_SECRET = 'isolated-contact-link-test-only';
     process.env.CONTACT_OPS_BASE_URL = 'https://contact-owner-proof.invalid';
+    process.env.CONTACT_OPS_LOOKUP_CLIENT_ID = 'contact-ops-org-lookup-client';
+    process.env.CONTACT_OPS_LOOKUP_CLIENT_SECRET = 'fixture-secret-not-real';
+    process.env.CONTACT_OPS_LOOKUP_TOKEN_URL = LOOKUP_TOKEN_URL;
     __resetAccessListCacheForTests();
     const mod = await Test.createTestingModule({
       imports: [
@@ -67,6 +72,13 @@ suite('Contact connection actual HTTP and isolated PostgreSQL', () => {
     base = await app.getUrl();
     db = app.get(PrismaService);
     global.fetch = jest.fn(async (url: any, options: any) => {
+      // The Contact-Ops org lookup (R3-2): names `lookupTenant` for this workspace's org.
+      if (String(url) === LOOKUP_TOKEN_URL)
+        return new Response(JSON.stringify({ access_token: 'lookup-cc', expires_in: 300 }));
+      if (String(url) === `https://contact-owner-proof.invalid/api/service/ops-center-orgs/${ws}/tenant`)
+        return lookupTenant
+          ? new Response(JSON.stringify({ ops_center_org_id: ws, tenant_id: lookupTenant }))
+          : new Response('{}', { status: 404 });
       if (String(url) !== 'https://contact-owner-proof.invalid/mcp')
         return originalFetch(url, options);
       remoteCalls++;
@@ -110,6 +122,7 @@ suite('Contact connection actual HTTP and isolated PostgreSQL', () => {
     remoteCalls = 0;
     ws = randomUUID();
     target = randomUUID();
+    lookupTenant = target;
     await db.workspace.create({ data: { id: ws, slug: ws, displayName: 'Synthetic link test' } });
     async function user() {
       return db.user.create({
@@ -180,6 +193,14 @@ suite('Contact connection actual HTTP and isolated PostgreSQL', () => {
     });
     expect((await request(ownerToken)).status).toBe(409);
     expect(remoteCalls).toBe(0);
+  });
+  it('refuses (409) a target the Contact-Ops org lookup does not name for this org (R3-2)', async () => {
+    for (const named of [randomUUID(), null]) {
+      lookupTenant = named;
+      expect((await request(ownerToken)).status).toBe(409);
+    }
+    expect(remoteCalls).toBe(0);
+    expect(await db.federationWorkspaceMap.count({ where: { localWorkspaceId: ws } })).toBe(0);
   });
   it('serializes concurrent replay onto exactly one map', async () => {
     const responses = await Promise.all([request(ownerToken), request(ownerToken)]);

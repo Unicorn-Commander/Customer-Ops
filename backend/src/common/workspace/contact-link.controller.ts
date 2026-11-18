@@ -16,6 +16,7 @@ import { JwtOnly } from '../../auth/decorators/jwt-only.decorator';
 import { CurrentUser } from '../decorators/current-user.decorator';
 import { BrigadeTokenSource } from '../federation/brigade-token-source';
 import { FederationWorkspaceMapService } from '../federation/federation-workspace-map.service';
+import { ContactOpsOrgLookupClient } from '../../contact-ops/contact-ops-org-lookup.client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { MembershipService } from './membership.service';
 import { tenancyEnabled } from './feature-flags';
@@ -36,6 +37,7 @@ export class ContactLinkController {
     private readonly brigade: BrigadeTokenSource,
     private readonly config: ConfigService,
     private readonly mapping: FederationWorkspaceMapService,
+    private readonly lookup: ContactOpsOrgLookupClient,
   ) {}
 
   @Post()
@@ -52,7 +54,7 @@ export class ContactLinkController {
     const sourceWorkspace = await this.prisma.workspace.findUnique({ where: { id: workspaceId } });
     if (!sourceWorkspace || sourceWorkspace.status !== 'active')
       throw new ForbiddenException('Active workspace required.');
-    const target = dto.target_workspace_id;
+    const target = dto.target_workspace_id.toLowerCase();
     const where = {
       localWorkspaceId_targetApp: { localWorkspaceId: workspaceId, targetApp: 'contact-ops' },
     };
@@ -66,6 +68,18 @@ export class ContactLinkController {
     if (!base || new URL(base).protocol !== 'https:') {
       throw new ServiceUnavailableException(
         'A trusted HTTPS Contact-Ops endpoint must be configured.',
+      );
+    }
+    // Same-org rule (R3-2, GATE-175): a contact-ops row is written only for the
+    // tenant Contact-Ops' org lookup names for THIS workspace's org id (contract
+    // D: the workspace id is the org id). Checked before any remote call.
+    const answer = await this.lookup.lookupTenant(workspaceId);
+    if (answer.kind === 'dormant') {
+      throw new ConflictException('Contact-Ops link is not available yet');
+    }
+    if (answer.kind !== 'tenant' || answer.tenantId !== target) {
+      throw new ConflictException(
+        'Contact-Ops does not confirm this tenant for this workspace; no Customer connection was changed.',
       );
     }
     const proof = await this.brigade.exchangedToken({
@@ -141,7 +155,8 @@ export class ContactLinkController {
           targetApp: 'contact-ops',
           targetWorkspaceId: target,
         },
-        update: {},
+        // The lookup just confirmed this exact row: a previous conflict mark is cleared.
+        update: { conflictTenantId: null },
       });
       await tx.auditLog.create({
         data: {
