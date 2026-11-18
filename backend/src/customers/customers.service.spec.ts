@@ -179,6 +179,7 @@ function makeService(opts?: {
     listContacts: jest.fn().mockResolvedValue({ items: [], count: 0, nextCursor: null }),
     getWorkspaceProjection: jest.fn().mockResolvedValue(null),
     verifyContact: jest.fn().mockResolvedValue('exists'),
+    isWorkspaceConnected: jest.fn().mockReturnValue(true),
     ...(opts?.contact ?? {}),
   } as any;
 
@@ -1701,6 +1702,7 @@ describe('CustomersService — *ForUser audit side-effects (Phase 7; AuditServic
       listContacts: jest.fn().mockResolvedValue({ items: [], count: 0, nextCursor: null }),
       getWorkspaceProjection: jest.fn().mockResolvedValue(null),
       verifyContact: jest.fn().mockResolvedValue('exists'),
+      isWorkspaceConnected: jest.fn().mockReturnValue(true),
       ...(opts?.contact ?? {}),
     } as any;
     const dormant = {
@@ -1779,6 +1781,21 @@ describe('CustomersService — *ForUser audit side-effects (Phase 7; AuditServic
       expect(tx.customer.create).not.toHaveBeenCalled();
     });
 
+    it('no Contact-Ops mapping -> 409 contact_ops_not_connected and NO row written', async () => {
+      const verifyContact = jest.fn().mockResolvedValue('not_connected');
+      const { svc, lastTx } = makeAuditedService({ contact: { verifyContact } });
+      const { tx } = makeTx(makeRow());
+      lastTx.current = tx;
+      const err = await svc.createForUser(aaron, { contactId: 'c-1' }, WS).catch((e) => e);
+      expect(err).toBeInstanceOf(ConflictException);
+      expect(err.getStatus()).toBe(409);
+      expect(err.getResponse()).toMatchObject({
+        code: 'contact_ops_not_connected',
+        message: "Contacts aren't set up for this workspace yet, so a relationship can't be linked to a contact. Ask your workspace owner, or write to support@unicorncommander.ai and we will set it up.",
+      });
+      expect(tx.customer.create).not.toHaveBeenCalled();
+    });
+
     it('Contact-Ops unreachable/erroring -> 503 and NO row written', async () => {
       const verifyContact = jest.fn().mockResolvedValue('unavailable');
       const { svc, lastTx } = makeAuditedService({ contact: { verifyContact } });
@@ -1813,13 +1830,35 @@ describe('CustomersService — *ForUser audit side-effects (Phase 7; AuditServic
         expect.objectContaining({ workspaceId: WS }),
         expect.objectContaining({ query: 'jan', limit: 10 }),
       );
-      expect(out).toEqual([{ contactId: 'p-1', displayName: 'Jane Lead', primaryEmail: 'jane@example.com' }]);
+      expect(out).toEqual({
+        items: [{ contactId: 'p-1', displayName: 'Jane Lead', primaryEmail: 'jane@example.com' }],
+        notConnected: false,
+      });
+    });
+
+    it('unmapped workspace -> { items: [], notConnected: true } without calling Contact-Ops', async () => {
+      const listContacts = jest.fn();
+      const { svc } = makeAuditedService({
+        contact: { listContacts, isWorkspaceConnected: jest.fn().mockReturnValue(false) },
+      });
+      await expect(svc.searchContactsForUser(aaron, 'jan', WS)).resolves.toEqual({
+        items: [],
+        notConnected: true,
+      });
+      await expect(svc.searchContactsForUser(aaron, '', WS)).resolves.toEqual({
+        items: [],
+        notConnected: true,
+      });
+      expect(listContacts).not.toHaveBeenCalled();
     });
 
     it('a blank query does not hit Contact-Ops', async () => {
       const listContacts = jest.fn();
       const { svc } = makeAuditedService({ contact: { listContacts } });
-      await expect(svc.searchContactsForUser(aaron, '  ', WS)).resolves.toEqual([]);
+      await expect(svc.searchContactsForUser(aaron, '  ', WS)).resolves.toEqual({
+        items: [],
+        notConnected: false,
+      });
       expect(listContacts).not.toHaveBeenCalled();
     });
   });

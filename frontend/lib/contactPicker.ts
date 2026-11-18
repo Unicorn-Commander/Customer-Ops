@@ -9,7 +9,16 @@ export interface ContactOption {
   primaryEmail: string | null;
 }
 
-export type ContactSearchFn = (workspaceId: string, query: string) => Promise<ContactOption[]>;
+export interface ContactSearchResult {
+  items: ContactOption[];
+  /** The workspace has no Contact-Ops link: show the message, not the picker. */
+  notConnected: boolean;
+}
+
+export type ContactSearchFn = (workspaceId: string, query: string) => Promise<ContactSearchResult>;
+
+/** Shown instead of the picker when the workspace is not linked to Contact-Ops. */
+export const NOT_CONNECTED_MESSAGE = "Contacts aren't set up for this workspace yet, so a relationship can't be linked to a contact. Ask your workspace owner, or write to support@unicorncommander.ai and we will set it up.";
 
 /** Shortest query worth sending to Contact-Ops. */
 export const MIN_QUERY_LENGTH = 2;
@@ -22,9 +31,9 @@ export async function searchContactOptions(
   workspaceId: string,
   query: string,
   fetcher: ContactSearchFn,
-): Promise<ContactOption[]> {
+): Promise<ContactSearchResult> {
   const q = query.trim();
-  if (q.length < MIN_QUERY_LENGTH) return [];
+  if (q.length < MIN_QUERY_LENGTH) return { items: [], notConnected: false };
   return fetcher(workspaceId, q);
 }
 

@@ -6,12 +6,14 @@ import { Button } from '@/components/ui/Button';
 import { IconTile } from '@/components/ui/IconTile';
 import { cn } from '@/components/ui/cn';
 import { RelationshipsTable } from '@/components/dashboard/RelationshipsTable';
+import { ApiError } from '@/lib/api';
 import { useWorkspace } from '@/lib/useWorkspace';
 import { createCustomer, listCustomers, searchContacts, type CustomerRow } from '@/lib/customers';
 import {
   contactOptionLabel,
   createPayloadFor,
   searchContactOptions,
+  NOT_CONNECTED_MESSAGE,
   type ContactOption,
 } from '@/lib/contactPicker';
 
@@ -36,6 +38,7 @@ export default function CustomersPage() {
   const [picked, setPicked] = useState<ContactOption | null>(null);
   const [options, setOptions] = useState<ContactOption[]>([]);
   const [searching, setSearching] = useState(false);
+  const [notConnected, setNotConnected] = useState(false);
   const [busy, setBusy] = useState(false);
   const createInputRef = useRef<HTMLInputElement>(null);
 
@@ -61,7 +64,10 @@ export default function CustomersPage() {
       setSearching(true);
       try {
         const found = await searchContactOptions(workspaceId, query, searchContacts);
-        if (live) setOptions(found);
+        if (live) {
+          setOptions(found.items);
+          if (found.notConnected) setNotConnected(true);
+        }
       } catch {
         if (live) setOptions([]);
       } finally {
@@ -76,6 +82,13 @@ export default function CustomersPage() {
 
   const openCreate = () => {
     setCreating(true);
+    // A blank query costs no Contact-Ops call; it only reports whether this
+    // workspace is linked, so the message shows before anyone types.
+    if (workspaceId) {
+      searchContacts(workspaceId, '')
+        .then((r) => setNotConnected(r.notConnected))
+        .catch(() => undefined);
+    }
     // Focus the field on the next paint so it's ready to type into.
     requestAnimationFrame(() => createInputRef.current?.focus());
   };
@@ -93,6 +106,9 @@ export default function CustomersPage() {
       setCreating(false);
       await load();
     } catch (e) {
+      if (e instanceof ApiError && e.status === 409 && e.message === NOT_CONNECTED_MESSAGE) {
+        setNotConnected(true);
+      }
       setError((e as Error).message);
     } finally {
       setBusy(false);
@@ -144,71 +160,77 @@ export default function CustomersPage() {
       {/* ── Inline create ── */}
       {canWrite && creating && (
         <div className="rounded-token-lg border border-subtle bg-surface-raised p-4 shadow-token">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-            <div className="relative flex-1">
-              <label htmlFor="co-new-contact" className="mb-1.5 block text-xs font-semibold text-secondary">
-                Contact
-              </label>
-              <input
-                id="co-new-contact"
-                ref={createInputRef}
-                role="combobox"
-                aria-expanded={!picked && options.length > 0}
-                aria-controls="co-new-contact-options"
-                autoComplete="off"
-                value={picked ? picked.displayName : query}
-                onChange={(e) => {
-                  setPicked(null);
-                  setQuery(e.target.value);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') void submitCreate();
-                  if (e.key === 'Escape') setCreating(false);
-                }}
-                placeholder="Search your Contact-Ops contacts by name or email"
-                className={cn(
-                  'h-10 w-full rounded-token border border-subtle bg-surface-overlay/60 px-3 text-sm text-primary',
-                  'placeholder:text-muted',
-                  'transition-colors duration-fast ease-token',
-                  'focus:border-accent/60 focus:outline-none focus:ring-2 focus:ring-accent/30',
+          {notConnected ? (
+            <p role="status" className="text-sm font-medium text-secondary">
+              {NOT_CONNECTED_MESSAGE}
+            </p>
+          ) : (
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+              <div className="relative flex-1">
+                <label htmlFor="co-new-contact" className="mb-1.5 block text-xs font-semibold text-secondary">
+                  Contact
+                </label>
+                <input
+                  id="co-new-contact"
+                  ref={createInputRef}
+                  role="combobox"
+                  aria-expanded={!picked && options.length > 0}
+                  aria-controls="co-new-contact-options"
+                  autoComplete="off"
+                  value={picked ? picked.displayName : query}
+                  onChange={(e) => {
+                    setPicked(null);
+                    setQuery(e.target.value);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') void submitCreate();
+                    if (e.key === 'Escape') setCreating(false);
+                  }}
+                  placeholder="Search your Contact-Ops contacts by name or email"
+                  className={cn(
+                    'h-10 w-full rounded-token border border-subtle bg-surface-overlay/60 px-3 text-sm text-primary',
+                    'placeholder:text-muted',
+                    'transition-colors duration-fast ease-token',
+                    'focus:border-accent/60 focus:outline-none focus:ring-2 focus:ring-accent/30',
+                  )}
+                />
+                {!picked && options.length > 0 && (
+                  <ul
+                    id="co-new-contact-options"
+                    role="listbox"
+                    className="absolute z-10 mt-1 max-h-60 w-full overflow-auto rounded-token border border-subtle bg-surface-raised shadow-token"
+                  >
+                    {options.map((o) => {
+                      const { title, subtitle } = contactOptionLabel(o);
+                      return (
+                        <li key={o.contactId} role="option" aria-selected={false}>
+                          <button
+                            type="button"
+                            className="flex w-full flex-col items-start px-3 py-2 text-left hover:bg-surface-overlay/60"
+                            onClick={() => {
+                              setPicked(o);
+                              setOptions([]);
+                            }}
+                          >
+                            <span className="text-sm font-medium text-primary">{title}</span>
+                            {subtitle && <span className="text-xs text-tertiary">{subtitle}</span>}
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
                 )}
-              />
-              {!picked && options.length > 0 && (
-                <ul
-                  id="co-new-contact-options"
-                  role="listbox"
-                  className="absolute z-10 mt-1 max-h-60 w-full overflow-auto rounded-token border border-subtle bg-surface-raised shadow-token"
-                >
-                  {options.map((o) => {
-                    const { title, subtitle } = contactOptionLabel(o);
-                    return (
-                      <li key={o.contactId} role="option" aria-selected={false}>
-                        <button
-                          type="button"
-                          className="flex w-full flex-col items-start px-3 py-2 text-left hover:bg-surface-overlay/60"
-                          onClick={() => {
-                            setPicked(o);
-                            setOptions([]);
-                          }}
-                        >
-                          <span className="text-sm font-medium text-primary">{title}</span>
-                          {subtitle && <span className="text-xs text-tertiary">{subtitle}</span>}
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-              {!picked && !searching && query.trim().length >= 2 && options.length === 0 && (
-                <p className="mt-1.5 text-xs text-tertiary">
-                  No matching contact in Contact-Ops. Create the person there first, then come back.
-                </p>
-              )}
+                {!picked && !searching && query.trim().length >= 2 && options.length === 0 && (
+                  <p className="mt-1.5 text-xs text-tertiary">
+                    No matching contact in Contact-Ops. Create the person there first, then come back.
+                  </p>
+                )}
+              </div>
+              <Button onClick={submitCreate} disabled={busy || !picked}>
+                {busy ? 'Creating…' : 'Create as Lead'}
+              </Button>
             </div>
-            <Button onClick={submitCreate} disabled={busy || !picked}>
-              {busy ? 'Creating…' : 'Create as Lead'}
-            </Button>
-          </div>
+          )}
           <p className="mt-2 text-xs text-tertiary">
             The new relationship enters the funnel as a <span className="font-medium text-stage-lead">Lead</span>.
             The contact stays in Contact-Ops — only the relationship is created here.

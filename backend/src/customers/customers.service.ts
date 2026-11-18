@@ -214,6 +214,10 @@ function pipelineMaxCards(): number {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : PIPELINE_MAX_CARDS_DEFAULT;
 }
 
+/** Shown verbatim by the web form when the workspace has no Contact-Ops mapping. */
+const CONTACT_OPS_NOT_CONNECTED_MESSAGE =
+  "Contacts aren't set up for this workspace yet, so a relationship can't be linked to a contact. Ask your workspace owner, or write to support@unicorncommander.ai and we will set it up.";
+
 @Injectable()
 export class CustomersService {
   private readonly logger = new Logger(CustomersService.name);
@@ -482,6 +486,13 @@ export class CustomersService {
         'That contact does not exist in your Contact-Ops workspace',
       );
     }
+    if (verdict === 'not_connected') {
+      throw new ConflictException({
+        statusCode: 409,
+        code: 'contact_ops_not_connected',
+        message: CONTACT_OPS_NOT_CONNECTED_MESSAGE,
+      });
+    }
     if (verdict === 'unavailable') {
       throw new ServiceUnavailableException(
         'Contact-Ops is unavailable, so the contact could not be verified. Try again shortly.',
@@ -509,16 +520,23 @@ export class CustomersService {
     user: User & Partial<WithWorkspaceClaim>,
     query: string,
     requestedWorkspaceId?: string | null,
-  ): Promise<Array<{ contactId: string; displayName: string; primaryEmail: string | null }>> {
+  ): Promise<{
+    items: Array<{ contactId: string; displayName: string; primaryEmail: string | null }>;
+    notConnected: boolean;
+  }> {
     const q = (query ?? '').trim().slice(0, 100);
-    if (!q) return [];
     const fedCtx = await this.federationContext(user, requestedWorkspaceId);
+    if (!this.contactOps.isWorkspaceConnected(fedCtx)) return { items: [], notConnected: true };
+    if (!q) return { items: [], notConnected: false };
     const page = await this.contactOps.listContacts(fedCtx, { query: q, limit: 10 });
-    return page.items.map((c) => ({
-      contactId: c.contactId,
-      displayName: c.displayName,
-      primaryEmail: c.primaryEmail,
-    }));
+    return {
+      items: page.items.map((c) => ({
+        contactId: c.contactId,
+        displayName: c.displayName,
+        primaryEmail: c.primaryEmail,
+      })),
+      notConnected: false,
+    };
   }
 
   async updateForUser(

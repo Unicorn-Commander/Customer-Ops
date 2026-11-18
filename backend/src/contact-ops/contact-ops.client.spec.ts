@@ -104,7 +104,7 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
     describe('verifyContact (CO-1)', () => {
       const mk = (resp: any) => {
         global.fetch = jest.fn().mockResolvedValue(resp) as any;
-        return new ContactOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
+        return new ContactOpsClient(makeConfig(env), makeBrigade(), makeFedMap('co-tenant-a'));
       };
 
       it('exists when get_person returns the person', async () => {
@@ -134,10 +134,82 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
         const c500 = mk(jsonResponse({}, false, 500));
         await expect(c500.verifyContact(CTX, 'p1')).resolves.toBe('unavailable');
         global.fetch = jest.fn().mockRejectedValue(new Error('boom')) as any;
-        const c = new ContactOpsClient(makeConfig(env), makeBrigade(), makeFedMap());
+        const c = new ContactOpsClient(makeConfig(env), makeBrigade(), makeFedMap('co-tenant-a'));
         await expect(c.verifyContact(CTX, 'p1')).resolves.toBe('unavailable');
-        const dormant = new ContactOpsClient(makeConfig({}), makeBrigade(), makeFedMap());
+        const dormant = new ContactOpsClient(makeConfig({}), makeBrigade(), makeFedMap('co-tenant-a'));
         await expect(dormant.verifyContact(CTX, 'p1')).resolves.toBe('unavailable');
+      });
+
+      it('not_connected (no fetch) when the workspace has no contact-ops mapping', async () => {
+        global.fetch = jest.fn() as any;
+        const c = new ContactOpsClient(makeConfig(env), makeBrigade(), makeFedMap(null));
+        await expect(c.verifyContact(CTX, 'p1')).resolves.toBe('not_connected');
+        expect(global.fetch).not.toHaveBeenCalled();
+        expect(c.isWorkspaceConnected(CTX)).toBe(false);
+      });
+      it('unavailable (not not_connected) on a timeout for a MAPPED workspace', async () => {
+        global.fetch = jest.fn().mockRejectedValue(new Error('timeout')) as any;
+        const c = new ContactOpsClient(makeConfig(env), makeBrigade(), makeFedMap('co-tenant-a'));
+        await expect(c.verifyContact(CTX, 'p1')).resolves.toBe('unavailable');
+        expect(c.isWorkspaceConnected(CTX)).toBe(true);
+      });
+    });
+
+    describe('cross-org isolation (two mapped workspaces, two Contact-Ops tenants)', () => {
+      const WS_A: FederationContext = { workspaceId: 'ws-org-a', ucUid: 'ua' };
+      const WS_B: FederationContext = { workspaceId: 'ws-org-b', ucUid: 'ub' };
+      const TENANTS: Record<string, string> = { 'ws-org-a': 'co-tenant-a', 'ws-org-b': 'co-tenant-b' };
+      // Fake Contact-Ops: each tenant owns only its own people; the request is
+      // answered from the tenant named in X-Workspace-Id.
+      const PEOPLE: Record<string, Record<string, { name: string; email: string }>> = {
+        'co-tenant-a': { 'pa-1': { name: 'Ann Alpha', email: 'ann@a.example.com' } },
+        'co-tenant-b': { 'pb-1': { name: 'Bob Beta', email: 'bob@b.example.com' } },
+      };
+      const seenTenants: string[] = [];
+      const mk = () => {
+        global.fetch = jest.fn(async (_u: any, init: any) => {
+          const tenant = init.headers['X-Workspace-Id'] as string;
+          seenTenants.push(tenant);
+          const { params } = JSON.parse(init.body);
+          const people = PEOPLE[tenant] ?? {};
+          if (params.name === 'get_person') {
+            const p = people[params.arguments.person_id];
+            return p
+              ? jsonResponse(rpcOk({ person_id: params.arguments.person_id, display_name: p.name }))
+              : jsonResponse({
+                  jsonrpc: '2.0',
+                  id: 1,
+                  result: { isError: true, content: [{ type: 'text', text: 'Person not found' }] },
+                });
+          }
+          return jsonResponse(
+            rpcOk({
+              items: Object.entries(people).map(([id, p]) => ({
+                person_id: id,
+                display_name: p.name,
+                primary_email: p.email,
+              })),
+              count: Object.keys(people).length,
+            }),
+          );
+        }) as any;
+        const fed = { resolveSync: jest.fn((ws: string) => TENANTS[ws] ?? null) } as any;
+        return new ContactOpsClient(makeConfig(env), makeBrigade(), fed);
+      };
+      beforeEach(() => (seenTenants.length = 0));
+
+      it("org A's search never returns B's people", async () => {
+        const c = mk();
+        const page = await c.listContacts(WS_A, { query: 'a', limit: 10 });
+        expect(page.items.map((i) => i.contactId)).toEqual(['pa-1']);
+        expect(JSON.stringify(page)).not.toContain('Bob');
+        expect(seenTenants).toEqual(['co-tenant-a']);
+      });
+      it("A's verify of an id that exists only in B's tenant is 'missing' (-> 422, no row)", async () => {
+        const c = mk();
+        await expect(c.verifyContact(WS_A, 'pb-1')).resolves.toBe('missing');
+        await expect(c.verifyContact(WS_B, 'pb-1')).resolves.toBe('exists');
+        expect(seenTenants).toEqual(['co-tenant-a', 'co-tenant-b']);
       });
     });
 
