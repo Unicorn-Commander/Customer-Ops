@@ -9,6 +9,11 @@
  * and writes nothing. `--apply` writes each missing row by the provisioning rule
  * (ContactOpsMapProvisioner): only the lookup's tenant for THAT org id, never
  * over an existing row. Safe to run again. Not an HTTP route.
+ *
+ * Both modes also re-check every EXISTING contact-ops row against the lookup
+ * and print it as confirmed / CONFLICT / UNCONFIRMED (GATE-212); nothing is
+ * changed. Exit 0 when every existing row is confirmed, 2 when any is not,
+ * 1 when the lookup is dormant.
  */
 
 import { Module } from '@nestjs/common';
@@ -45,7 +50,27 @@ export function formatBackfill(report: ContactOpsMapBackfillReport): string {
   lines.push(
     `${report.pairs.length} pair(s), ${report.skipped.length} skipped, ${report.written} written`,
   );
+  lines.push('', 'EXISTING ROWS (re-checked against the lookup; none changed):');
+  const counts = { confirmed: 0, conflict: 0, unconfirmed: 0 };
+  for (const e of report.existing) {
+    counts[e.status] += 1;
+    const head = `${e.orgId} -> ${e.rowTenantId}`;
+    if (e.status === 'confirmed') lines.push(`${head}: confirmed`);
+    else if (e.status === 'conflict') {
+      lines.push(`${head}: CONFLICT (lookup answers ${e.lookupTenantId})`);
+    } else lines.push(`${head}: UNCONFIRMED (${e.reason})`);
+  }
+  lines.push(
+    `${counts.confirmed} confirmed, ${counts.conflict} conflict, ${counts.unconfirmed} unconfirmed` +
+      (counts.conflict + counts.unconfirmed > 0 ? ' - a person must re-verify these rows' : ''),
+  );
   return lines.join('\n');
+}
+
+/** 1 dormant; 2 when any existing row is conflict or unconfirmed; else 0. */
+export function backfillExitCode(report: ContactOpsMapBackfillReport): number {
+  if (report.dormant) return 1;
+  return report.existing.every((e) => e.status === 'confirmed') ? 0 : 2;
 }
 
 @Module({
@@ -61,7 +86,7 @@ async function main(): Promise<void> {
   try {
     const report = await app.get(ContactOpsMapProvisioner).backfill(args);
     console.log(formatBackfill(report));
-    if (report.dormant) process.exitCode = 1;
+    process.exitCode = backfillExitCode(report);
   } finally {
     await app.close();
   }

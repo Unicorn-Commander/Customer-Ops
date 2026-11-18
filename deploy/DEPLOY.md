@@ -206,6 +206,9 @@ Do these as a deliberate, separately-reviewed change — **not** at first bring-
    backend npm run contact-ops:map-backfill` prints the org id -> tenant id
    pairs (dry run); add `-- --apply` to write them. A row that disagrees with
    the lookup is never overwritten: it is logged for a person to re-verify.
+   Both modes also re-check every EXISTING row (section `EXISTING ROWS`:
+   confirmed / CONFLICT / UNCONFIRMED) and change none of them; the command
+   exits 2 when any row is not confirmed (0 all confirmed, 1 lookup dormant).
 2. **Turn the tenant fence live** (the security flip — do both together):
    - point the runtime at the NOBYPASSRLS role:
      `DATABASE_URL=postgresql://localhost:5432/customer_ops<app-pw>@customer-ops-postgres:5432/customerops?schema=public`

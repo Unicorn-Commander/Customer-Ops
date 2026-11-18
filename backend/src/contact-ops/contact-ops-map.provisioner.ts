@@ -34,7 +34,18 @@ export interface ContactOpsMapBackfillReport {
   pairs: Array<{ orgId: string; tenantId: string }>;
   skipped: Array<{ orgId: string; reason: string }>;
   written: number;
+  /** Every contact-ops row that existed before the run, re-checked (GATE-212). Never modified. */
+  existing: ContactOpsMapRowCheck[];
 }
+
+/**
+ * One existing row against the lookup: confirmed (same tenant), conflict (the
+ * lookup names another tenant), unconfirmed (no tenant / mismatch / unavailable).
+ */
+export type ContactOpsMapRowCheck =
+  | { orgId: string; rowTenantId: string; status: 'confirmed'; lookupTenantId: string }
+  | { orgId: string; rowTenantId: string; status: 'conflict'; lookupTenantId: string }
+  | { orgId: string; rowTenantId: string; status: 'unconfirmed'; reason: string };
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -61,7 +72,11 @@ export class ContactOpsMapProvisioner {
    * with an Ops-Center org id (contract D: the workspace id IS the org id, a
    * uuid) and NO contact-ops row, ask the lookup; with `apply`, write the row by
    * the same rule as provisioning. Dry-run by default. Idempotent: a mapped
-   * workspace is not asked again, and an existing row is never changed.
+   * workspace is never written again, and an existing row is never changed.
+   *
+   * Both modes also VERIFY every existing contact-ops row (GATE-212): the lookup
+   * is asked for that row's org id and the row is reported confirmed / conflict
+   * / unconfirmed for a person. Nothing is deleted, overwritten or widened.
    */
   async backfill(opts: { apply?: boolean } = {}): Promise<ContactOpsMapBackfillReport> {
     const apply = opts.apply === true;
@@ -71,17 +86,19 @@ export class ContactOpsMapProvisioner {
       pairs: [],
       skipped: [],
       written: 0,
+      existing: [],
     };
     if (report.dormant) return report;
 
-    const mapped = new Set(
-      (
-        await this.prisma.federationWorkspaceMap.findMany({
-          where: { targetApp: CONTACT_OPS_TARGET_APP },
-          select: { localWorkspaceId: true },
-        })
-      ).map((r) => r.localWorkspaceId),
-    );
+    const existingRows = await this.prisma.federationWorkspaceMap.findMany({
+      where: { targetApp: CONTACT_OPS_TARGET_APP },
+      select: { localWorkspaceId: true, targetWorkspaceId: true },
+      orderBy: { localWorkspaceId: 'asc' },
+    });
+    for (const row of existingRows) {
+      report.existing.push(await this.verifyRow(row.localWorkspaceId, row.targetWorkspaceId));
+    }
+    const mapped = new Set(existingRows.map((r) => r.localWorkspaceId));
     const candidates = (
       await this.prisma.workspace.findMany({
         where: { status: 'active' },
@@ -103,6 +120,19 @@ export class ContactOpsMapProvisioner {
       if (outcome.kind === 'conflict') report.skipped.push({ orgId, reason: 'conflict' });
     }
     return report;
+  }
+
+  /** Read-only: compares one existing row with the lookup; never writes. */
+  private async verifyRow(orgId: string, rowTenantId: string): Promise<ContactOpsMapRowCheck> {
+    const answer = await this.lookupFor(orgId);
+    if (answer.kind !== 'tenant') {
+      return { orgId, rowTenantId, status: 'unconfirmed', reason: answer.reason };
+    }
+    if (answer.tenantId === rowTenantId) {
+      return { orgId, rowTenantId, status: 'confirmed', lookupTenantId: answer.tenantId };
+    }
+    this.compare(orgId, rowTenantId, answer.tenantId); // logs the disagreement
+    return { orgId, rowTenantId, status: 'conflict', lookupTenantId: answer.tenantId };
   }
 
   private async lookupFor(
