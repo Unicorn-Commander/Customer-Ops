@@ -37,6 +37,6 @@ describe('contact picker', () => {
   it('passes the notConnected flag through and names the sentence to show', async () => {
     const fetcher = async () => ({ items: [], notConnected: true });
     assert.deepEqual(await searchContactOptions('ws-1', 'jan', fetcher), { items: [], notConnected: true });
-    assert.equal(NOT_CONNECTED_MESSAGE, 'Connect Contact-Ops for this workspace first');
+    assert.equal(NOT_CONNECTED_MESSAGE, "Contacts aren't set up for this workspace yet, so a relationship can't be linked to a contact. Ask your workspace owner, or write to support@unicorncommander.ai and we will set it up.");
   });
 });

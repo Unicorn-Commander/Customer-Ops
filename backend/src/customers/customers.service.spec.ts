@@ -1791,7 +1791,7 @@ describe('CustomersService — *ForUser audit side-effects (Phase 7; AuditServic
       expect(err.getStatus()).toBe(409);
       expect(err.getResponse()).toMatchObject({
         code: 'contact_ops_not_connected',
-        message: 'Connect Contact-Ops for this workspace first',
+        message: "Contacts aren't set up for this workspace yet, so a relationship can't be linked to a contact. Ask your workspace owner, or write to support@unicorncommander.ai and we will set it up.",
       });
       expect(tx.customer.create).not.toHaveBeenCalled();
     });

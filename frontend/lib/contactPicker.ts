@@ -18,7 +18,7 @@ export interface ContactSearchResult {
 export type ContactSearchFn = (workspaceId: string, query: string) => Promise<ContactSearchResult>;
 
 /** Shown instead of the picker when the workspace is not linked to Contact-Ops. */
-export const NOT_CONNECTED_MESSAGE = 'Connect Contact-Ops for this workspace first';
+export const NOT_CONNECTED_MESSAGE = "Contacts aren't set up for this workspace yet, so a relationship can't be linked to a contact. Ask your workspace owner, or write to support@unicorncommander.ai and we will set it up.";
 
 /** Shortest query worth sending to Contact-Ops. */
 export const MIN_QUERY_LENGTH = 2;

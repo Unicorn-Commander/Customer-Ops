@@ -215,7 +215,8 @@ function pipelineMaxCards(): number {
 }
 
 /** Shown verbatim by the web form when the workspace has no Contact-Ops mapping. */
-const CONTACT_OPS_NOT_CONNECTED_MESSAGE = 'Connect Contact-Ops for this workspace first';
+const CONTACT_OPS_NOT_CONNECTED_MESSAGE =
+  "Contacts aren't set up for this workspace yet, so a relationship can't be linked to a contact. Ask your workspace owner, or write to support@unicorncommander.ai and we will set it up.";
 
 @Injectable()
 export class CustomersService {
