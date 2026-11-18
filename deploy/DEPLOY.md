@@ -193,6 +193,19 @@ Do these as a deliberate, separately-reviewed change — **not** at first bring-
    (it's live on bigboy): `CONTACT_OPS_BASE_URL=https://mcp.contacts.magicunicorn.dev`
    (confirm the exact MCP base) + a service token. Then:
    `docker compose -f deploy/docker-compose.dogfood.yml up -d backend`.
+
+   **Contact-Ops map from the org lookup (Contact-Ops #42).** Provisioning
+   writes each org workspace's `contact-ops` map row from Contact-Ops'
+   `GET /api/service/ops-center-orgs/{org_id}/tenant`, using the dedicated
+   lookup client (audience `contact-ops-org-lookup`), never another credential:
+   `CONTACT_OPS_LOOKUP_CLIENT_ID`, `CONTACT_OPS_LOOKUP_CLIENT_SECRET` (from
+   Vaultwarden) and `CONTACT_OPS_LOOKUP_TOKEN_URL` (the realm's
+   `.../protocol/openid-connect/token`). With any of them unset it is DORMANT:
+   one WARN at boot, no row written, unmapped workspaces keep answering 409.
+   Existing workspaces: `docker compose -f deploy/docker-compose.dogfood.yml exec
+   backend npm run contact-ops:map-backfill` prints the org id -> tenant id
+   pairs (dry run); add `-- --apply` to write them. A row that disagrees with
+   the lookup is never overwritten: it is logged for a person to re-verify.
 2. **Turn the tenant fence live** (the security flip — do both together):
    - point the runtime at the NOBYPASSRLS role:
      `DATABASE_URL=postgresql://localhost:5432/customer_ops<app-pw>@customer-ops-postgres:5432/customerops?schema=public`

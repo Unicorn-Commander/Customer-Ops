@@ -26,6 +26,18 @@ export type ContactOpsMapOutcome =
   | { kind: 'conflict'; existingTenantId: string; lookupTenantId: string }
   | { kind: 'skipped'; reason: 'dormant' | 'no_tenant' | 'mismatch' | 'unavailable' };
 
+export interface ContactOpsMapBackfillReport {
+  apply: boolean;
+  /** The lookup is not configured: nothing was asked and nothing written. */
+  dormant: boolean;
+  /** org id -> tenant id from the lookup (written only when `apply`). */
+  pairs: Array<{ orgId: string; tenantId: string }>;
+  skipped: Array<{ orgId: string; reason: string }>;
+  written: number;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 @Injectable()
 export class ContactOpsMapProvisioner {
   private readonly logger = new Logger(ContactOpsMapProvisioner.name);
@@ -38,6 +50,66 @@ export class ContactOpsMapProvisioner {
 
   /** Ensure the contact-ops map row for the workspace bound to this org id. */
   async ensureForOrg(orgId: string): Promise<ContactOpsMapOutcome> {
+    const answer = await this.lookupFor(orgId);
+    if (answer.kind !== 'tenant') return answer;
+    return this.writeRow(orgId, answer.tenantId);
+  }
+
+  /**
+   * The re-run for existing workspaces (admin only: the management command
+   * `contact-ops-map.backfill`, never an HTTP route). For each ACTIVE workspace
+   * with an Ops-Center org id (contract D: the workspace id IS the org id, a
+   * uuid) and NO contact-ops row, ask the lookup; with `apply`, write the row by
+   * the same rule as provisioning. Dry-run by default. Idempotent: a mapped
+   * workspace is not asked again, and an existing row is never changed.
+   */
+  async backfill(opts: { apply?: boolean } = {}): Promise<ContactOpsMapBackfillReport> {
+    const apply = opts.apply === true;
+    const report: ContactOpsMapBackfillReport = {
+      apply,
+      dormant: !this.lookup.isConfigured(),
+      pairs: [],
+      skipped: [],
+      written: 0,
+    };
+    if (report.dormant) return report;
+
+    const mapped = new Set(
+      (
+        await this.prisma.federationWorkspaceMap.findMany({
+          where: { targetApp: CONTACT_OPS_TARGET_APP },
+          select: { localWorkspaceId: true },
+        })
+      ).map((r) => r.localWorkspaceId),
+    );
+    const candidates = (
+      await this.prisma.workspace.findMany({
+        where: { status: 'active' },
+        select: { id: true },
+        orderBy: { id: 'asc' },
+      })
+    ).filter((w) => UUID_RE.test(w.id) && !mapped.has(w.id));
+
+    for (const { id: orgId } of candidates) {
+      const answer = await this.lookupFor(orgId);
+      if (answer.kind !== 'tenant') {
+        report.skipped.push({ orgId, reason: answer.reason });
+        continue;
+      }
+      report.pairs.push({ orgId, tenantId: answer.tenantId });
+      if (!apply) continue;
+      const outcome = await this.writeRow(orgId, answer.tenantId);
+      if (outcome.kind === 'written') report.written += 1;
+      if (outcome.kind === 'conflict') report.skipped.push({ orgId, reason: 'conflict' });
+    }
+    return report;
+  }
+
+  private async lookupFor(
+    orgId: string,
+  ): Promise<
+    { kind: 'tenant'; tenantId: string } | Extract<ContactOpsMapOutcome, { kind: 'skipped' }>
+  > {
     const answer = await this.lookup.lookupTenant(orgId);
     if (answer.kind !== 'tenant') {
       // No row. The relationship create keeps answering 409 until a replay or
@@ -52,7 +124,7 @@ export class ContactOpsMapProvisioner {
       }
       return { kind: 'skipped', reason: answer.kind };
     }
-    return this.writeRow(orgId, answer.tenantId);
+    return { kind: 'tenant', tenantId: answer.tenantId };
   }
 
   private async writeRow(orgId: string, tenantId: string): Promise<ContactOpsMapOutcome> {
