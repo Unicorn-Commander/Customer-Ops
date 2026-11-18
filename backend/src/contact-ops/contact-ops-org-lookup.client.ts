@@ -20,6 +20,10 @@
  * The answer is trusted only for the org that was asked: an answer naming
  * another org id (or a tenant id that is not a uuid) is a `mismatch`, never a
  * map. Never throws.
+ *
+ * An `unavailable` detail is a sanitized category only (R3-5) — `timeout`,
+ * `http_<status>`, `bad_json` or `transport` — never an exception message or
+ * response text, which could carry a credential into the log.
  */
 
 import { Injectable, Logger } from '@nestjs/common';
@@ -30,7 +34,16 @@ export type OrgTenantLookup =
   | { kind: 'mismatch'; detail: string }
   | { kind: 'no_tenant' }
   | { kind: 'dormant' }
-  | { kind: 'unavailable'; detail: string };
+  | { kind: 'unavailable'; detail: LookupFailure };
+
+export type LookupFailure = 'timeout' | `http_${number}` | 'bad_json' | 'transport';
+
+/** A failure already reduced to its category. */
+class LookupError extends Error {
+  constructor(readonly category: LookupFailure) {
+    super(category);
+  }
+}
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -75,7 +88,14 @@ export class ContactOpsOrgLookupClient {
     try {
       return await this.ask(orgId, controller.signal);
     } catch (err) {
-      return { kind: 'unavailable', detail: (err as Error).message || 'transport error' };
+      // Never the exception's message: a parse error quotes the response text.
+      const detail: LookupFailure =
+        err instanceof LookupError
+          ? err.category
+          : controller.signal.aborted
+            ? 'timeout'
+            : 'transport';
+      return { kind: 'unavailable', detail };
     } finally {
       clearTimeout(timer);
     }
@@ -90,7 +110,6 @@ export class ContactOpsOrgLookupClient {
     const base = this.env('CONTACT_OPS_BASE_URL')!.replace(/\/$/, '');
 
     const token = await this.lookupToken(signal);
-    if (!token) return { kind: 'unavailable', detail: 'no lookup token' };
 
     const res = await fetch(
       `${base}/api/service/ops-center-orgs/${encodeURIComponent(orgId)}/tenant`,
@@ -103,7 +122,7 @@ export class ContactOpsOrgLookupClient {
     );
     if (res.status === 404 || res.status === 422) return { kind: 'no_tenant' };
     if (res.status === 401) this.cached = null;
-    if (res.status !== 200) return { kind: 'unavailable', detail: `HTTP ${res.status}` };
+    if (res.status !== 200) return { kind: 'unavailable', detail: `http_${res.status}` };
     const body = (await readJson(res, signal)) as Record<string, unknown>;
 
     const answeredOrg = body?.['ops_center_org_id'];
@@ -122,8 +141,8 @@ export class ContactOpsOrgLookupClient {
     };
   }
 
-  /** Client-credentials token of the dedicated lookup client, cached by exp. */
-  private async lookupToken(signal: AbortSignal): Promise<string | null> {
+  /** Client-credentials token of the dedicated lookup client, cached by exp. Throws a LookupError. */
+  private async lookupToken(signal: AbortSignal): Promise<string> {
     if (this.cached && this.cached.expMs - 30_000 > Date.now()) return this.cached.token;
     const res = await fetch(this.env('CONTACT_OPS_LOOKUP_TOKEN_URL')!, {
       method: 'POST',
@@ -136,9 +155,11 @@ export class ContactOpsOrgLookupClient {
         client_secret: this.env('CONTACT_OPS_LOOKUP_CLIENT_SECRET')!,
       }).toString(),
     });
-    if (!res.ok) return null;
+    if (!res.ok) throw new LookupError(`http_${res.status}`);
     const json = (await readJson(res, signal)) as { access_token?: string; expires_in?: number };
-    if (!json.access_token) return null;
+    if (!json || typeof json.access_token !== 'string' || !json.access_token) {
+      throw new LookupError('bad_json');
+    }
     const ttl = typeof json.expires_in === 'number' ? json.expires_in : 300;
     this.cached = { token: json.access_token, expMs: Date.now() + ttl * 1000 };
     return json.access_token;
@@ -148,20 +169,21 @@ export class ContactOpsOrgLookupClient {
 /**
  * res.json(), ended by the request's deadline even if the body stalls: real
  * fetch aborts a body read on the signal, and the race makes that certain.
+ * Rejects only with a category (`timeout` / `bad_json`), never the parse text.
  */
 function readJson(res: Response, signal: AbortSignal): Promise<unknown> {
-  if (signal.aborted) return Promise.reject(new Error('timeout'));
+  if (signal.aborted) return Promise.reject(new LookupError('timeout'));
   return new Promise((resolve, reject) => {
-    const onAbort = () => reject(new Error('timeout'));
+    const onAbort = () => reject(new LookupError('timeout'));
     signal.addEventListener('abort', onAbort, { once: true });
     res.json().then(
       (v) => {
         signal.removeEventListener('abort', onAbort);
         resolve(v);
       },
-      (e) => {
+      () => {
         signal.removeEventListener('abort', onAbort);
-        reject(e);
+        reject(new LookupError(signal.aborted ? 'timeout' : 'bad_json'));
       },
     );
   });

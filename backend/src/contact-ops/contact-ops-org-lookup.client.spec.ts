@@ -1,5 +1,7 @@
+import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ContactOpsOrgLookupClient } from './contact-ops-org-lookup.client';
+import { ContactOpsMapProvisioner } from './contact-ops-map.provisioner';
 
 /**
  * The Contact-Ops org lookup (Contact-Ops #42, org_tenancy.py):
@@ -196,6 +198,74 @@ describe('ContactOpsOrgLookupClient', () => {
         ]);
         expect(answer).toMatchObject({ kind: 'unavailable' });
         expect(Date.now() - started).toBeLessThan(1000);
+      },
+    );
+  });
+
+  describe('failure details are sanitized categories, never response text (R3-5)', () => {
+    // A fake credential a misbehaving endpoint echoes back inside its error text.
+    const ECHOED = 'fixture-echoed-secret-0000-not-real';
+    const badJson = () =>
+      ({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw new SyntaxError(`Unexpected token in JSON: {"access_token":"${ECHOED}"`);
+        },
+      }) as unknown as Response;
+    let logged: string[];
+
+    beforeEach(() => {
+      logged = [];
+      for (const level of ['log', 'warn', 'error', 'debug', 'verbose'] as const) {
+        jest.spyOn(Logger.prototype, level).mockImplementation((...args: unknown[]) => {
+          logged.push(args.map(String).join(' '));
+        });
+      }
+    });
+    afterEach(() => jest.restoreAllMocks());
+
+    it.each<[string, (url: string) => Response | Promise<Response>, string]>([
+      [
+        'a malformed token response',
+        (url) => (url === TOKEN_URL ? badJson() : res(200, {})),
+        'bad_json',
+      ],
+      [
+        'a malformed lookup response',
+        (url) => (url === TOKEN_URL ? res(200, { access_token: 'lookup-cc-token' }) : badJson()),
+        'bad_json',
+      ],
+      [
+        'a transport error quoting the request',
+        () => {
+          throw new TypeError(`fetch failed: client_secret=${ECHOED}`);
+        },
+        'transport',
+      ],
+      [
+        'a 503 from the lookup',
+        (url) => (url === TOKEN_URL ? res(200, { access_token: 'lookup-cc-token' }) : res(503, {})),
+        'http_503',
+      ],
+    ])(
+      '%s: a sanitized category; the provisioner log never carries response text',
+      async (_l, answer, detail) => {
+        global.fetch = jest.fn(async (url: string) => answer(url)) as any;
+        const client = new ContactOpsOrgLookupClient(makeConfig(LIVE));
+        await expect(client.lookupTenant(ORG_A)).resolves.toEqual({ kind: 'unavailable', detail });
+
+        const prisma = { federationWorkspaceMap: { findUnique: jest.fn(), create: jest.fn() } };
+        const writer = new ContactOpsMapProvisioner(prisma as any, client, {
+          reload: jest.fn(),
+        } as any);
+        await expect(writer.ensureForOrg(ORG_A)).resolves.toEqual({
+          kind: 'skipped',
+          reason: 'unavailable',
+        });
+        expect(logged.join('\n')).toContain(`unavailable (${detail})`);
+        expect(logged.join('\n')).not.toContain(ECHOED);
+        expect(logged.join('\n')).not.toMatch(/Unexpected token|fetch failed/);
       },
     );
   });

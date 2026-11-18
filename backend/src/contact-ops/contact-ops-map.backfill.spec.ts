@@ -92,7 +92,7 @@ function setup() {
       tenantId: 'dddddddd-0000-4000-8000-00000000000d',
       tenantSlug: 'x',
     },
-    [ORG_DOWN]: { kind: 'unavailable', detail: 'HTTP 503' },
+    [ORG_DOWN]: { kind: 'unavailable', detail: 'http_503' },
   };
   const lookup = {
     isConfigured: jest.fn().mockReturnValue(true),
@@ -277,7 +277,7 @@ describe('ContactOpsMapProvisioner.backfill verifies EXISTING rows (GATE-212)', 
 
   it('an unavailable lookup leaves the row unconfirmed (never confirmed)', async () => {
     const { svc, answers } = setupExisting();
-    answers[ORG_OK] = { kind: 'unavailable', detail: 'HTTP 503' };
+    answers[ORG_OK] = { kind: 'unavailable', detail: 'http_503' };
     const report = await svc.backfill();
     expect(report.existing[0]).toEqual({
       orgId: ORG_OK,
