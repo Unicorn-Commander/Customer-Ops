@@ -9,6 +9,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { AuthModule } from '../../auth/auth.module';
 import { WorkspaceAdminModule } from './workspace-admin.module';
 import { BrigadeTokenSource } from '../federation/brigade-token-source';
+import { FederationWorkspaceMapService } from '../federation/federation-workspace-map.service';
 import { __resetAccessListCacheForTests } from '../../auth/access-list';
 const testUrl = process.env.CUSTOMER_ONBOARDING_TEST_DB_URL;
 const suite = testUrl ? describe : describe.skip;
@@ -75,7 +76,10 @@ suite('Contact connection actual HTTP and isolated PostgreSQL', () => {
       // The Contact-Ops org lookup (R3-2): names `lookupTenant` for this workspace's org.
       if (String(url) === LOOKUP_TOKEN_URL)
         return new Response(JSON.stringify({ access_token: 'lookup-cc', expires_in: 300 }));
-      if (String(url) === `https://contact-owner-proof.invalid/api/service/ops-center-orgs/${ws}/tenant`)
+      if (
+        String(url) ===
+        `https://contact-owner-proof.invalid/api/service/ops-center-orgs/${ws}/tenant`
+      )
         return lookupTenant
           ? new Response(JSON.stringify({ ops_center_org_id: ws, tenant_id: lookupTenant }))
           : new Response('{}', { status: 404 });
@@ -142,15 +146,13 @@ suite('Contact connection actual HTTP and isolated PostgreSQL', () => {
       ],
     });
     const sign = (u: User) =>
-      app
-        .get(JwtService)
-        .sign({
-          sub: u.id,
-          email: u.email,
-          email_verified: true,
-          username: u.username,
-          entitlements: [],
-        });
+      app.get(JwtService).sign({
+        sub: u.id,
+        email: u.email,
+        email_verified: true,
+        username: u.username,
+        entitlements: [],
+      });
     ownerToken = sign(owner);
     viewerToken = sign(viewer);
   });
@@ -201,6 +203,30 @@ suite('Contact connection actual HTTP and isolated PostgreSQL', () => {
     }
     expect(remoteCalls).toBe(0);
     expect(await db.federationWorkspaceMap.count({ where: { localWorkspaceId: ws } })).toBe(0);
+  });
+  it('R4-1: repairs a row MARKED in conflict when the lookup names the target; else 409, unchanged', async () => {
+    const old = randomUUID();
+    await db.federationWorkspaceMap.create({
+      data: {
+        localWorkspaceId: ws,
+        targetApp: 'contact-ops',
+        targetWorkspaceId: old,
+        conflictTenantId: target,
+      },
+    });
+    const rowNow = () =>
+      db.federationWorkspaceMap.findFirstOrThrow({ where: { localWorkspaceId: ws } });
+    for (const named of [randomUUID(), null]) {
+      lookupTenant = named;
+      expect((await request(ownerToken)).status).toBe(409);
+      expect(await rowNow()).toMatchObject({ targetWorkspaceId: old, conflictTenantId: target });
+    }
+    expect(remoteCalls).toBe(0);
+    lookupTenant = target;
+    expect((await request(ownerToken)).status).toBe(201);
+    expect(await rowNow()).toMatchObject({ targetWorkspaceId: target, conflictTenantId: null });
+    expect(app.get(FederationWorkspaceMapService).isConflicted(ws, 'contact-ops')).toBe(false);
+    expect(app.get(FederationWorkspaceMapService).resolveSync(ws, 'contact-ops')).toBe(target);
   });
   it('serializes concurrent replay onto exactly one map', async () => {
     const responses = await Promise.all([request(ownerToken), request(ownerToken)]);
