@@ -17,6 +17,7 @@ import { CurrentUser } from '../decorators/current-user.decorator';
 import { BrigadeTokenSource } from '../federation/brigade-token-source';
 import { FederationWorkspaceMapService } from '../federation/federation-workspace-map.service';
 import { ContactOpsOrgLookupClient } from '../../contact-ops/contact-ops-org-lookup.client';
+import { canonicalTenantId, sameTenant } from '../../contact-ops/tenant-id';
 import { PrismaService } from '../../prisma/prisma.service';
 import { MembershipService } from './membership.service';
 import { tenancyEnabled } from './feature-flags';
@@ -54,7 +55,7 @@ export class ContactLinkController {
     const sourceWorkspace = await this.prisma.workspace.findUnique({ where: { id: workspaceId } });
     if (!sourceWorkspace || sourceWorkspace.status !== 'active')
       throw new ForbiddenException('Active workspace required.');
-    const target = dto.target_workspace_id.toLowerCase();
+    const target = canonicalTenantId(dto.target_workspace_id);
     const where = {
       localWorkspaceId_targetApp: { localWorkspaceId: workspaceId, targetApp: 'contact-ops' },
     };
@@ -63,7 +64,9 @@ export class ContactLinkController {
     // the lookup below must then name exactly this target, and a person (this
     // owner) chose it. An unmarked row is never silently re-pointed.
     const repairFrom =
-      existing && existing.targetWorkspaceId !== target ? existing.targetWorkspaceId : null;
+      existing && !sameTenant(existing.targetWorkspaceId, target)
+        ? existing.targetWorkspaceId
+        : null;
     if (repairFrom && !existing!.conflictTenantId) {
       throw new ConflictException(
         'An existing Contact connection cannot be replaced by this action.',
@@ -82,7 +85,7 @@ export class ContactLinkController {
     if (answer.kind === 'dormant') {
       throw new ConflictException('Contact-Ops link is not available yet');
     }
-    if (answer.kind !== 'tenant' || answer.tenantId !== target) {
+    if (answer.kind !== 'tenant' || !sameTenant(answer.tenantId, target)) {
       throw new ConflictException(
         'Contact-Ops does not confirm this tenant for this workspace; no Customer connection was changed.',
       );
@@ -121,7 +124,7 @@ export class ContactLinkController {
       grant = envelope.result?.structuredContent;
       if (
         !grant ||
-        grant.tenant_id !== target ||
+        !sameTenant(grant.tenant_id, target) ||
         grant.role !== 'viewer' ||
         grant.client_id !== 'customer-ops' ||
         !grant.service_subject
@@ -155,7 +158,7 @@ export class ContactLinkController {
       // Proceed only over the row as it was checked: absent, already this
       // target, or the same conflicted row the lookup has just overruled.
       const stillAsChecked =
-        currentTarget === target ||
+        sameTenant(currentTarget, target) ||
         (currentTarget === null
           ? repairFrom === null
           : currentTarget === repairFrom && !!current!.conflictTenantId);

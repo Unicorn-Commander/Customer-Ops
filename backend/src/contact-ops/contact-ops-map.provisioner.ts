@@ -20,6 +20,7 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { FederationWorkspaceMapService } from '../common/federation/federation-workspace-map.service';
 import { ContactOpsOrgLookupClient } from './contact-ops-org-lookup.client';
+import { canonicalTenantId, sameTenant } from './tenant-id';
 
 export const CONTACT_OPS_TARGET_APP = 'contact-ops';
 
@@ -158,8 +159,10 @@ export class ContactOpsMapProvisioner {
       return { orgId, rowTenantId, status: 'unconfirmed', reason: answer.reason };
     }
     if (apply) await this.compare(orgId, rowTenantId, answer.tenantId);
-    else if (answer.tenantId !== rowTenantId) this.logConflict(orgId, rowTenantId, answer.tenantId);
-    return answer.tenantId === rowTenantId
+    else if (!sameTenant(answer.tenantId, rowTenantId)) {
+      this.logConflict(orgId, rowTenantId, answer.tenantId);
+    }
+    return sameTenant(answer.tenantId, rowTenantId)
       ? { orgId, rowTenantId, status: 'confirmed', lookupTenantId: answer.tenantId }
       : { orgId, rowTenantId, status: 'conflict', lookupTenantId: answer.tenantId };
   }
@@ -183,7 +186,8 @@ export class ContactOpsMapProvisioner {
       }
       return { kind: 'skipped', reason: answer.kind };
     }
-    return { kind: 'tenant', tenantId: answer.tenantId };
+    // Canonical form (R4-2): the row is written, and compared, lowercase.
+    return { kind: 'tenant', tenantId: canonicalTenantId(answer.tenantId) };
   }
 
   private async writeRow(orgId: string, tenantId: string): Promise<ContactOpsMapOutcome> {
@@ -220,7 +224,7 @@ export class ContactOpsMapProvisioner {
     existing: string,
     tenantId: string,
   ): Promise<ContactOpsMapOutcome> {
-    const conflictTenantId = existing === tenantId ? null : tenantId;
+    const conflictTenantId = sameTenant(existing, tenantId) ? null : tenantId;
     if (conflictTenantId) this.logConflict(orgId, existing, tenantId);
     await this.setConflict(orgId, existing, conflictTenantId);
     return conflictTenantId

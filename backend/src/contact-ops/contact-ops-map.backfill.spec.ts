@@ -349,6 +349,52 @@ describe('ContactOpsMapProvisioner.backfill verifies EXISTING rows (GATE-212)', 
   });
 });
 
+describe('tenant ids are compared in canonical (lowercase) form (R4-2)', () => {
+  const ORG_UP = '0190c000-7e57-7000-8000-0000000000f4';
+  const TENANT_UP = 'abcdef00-0000-4000-8000-0000000000f4';
+
+  function upper(rowTenant: string, lookupTenant: string) {
+    const ctx = setup();
+    ctx.rows.length = 0;
+    ctx.rows.push({
+      localWorkspaceId: ORG_UP,
+      targetApp: 'contact-ops',
+      targetWorkspaceId: rowTenant,
+    });
+    ctx.answers[ORG_UP] = { kind: 'tenant', tenantId: lookupTenant, tenantSlug: 'up' };
+    return ctx;
+  }
+
+  it.each([
+    ['an UPPERCASE row and a lowercase answer', TENANT_UP.toUpperCase(), TENANT_UP],
+    ['a lowercase row and an UPPERCASE answer', TENANT_UP, TENANT_UP.toUpperCase()],
+  ])('%s are the same tenant: confirmed, never marked in conflict', async (_l, row, answer) => {
+    for (const apply of [false, true]) {
+      const { svc, rows } = upper(row, answer);
+      const report = await svc.backfill({ apply });
+      expect(report.existing.find((e) => e.orgId === ORG_UP)).toMatchObject({
+        status: 'confirmed',
+      });
+      expect(backfillExitCode(report)).toBe(0);
+      expect(rows[0].conflictTenantId ?? null).toBeNull();
+      expect(rows[0].targetWorkspaceId).toBe(row);
+    }
+    const { svc, rows } = upper(row, answer);
+    await expect(svc.ensureForOrg(ORG_UP)).resolves.toEqual({
+      kind: 'already',
+      tenantId: TENANT_UP,
+    });
+    expect(rows[0].conflictTenantId ?? null).toBeNull();
+  });
+
+  it('an UPPERCASE answer is written as the canonical lowercase tenant id', async () => {
+    const { svc, rows, answers } = setup();
+    answers[ORG_A] = { kind: 'tenant', tenantId: TENANT_A.toUpperCase(), tenantSlug: 'a' };
+    await expect(svc.ensureForOrg(ORG_A)).resolves.toEqual({ kind: 'written', tenantId: TENANT_A });
+    expect(rows.find((r) => r.localWorkspaceId === ORG_A)?.targetWorkspaceId).toBe(TENANT_A);
+  });
+});
+
 describe('the backfill command', () => {
   it('is a dry run unless --apply is given; refuses unknown flags', () => {
     expect(parseBackfillArgs([])).toEqual({ apply: false });

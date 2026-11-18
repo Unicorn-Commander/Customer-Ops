@@ -193,4 +193,37 @@ describe('ContactLinkController contact-ops writes are fenced by the org lookup 
       expect(tx.federationWorkspaceMap.upsert).not.toHaveBeenCalled();
     });
   });
+
+  describe('R4-2: tenant ids are compared in canonical (lowercase) form', () => {
+    it('an UPPERCASE lookup answer, owner grant and stored row all name the same tenant', async () => {
+      remote.mockImplementation(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          result: {
+            structuredContent: {
+              tenant_id: TENANT.toUpperCase(),
+              role: 'viewer',
+              client_id: 'customer-ops',
+              service_subject: 'svc-customer-ops',
+            },
+          },
+        }),
+      }));
+      const stored: Row = {
+        localWorkspaceId: WS,
+        targetApp: 'contact-ops',
+        targetWorkspaceId: TENANT.toUpperCase(),
+        conflictTenantId: null,
+      };
+      const { ctl, row } = setup(
+        { kind: 'tenant', tenantId: TENANT.toUpperCase(), tenantSlug: 'a' },
+        stored,
+      );
+      await expect(ctl.connect(owner, WS, dto(TENANT.toUpperCase()))).resolves.toMatchObject({
+        target_workspace_id: TENANT,
+      });
+      expect(row()).toMatchObject({ targetWorkspaceId: TENANT, conflictTenantId: null });
+    });
+  });
 });
