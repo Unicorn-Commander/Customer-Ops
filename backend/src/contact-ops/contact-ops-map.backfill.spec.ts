@@ -25,6 +25,21 @@ const TENANT_ROW_F2 = 'eeeeeeee-0000-4000-8000-0000000000f2';
 const TENANT_LOOKUP_F2 = 'ffffffff-0000-4000-8000-0000000000f2';
 const TENANT_ROW_F3 = 'eeeeeeee-0000-4000-8000-0000000000f3';
 
+/** The real conditional update the provisioner uses to set/clear the conflict mark. */
+function conflictUpdateMany(rows: Array<Record<string, any>>) {
+  return jest.fn(async ({ where, data }: any) => {
+    const r = rows.find(
+      (x) =>
+        x.localWorkspaceId === where.localWorkspaceId &&
+        x.targetApp === where.targetApp &&
+        x.targetWorkspaceId === where.targetWorkspaceId,
+    );
+    if (!r || (r.conflictTenantId ?? null) === data.conflictTenantId) return { count: 0 };
+    r.conflictTenantId = data.conflictTenantId;
+    return { count: 1 };
+  });
+}
+
 function setup() {
   const workspaces = [
     { id: ORG_A, status: 'active' },
@@ -34,7 +49,7 @@ function setup() {
     { id: ORG_DOWN, status: 'active' },
     { id: 'legacy-workspace', status: 'active' },
   ];
-  const rows = [
+  const rows: Array<Record<string, any>> = [
     { localWorkspaceId: ORG_MAPPED, targetApp: 'contact-ops', targetWorkspaceId: TENANT_KEPT },
   ];
   const prisma = {
@@ -59,6 +74,7 @@ function setup() {
         rows.push({ ...data });
         return data;
       }),
+      updateMany: conflictUpdateMany(rows),
     },
   };
   const answers: Record<string, OrgTenantLookup> = {
@@ -108,11 +124,13 @@ describe('ContactOpsMapProvisioner.backfill (C4)', () => {
       targetApp: 'contact-ops',
       targetWorkspaceId: TENANT_A,
     });
-    // The pre-existing row is never touched, even though the lookup disagrees.
+    // The pre-existing row keeps its tenant although the lookup disagrees; it is
+    // only marked in conflict (unroutable, R3-1).
     expect(rows).toContainEqual({
       localWorkspaceId: ORG_MAPPED,
       targetApp: 'contact-ops',
       targetWorkspaceId: TENANT_KEPT,
+      conflictTenantId: 'dddddddd-0000-4000-8000-00000000000d',
     });
     expect(fedMap.reload).toHaveBeenCalled();
 
@@ -152,7 +170,7 @@ function setupExisting() {
     { id: ORG_CONFLICT, status: 'active' },
     { id: ORG_UNCONFIRMED, status: 'active' },
   ];
-  const rows = [
+  const rows: Array<Record<string, any>> = [
     { localWorkspaceId: ORG_OK, targetApp: 'contact-ops', targetWorkspaceId: TENANT_OK },
     { localWorkspaceId: ORG_CONFLICT, targetApp: 'contact-ops', targetWorkspaceId: TENANT_ROW_F2 },
     {
@@ -180,7 +198,7 @@ function setupExisting() {
       upsert: jest.fn(),
       delete: jest.fn(),
       deleteMany: jest.fn(),
-      updateMany: jest.fn(),
+      updateMany: conflictUpdateMany(rows),
     },
   };
   const answers: Record<string, OrgTenantLookup> = {
@@ -215,7 +233,7 @@ describe('ContactOpsMapProvisioner.backfill verifies EXISTING rows (GATE-212)', 
   ];
 
   it.each([false, true])(
-    'apply=%s: asks the lookup for each mapped org, reports each row, modifies none',
+    'apply=%s: asks the lookup for each mapped org, reports each row, changes no tenant',
     async (apply) => {
       const { svc, rows, before, prisma, lookup } = setupExisting();
       const report = await svc.backfill({ apply });
@@ -224,14 +242,31 @@ describe('ContactOpsMapProvisioner.backfill verifies EXISTING rows (GATE-212)', 
       );
       expect(report.existing).toEqual(expected);
       expect(report.written).toBe(0);
-      // byte-identical, and no write path was even attempted
-      expect(JSON.stringify(rows)).toBe(before);
-      for (const m of ['create', 'update', 'upsert', 'delete', 'deleteMany', 'updateMany']) {
+      for (const m of ['create', 'update', 'upsert', 'delete', 'deleteMany']) {
         expect((prisma.federationWorkspaceMap as any)[m]).not.toHaveBeenCalled();
+      }
+      if (!apply) {
+        // a dry run is byte-identical: not even the conflict mark is written
+        expect(JSON.stringify(rows)).toBe(before);
+        expect(prisma.federationWorkspaceMap.updateMany).not.toHaveBeenCalled();
+      } else {
+        // --apply only marks the conflicting row unroutable (R3-1); every tenant is kept
+        const marked = JSON.parse(before);
+        marked[1].conflictTenantId = TENANT_LOOKUP_F2;
+        expect(rows).toEqual(marked);
       }
       expect(backfillExitCode(report)).toBe(2);
     },
   );
+
+  it('--apply clears the conflict mark once the lookup confirms the row (R3-1)', async () => {
+    const { svc, rows, answers } = setupExisting();
+    await svc.backfill({ apply: true });
+    expect(rows[1].conflictTenantId).toBe(TENANT_LOOKUP_F2);
+    answers[ORG_CONFLICT] = { kind: 'tenant', tenantId: TENANT_ROW_F2, tenantSlug: 'b' };
+    await svc.backfill({ apply: true });
+    expect(rows[1]).toMatchObject({ targetWorkspaceId: TENANT_ROW_F2, conflictTenantId: null });
+  });
 
   it('an unavailable lookup leaves the row unconfirmed (never confirmed)', async () => {
     const { svc, answers } = setupExisting();

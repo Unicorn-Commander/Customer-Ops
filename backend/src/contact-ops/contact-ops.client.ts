@@ -205,6 +205,10 @@ export class ContactOpsClient extends ContactOpsPort {
   ): Promise<ToolOutcome> {
     const base = this.baseUrl;
     if (!base) return { kind: 'unavailable' };
+    if (this.isConflicted(ctx)) {
+      this.logger.warn(`Contact-Ops MCP ${name} refused: the contact-ops map row is in conflict`);
+      return { kind: 'unavailable' };
+    }
 
     const body = {
       jsonrpc: '2.0',
@@ -422,7 +426,14 @@ export class ContactOpsClient extends ContactOpsPort {
     // could ever land, so the create path must answer 409 not_connected
     // (audit 9c049f6d Q2) instead of 503 unavailable.
     if (!this.baseUrl) return false;
+    // A row the org lookup contradicts keeps its tenant but is not routable (R3-1).
+    if (this.isConflicted(ctx)) return false;
     return this.federationMap.resolveSync(ctx.workspaceId, 'contact-ops') !== null;
+  }
+
+  /** The workspace's contact-ops row is in conflict with the org lookup: address no tenant. */
+  private isConflicted(ctx: FederationContext): boolean {
+    return this.federationMap.isConflicted(ctx.workspaceId, 'contact-ops');
   }
 
   async verifyContact(ctx: FederationContext, contactId: string): Promise<ContactVerdict> {
@@ -506,7 +517,7 @@ export class ContactOpsClient extends ContactOpsPort {
     ctx: FederationContext,
   ): Promise<FederatedWorkspaceProjection | null> {
     const base = this.baseUrl;
-    if (!base) return null;
+    if (!base || this.isConflicted(ctx)) return null;
 
     let res: Response;
     try {

@@ -6,8 +6,11 @@
  *   - the row's target is the lookup's tenant_id for THAT org id, written only
  *     when the answer names the same org id (the lookup client checks that);
  *     never a name, slug, email or first match;
- *   - an existing row is never changed here: if it disagrees with the lookup it
- *     is logged and left for a person to re-verify (GATE-175 point 3);
+ *   - an existing row's tenant is never changed here: if it disagrees with the
+ *     lookup it is logged, left for a person to re-verify (GATE-175 point 3),
+ *     and MARKED in conflict (conflict_tenant_id), which makes it unroutable
+ *     until a later lookup confirms it (R3-1). A row the lookup cannot confirm
+ *     (no tenant / unavailable) is left routable as it is (GATE-212);
  *   - no tenant / dormant / Contact-Ops unavailable -> no row, and the manual
  *     relationship create keeps answering 409 contact_ops_not_connected.
  */
@@ -96,7 +99,9 @@ export class ContactOpsMapProvisioner {
       orderBy: { localWorkspaceId: 'asc' },
     });
     for (const row of existingRows) {
-      report.existing.push(await this.verifyRow(row.localWorkspaceId, row.targetWorkspaceId));
+      report.existing.push(
+        await this.verifyRow(row.localWorkspaceId, row.targetWorkspaceId, apply),
+      );
     }
     const mapped = new Set(existingRows.map((r) => r.localWorkspaceId));
     const candidates = (
@@ -122,17 +127,25 @@ export class ContactOpsMapProvisioner {
     return report;
   }
 
-  /** Read-only: compares one existing row with the lookup; never writes. */
-  private async verifyRow(orgId: string, rowTenantId: string): Promise<ContactOpsMapRowCheck> {
+  /**
+   * Compares one existing row with the lookup. The row's tenant is never
+   * changed; with `apply` the conflict flag is set (conflict) or cleared
+   * (confirmed). A dry run writes nothing.
+   */
+  private async verifyRow(
+    orgId: string,
+    rowTenantId: string,
+    apply: boolean,
+  ): Promise<ContactOpsMapRowCheck> {
     const answer = await this.lookupFor(orgId);
     if (answer.kind !== 'tenant') {
       return { orgId, rowTenantId, status: 'unconfirmed', reason: answer.reason };
     }
-    if (answer.tenantId === rowTenantId) {
-      return { orgId, rowTenantId, status: 'confirmed', lookupTenantId: answer.tenantId };
-    }
-    this.compare(orgId, rowTenantId, answer.tenantId); // logs the disagreement
-    return { orgId, rowTenantId, status: 'conflict', lookupTenantId: answer.tenantId };
+    if (apply) await this.compare(orgId, rowTenantId, answer.tenantId);
+    else if (answer.tenantId !== rowTenantId) this.logConflict(orgId, rowTenantId, answer.tenantId);
+    return answer.tenantId === rowTenantId
+      ? { orgId, rowTenantId, status: 'confirmed', lookupTenantId: answer.tenantId }
+      : { orgId, rowTenantId, status: 'conflict', lookupTenantId: answer.tenantId };
   }
 
   private async lookupFor(
@@ -180,13 +193,51 @@ export class ContactOpsMapProvisioner {
     return { kind: 'written', tenantId };
   }
 
-  private compare(orgId: string, existing: string, tenantId: string): ContactOpsMapOutcome {
-    if (existing === tenantId) return { kind: 'already', tenantId };
+  /**
+   * The existing row against the lookup's tenant. Never changes the row's
+   * target: a disagreement marks the row in conflict (unroutable), an agreement
+   * clears a previous mark. Both writes are conditional on the row still
+   * pointing where it did, so a concurrent change is never stamped.
+   */
+  private async compare(
+    orgId: string,
+    existing: string,
+    tenantId: string,
+  ): Promise<ContactOpsMapOutcome> {
+    const conflictTenantId = existing === tenantId ? null : tenantId;
+    if (conflictTenantId) this.logConflict(orgId, existing, tenantId);
+    await this.setConflict(orgId, existing, conflictTenantId);
+    return conflictTenantId
+      ? { kind: 'conflict', existingTenantId: existing, lookupTenantId: tenantId }
+      : { kind: 'already', tenantId };
+  }
+
+  private logConflict(orgId: string, existing: string, tenantId: string): void {
     this.logger.error(
       `contact-ops map for org ${orgId} points at tenant ${existing} but the Contact-Ops ` +
-        `lookup answers ${tenantId}; NOT overwritten — a person must re-verify this row (GATE-175).`,
+        `lookup answers ${tenantId}; NOT overwritten and NOT routable until a person ` +
+        're-verifies this row (GATE-175).',
     );
-    return { kind: 'conflict', existingTenantId: existing, lookupTenantId: tenantId };
+  }
+
+  private async setConflict(
+    orgId: string,
+    rowTenantId: string,
+    conflictTenantId: string | null,
+  ): Promise<void> {
+    const { count } = await this.prisma.federationWorkspaceMap.updateMany({
+      where: {
+        localWorkspaceId: orgId,
+        targetApp: CONTACT_OPS_TARGET_APP,
+        targetWorkspaceId: rowTenantId,
+        // Only when the mark actually changes (SQL NULL never equals a value).
+        ...(conflictTenantId === null
+          ? { conflictTenantId: { not: null } }
+          : { OR: [{ conflictTenantId: null }, { conflictTenantId: { not: conflictTenantId } }] }),
+      },
+      data: { conflictTenantId },
+    });
+    if (count > 0) await this.federationMap.reload();
   }
 
   private async currentTarget(orgId: string): Promise<string | null> {

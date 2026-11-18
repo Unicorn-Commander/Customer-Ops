@@ -11,7 +11,7 @@ import { BrigadeTokenSource } from '../common/federation/brigade-token-source';
  * ever needs a real mapping.
  */
 function makeFedMap(mapped: string | null = null) {
-  return { resolveSync: jest.fn().mockReturnValue(mapped) } as any;
+  return { resolveSync: jest.fn().mockReturnValue(mapped), isConflicted: jest.fn(() => false) } as any;
 }
 
 /** These tests exercise STATIC auth mode (CONTACT_OPS_SERVICE_TOKEN forwarded),
@@ -212,7 +212,10 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
             }),
           );
         }) as any;
-        const fed = { resolveSync: jest.fn((ws: string) => TENANTS[ws] ?? null) } as any;
+        const fed = {
+          resolveSync: jest.fn((ws: string) => TENANTS[ws] ?? null),
+          isConflicted: jest.fn(() => false),
+        } as any;
         return new ContactOpsClient(makeConfig(env), makeBrigade(), fed);
       };
       beforeEach(() => (seenTenants.length = 0));

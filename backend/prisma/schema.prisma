@@ -949,6 +949,10 @@ model FederationWorkspaceMap {
   localWorkspaceId  String   @map("local_workspace_id")
   targetApp         String   @map("target_app")
   targetWorkspaceId String   @map("target_workspace_id")
+  // Set (to the tenant the Contact-Ops org lookup names) when the lookup
+  // contradicts this row; a row in conflict keeps its target but is NOT routable.
+  // Cleared only when a later lookup confirms the row (R3-1, GATE-175).
+  conflictTenantId  String?  @map("conflict_tenant_id")
   createdAt         DateTime @default(now()) @map("created_at")
   updatedAt         DateTime @updatedAt @map("updated_at")
 

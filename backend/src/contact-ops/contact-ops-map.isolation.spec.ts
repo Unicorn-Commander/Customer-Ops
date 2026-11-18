@@ -61,25 +61,34 @@ function json(status: number, body: unknown): Response {
   return { ok: status >= 200 && status < 300, status, json: async () => body } as Response;
 }
 
+type MapRow = {
+  localWorkspaceId: string;
+  targetApp: string;
+  targetWorkspaceId: string;
+  conflictTenantId?: string | null;
+};
+
 /** In-memory federation_workspace_map with the real unique key. */
-function makePrisma() {
-  const rows: Array<{ localWorkspaceId: string; targetApp: string; targetWorkspaceId: string }> =
-    [];
+function makePrisma(pre: MapRow[] = []) {
+  const rows: MapRow[] = pre.map((r) => ({ ...r }));
+  const find = (k: { localWorkspaceId: string; targetApp: string }) =>
+    rows.find((r) => r.localWorkspaceId === k.localWorkspaceId && r.targetApp === k.targetApp);
   return {
     rows,
     federationWorkspaceMap: {
       findMany: jest.fn(async () => rows.map((r) => ({ ...r }))),
-      findUnique: jest.fn(async ({ where }: any) => {
-        const k = where.localWorkspaceId_targetApp;
-        return (
-          rows.find(
-            (r) => r.localWorkspaceId === k.localWorkspaceId && r.targetApp === k.targetApp,
-          ) ?? null
-        );
-      }),
+      findUnique: jest.fn(async ({ where }: any) => find(where.localWorkspaceId_targetApp) ?? null),
       create: jest.fn(async ({ data }: any) => {
         rows.push({ ...data });
         return data;
+      }),
+      updateMany: jest.fn(async ({ where, data }: any) => {
+        const r = find(where);
+        if (!r || (where.targetWorkspaceId && r.targetWorkspaceId !== where.targetWorkspaceId)) {
+          return { count: 0 };
+        }
+        Object.assign(r, data);
+        return { count: 1 };
       }),
     },
   };
@@ -127,7 +136,8 @@ describe('contact-ops map isolation across orgs (C3)', () => {
   let svc: CustomersService;
   let prisma: ReturnType<typeof makePrisma>;
 
-  beforeEach(async () => {
+  /** Boot the chain over `pre` (rows that existed before provisioning), then provision every org. */
+  async function setup(pre: MapRow[] = []) {
     addressed = [];
     txs = {};
     global.fetch = jest.fn(async (url: string, init: any) => {
@@ -171,7 +181,7 @@ describe('contact-ops map isolation across orgs (C3)', () => {
     }) as any;
 
     const config = { get: (k: string) => ENV[k] } as unknown as ConfigService;
-    prisma = makePrisma();
+    prisma = makePrisma(pre);
     const fedMap = new FederationWorkspaceMapService(prisma as any, config);
     const writer = new ContactOpsMapProvisioner(
       prisma as any,
@@ -195,7 +205,9 @@ describe('contact-ops map isolation across orgs (C3)', () => {
       }),
     } as unknown as WorkspaceContextService;
     svc = new CustomersService(workspaces, contact, dormant, dormant, dormant, dormant, dormant);
-  });
+  }
+
+  beforeEach(() => setup());
 
   afterEach(() => {
     global.fetch = origFetch;
@@ -203,9 +215,18 @@ describe('contact-ops map isolation across orgs (C3)', () => {
 
   it('the lookup mapped exactly A -> tenant A and B -> tenant B, and nothing else', () => {
     expect(prisma.rows).toEqual([
-      { localWorkspaceId: ORG_A, targetApp: 'contact-ops', targetWorkspaceId: TENANT_A },
-      { localWorkspaceId: ORG_B, targetApp: 'contact-ops', targetWorkspaceId: TENANT_B },
+      expect.objectContaining({
+        localWorkspaceId: ORG_A,
+        targetApp: 'contact-ops',
+        targetWorkspaceId: TENANT_A,
+      }),
+      expect.objectContaining({
+        localWorkspaceId: ORG_B,
+        targetApp: 'contact-ops',
+        targetWorkspaceId: TENANT_B,
+      }),
     ]);
+    expect(prisma.rows.every((r) => !r.conflictTenantId)).toBe(true);
   });
 
   it("org A's contact search only ever sees tenant A's people", async () => {
@@ -243,5 +264,72 @@ describe('contact-ops map isolation across orgs (C3)', () => {
     }
     expect(addressed).toEqual([]);
     expect(txs[org]).toBeUndefined();
+  });
+
+  describe('R3-1: a pre-existing row the lookup contradicts', () => {
+    const wrongA: MapRow = {
+      localWorkspaceId: ORG_A,
+      targetApp: 'contact-ops',
+      targetWorkspaceId: TENANT_B,
+    };
+
+    it('keeps its tenant but is marked in conflict and is NOT routable: search notConnected, create 409, no tenant contacted', async () => {
+      await setup([wrongA]);
+      expect(prisma.rows.find((r) => r.localWorkspaceId === ORG_A)).toMatchObject({
+        targetWorkspaceId: TENANT_B,
+        conflictTenantId: TENANT_A,
+      });
+      const search = await svc.searchContactsForUser(user, 'b', ORG_A);
+      expect(search).toEqual({ items: [], notConnected: true });
+      for (const contactId of ['pa-1', 'pb-1']) {
+        const err = await svc.createForUser(user, { contactId }, ORG_A).catch((e) => e);
+        expect(err).toBeInstanceOf(ConflictException);
+        expect(err.getResponse()).toMatchObject({ code: 'contact_ops_not_connected' });
+      }
+      expect(addressed).toEqual([]);
+      expect(txs[ORG_A]).toBeUndefined();
+      // Org B is untouched by A's conflict.
+      const b = await svc.searchContactsForUser(user, 'b', ORG_B);
+      expect(b.items.map((c) => c.contactId)).toEqual(['pb-1']);
+      expect(addressed).toEqual([TENANT_B]);
+    });
+
+    it('a later lookup that confirms the row clears the conflict and routes it again', async () => {
+      await setup([wrongA]);
+      const saved = LOOKUP[ORG_A];
+      LOOKUP[ORG_A] = {
+        status: 200,
+        body: { ops_center_org_id: ORG_A, tenant_id: TENANT_B, tenant_slug: 'b' },
+      };
+      try {
+        const fedMap = new FederationWorkspaceMapService(
+          prisma as any,
+          {
+            get: (k: string) => ENV[k],
+          } as unknown as ConfigService,
+        );
+        const writer = new ContactOpsMapProvisioner(
+          prisma as any,
+          new ContactOpsOrgLookupClient({ get: (k: string) => ENV[k] } as unknown as ConfigService),
+          fedMap,
+        );
+        expect(await writer.ensureForOrg(ORG_A)).toEqual({ kind: 'already', tenantId: TENANT_B });
+        expect(prisma.rows.find((r) => r.localWorkspaceId === ORG_A)?.conflictTenantId).toBeNull();
+      } finally {
+        LOOKUP[ORG_A] = saved;
+      }
+    });
+
+    it('an UNCONFIRMED row (lookup: no tenant) stays routable exactly as before (GATE-212)', async () => {
+      await setup([
+        { localWorkspaceId: ORG_NONE, targetApp: 'contact-ops', targetWorkspaceId: TENANT_A },
+      ]);
+      expect(
+        prisma.rows.find((r) => r.localWorkspaceId === ORG_NONE)?.conflictTenantId,
+      ).toBeFalsy();
+      const search = await svc.searchContactsForUser(user, 'b', ORG_NONE);
+      expect(search.notConnected).toBe(false);
+      expect(addressed).toEqual([TENANT_A]);
+    });
   });
 });
