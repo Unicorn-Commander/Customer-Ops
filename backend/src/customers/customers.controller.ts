@@ -75,6 +75,18 @@ export class CustomersController {
     return this.customers.pipelineForUser(user, workspaceId, withContacts !== 'false');
   }
 
+  // Declared before ':id' so "contact-search" is not read as a customer id.
+  @Get('contact-search')
+  @ApiOperation({ summary: "Type-ahead search of this workspace's Contact-Ops contacts." })
+  @RequireScopes('read:customers')
+  async searchContacts(
+    @CurrentUser() user: AuthedUser,
+    @Param('workspaceId') workspaceId: string,
+    @Query('q') q?: string,
+  ) {
+    return this.customers.searchContactsForUser(user, q ?? '', workspaceId);
+  }
+
   @Post()
   @ApiOperation({ summary: 'Create a relationship keyed on a federated contactId.' })
   @RequireScopes('write:customers')

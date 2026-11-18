@@ -1798,6 +1798,32 @@ describe('CustomersService — *ForUser audit side-effects (Phase 7; AuditServic
     });
   });
 
+  describe('searchContactsForUser — the picker feed (CO-2)', () => {
+    it('searches the workspace\'s Contact-Ops contacts and returns id + name + email only', async () => {
+      const listContacts = jest.fn().mockResolvedValue({
+        items: [
+          { contactId: 'p-1', displayName: 'Jane Lead', primaryEmail: 'jane@example.com', tags: ['x'], etag: 'e' },
+        ],
+        count: 1,
+        nextCursor: null,
+      });
+      const { svc } = makeAuditedService({ contact: { listContacts } });
+      const out = await svc.searchContactsForUser(aaron, 'jan', WS);
+      expect(listContacts).toHaveBeenCalledWith(
+        expect.objectContaining({ workspaceId: WS }),
+        expect.objectContaining({ query: 'jan', limit: 10 }),
+      );
+      expect(out).toEqual([{ contactId: 'p-1', displayName: 'Jane Lead', primaryEmail: 'jane@example.com' }]);
+    });
+
+    it('a blank query does not hit Contact-Ops', async () => {
+      const listContacts = jest.fn();
+      const { svc } = makeAuditedService({ contact: { listContacts } });
+      await expect(svc.searchContactsForUser(aaron, '  ', WS)).resolves.toEqual([]);
+      expect(listContacts).not.toHaveBeenCalled();
+    });
+  });
+
   it('updateForUser → audit UPDATE / customer / {fields:[...]} listing the patched keys', async () => {
     const { svc, audit, lastTx } = makeAuditedService();
     const { tx } = makeTx(makeRow({ ownerUserKey: 'old' }));
