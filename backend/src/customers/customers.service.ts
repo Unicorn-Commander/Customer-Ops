@@ -33,6 +33,7 @@ import {
   NotFoundException,
   Optional,
   ServiceUnavailableException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { AuditAction, CustomerActivityKind, Prisma, RelationshipStage, User } from '@prisma/client';
@@ -470,6 +471,22 @@ export class CustomersService {
   ) {
     const ucUid = ucUidOf(user);
     const workspaceId = await this.workspaces.resolveAuthorized(user, requestedWorkspaceId);
+    // The manual create path must point at a REAL Contact-Ops person for THIS
+    // workspace — never a dangling lead. Checked before any row is written.
+    const verdict = await this.contactOps.verifyContact(
+      { workspaceId, ucUid: ucUid || null },
+      dto.contactId,
+    );
+    if (verdict === 'missing') {
+      throw new UnprocessableEntityException(
+        'That contact does not exist in your Contact-Ops workspace',
+      );
+    }
+    if (verdict === 'unavailable') {
+      throw new ServiceUnavailableException(
+        'Contact-Ops is unavailable, so the contact could not be verified. Try again shortly.',
+      );
+    }
     const row = await this.workspaces.runInWorkspace(workspaceId, ucUid, (tx) =>
       this.createInTx(tx, dto, ucUid),
     );

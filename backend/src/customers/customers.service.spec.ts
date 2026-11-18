@@ -1,4 +1,11 @@
-import { BadRequestException, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  NotFoundException,
+  ServiceUnavailableException,
+  UnprocessableEntityException,
+} from '@nestjs/common';
 import { AuditAction, CustomerActivityKind, RelationshipStage, User } from '@prisma/client';
 import { CustomersService } from './customers.service';
 import { WorkspaceContextService } from '../common/workspace/workspace-context.service';
@@ -171,6 +178,7 @@ function makeService(opts?: {
     getContactSummaries: jest.fn().mockResolvedValue(new Map()),
     listContacts: jest.fn().mockResolvedValue({ items: [], count: 0, nextCursor: null }),
     getWorkspaceProjection: jest.fn().mockResolvedValue(null),
+    verifyContact: jest.fn().mockResolvedValue('exists'),
     ...(opts?.contact ?? {}),
   } as any;
 
@@ -1692,6 +1700,7 @@ describe('CustomersService — *ForUser audit side-effects (Phase 7; AuditServic
       getContactSummaries: jest.fn().mockResolvedValue(new Map()),
       listContacts: jest.fn().mockResolvedValue({ items: [], count: 0, nextCursor: null }),
       getWorkspaceProjection: jest.fn().mockResolvedValue(null),
+      verifyContact: jest.fn().mockResolvedValue('exists'),
       ...(opts?.contact ?? {}),
     } as any;
     const dormant = {
@@ -1749,6 +1758,44 @@ describe('CustomersService — *ForUser audit side-effects (Phase 7; AuditServic
         details: { contactId: 'contact-9', stage: RelationshipStage.LEAD },
       }),
     );
+  });
+
+  describe('createForUser — the contact must exist in Contact-Ops (CO-1)', () => {
+    it('unknown contact -> 422 and NO row written', async () => {
+      const verifyContact = jest.fn().mockResolvedValue('missing');
+      const { svc, lastTx } = makeAuditedService({ contact: { verifyContact } });
+      const { tx } = makeTx(makeRow());
+      lastTx.current = tx;
+      const err = await svc
+        .createForUser(aaron, { contactId: 'E2E Test Contact' }, WS)
+        .catch((e) => e);
+      expect(err).toBeInstanceOf(UnprocessableEntityException);
+      expect(err.getStatus()).toBe(422);
+      expect(err.message).toBe('That contact does not exist in your Contact-Ops workspace');
+      expect(verifyContact).toHaveBeenCalledWith(
+        expect.objectContaining({ workspaceId: WS }),
+        'E2E Test Contact',
+      );
+      expect(tx.customer.create).not.toHaveBeenCalled();
+    });
+
+    it('Contact-Ops unreachable/erroring -> 503 and NO row written', async () => {
+      const verifyContact = jest.fn().mockResolvedValue('unavailable');
+      const { svc, lastTx } = makeAuditedService({ contact: { verifyContact } });
+      const { tx } = makeTx(makeRow());
+      lastTx.current = tx;
+      const err = await svc.createForUser(aaron, { contactId: 'c-1' }, WS).catch((e) => e);
+      expect(err).toBeInstanceOf(ServiceUnavailableException);
+      expect(tx.customer.create).not.toHaveBeenCalled();
+    });
+
+    it('a real contact id -> row created', async () => {
+      const { svc, lastTx } = makeAuditedService();
+      const { tx } = makeTx(makeRow());
+      lastTx.current = tx;
+      await svc.createForUser(aaron, { contactId: 'c-1' }, WS);
+      expect(tx.customer.create).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('updateForUser → audit UPDATE / customer / {fields:[...]} listing the patched keys', async () => {

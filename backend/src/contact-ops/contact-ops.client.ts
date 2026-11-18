@@ -37,7 +37,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { BrigadeTokenSource } from '../common/federation/brigade-token-source';
 import { FederationWorkspaceMapService } from '../common/federation/federation-workspace-map.service';
-import { ContactOpsPort, FederationContext } from './contact-ops.port';
+import { ContactOpsPort, ContactVerdict, FederationContext } from './contact-ops.port';
 import {
   ContactIdentityInput,
   ContactUpsertResult,
@@ -70,6 +70,15 @@ interface JsonRpcResponse {
   result?: JsonRpcResult;
   error?: { code: number; message: string };
 }
+
+type ToolOutcome =
+  | { kind: 'ok'; data: Record<string, unknown> }
+  | { kind: 'rejected' }
+  | { kind: 'unavailable' };
+
+/** Contact-Ops tool-error text meaning "that person id is not a valid/known one". */
+const NOT_FOUND_RE =
+  /not[\s_-]*found|no such|does not exist|unknown person|invalid|uuid|validation/i;
 
 @Injectable()
 export class ContactOpsClient extends ContactOpsPort {
@@ -180,8 +189,22 @@ export class ContactOpsClient extends ContactOpsPort {
     name: string,
     args: Record<string, unknown>,
   ): Promise<Record<string, unknown> | null> {
+    const r = await this.callToolOutcome(ctx, name, args);
+    return r.kind === 'ok' ? r.data : null;
+  }
+
+  /**
+   * Like `callTool` but keeps the failure class: `rejected` = Contact-Ops
+   * answered and said the request/id is not valid (unknown person, bad id),
+   * `unavailable` = transport/auth/5xx/unparseable/dormant. Never throws.
+   */
+  private async callToolOutcome(
+    ctx: FederationContext,
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<ToolOutcome> {
     const base = this.baseUrl;
-    if (!base) return null;
+    if (!base) return { kind: 'unavailable' };
 
     const body = {
       jsonrpc: '2.0',
@@ -199,12 +222,12 @@ export class ContactOpsClient extends ContactOpsPort {
       });
     } catch (err) {
       this.logger.warn(`Contact-Ops MCP ${name} transport error: ${(err as Error).message}`);
-      return null;
+      return { kind: 'unavailable' };
     }
 
     if (!res.ok) {
       this.logger.warn(`Contact-Ops MCP ${name} HTTP ${res.status}`);
-      return null;
+      return { kind: 'unavailable' };
     }
 
     let payload: JsonRpcResponse;
@@ -212,32 +235,35 @@ export class ContactOpsClient extends ContactOpsPort {
       payload = (await res.json()) as JsonRpcResponse;
     } catch (err) {
       this.logger.warn(`Contact-Ops MCP ${name} non-JSON response: ${(err as Error).message}`);
-      return null;
+      return { kind: 'unavailable' };
     }
 
     if (payload.error) {
       this.logger.warn(`Contact-Ops MCP ${name} JSON-RPC error: ${payload.error.message}`);
-      return null;
+      // -32602 = invalid params (e.g. a non-UUID person_id): the id is bad.
+      return payload.error.code === -32602 ? { kind: 'rejected' } : { kind: 'unavailable' };
     }
 
     const result = payload.result;
     if (!result || result.isError) {
       const text = result?.content?.[0]?.text;
       this.logger.warn(`Contact-Ops MCP ${name} tool error: ${text ?? 'unknown'}`);
-      return null;
+      return result && text && NOT_FOUND_RE.test(text)
+        ? { kind: 'rejected' }
+        : { kind: 'unavailable' };
     }
 
     // Prefer the typed structuredContent; fall back to parsing content[0].text.
-    if (result.structuredContent) return result.structuredContent;
+    if (result.structuredContent) return { kind: 'ok', data: result.structuredContent };
     const text = result.content?.find((c) => c.type === 'text')?.text;
     if (text) {
       try {
-        return JSON.parse(text) as Record<string, unknown>;
+        return { kind: 'ok', data: JSON.parse(text) as Record<string, unknown> };
       } catch {
-        return null;
+        return { kind: 'unavailable' };
       }
     }
-    return null;
+    return { kind: 'unavailable' };
   }
 
   private async fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
@@ -388,6 +414,15 @@ export class ContactOpsClient extends ContactOpsPort {
         ? (raw['recent_events'] as Array<Record<string, unknown>>)
         : [],
     };
+  }
+
+  async verifyContact(ctx: FederationContext, contactId: string): Promise<ContactVerdict> {
+    if (!contactId || contactId.startsWith('prov:')) return 'missing';
+    const r = await this.callToolOutcome(ctx, 'get_person', { person_id: contactId });
+    if (r.kind === 'rejected') return 'missing';
+    if (r.kind === 'unavailable') return 'unavailable';
+    const pid = r.data['person_id'];
+    return typeof pid === 'string' && pid ? 'exists' : 'missing';
   }
 
   async getContactSummaries(
