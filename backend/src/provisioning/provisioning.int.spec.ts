@@ -412,9 +412,23 @@ suite('contract D provisioning on a real PostgreSQL', () => {
       await db.federationWorkspaceMap.create({
         data: { localWorkspaceId: orgId, targetApp: 'contact-ops', targetWorkspaceId: kept },
       });
-      answers[orgId] = tenantOf(orgId, randomUUID());
+      const named = randomUUID();
+      answers[orgId] = tenantOf(orgId, named);
       expect((await provision(orgId)).status).toBe(200);
-      expect(await mapOf(orgId)).toMatchObject({ targetWorkspaceId: kept });
+      // R3-1: tenant kept, marked in conflict (unroutable); a replay is idempotent
+      expect(await mapOf(orgId)).toMatchObject({
+        targetWorkspaceId: kept,
+        conflictTenantId: named,
+      });
+      expect((await provision(orgId)).status).toBe(200);
+      expect(await mapOf(orgId)).toMatchObject({
+        targetWorkspaceId: kept,
+        conflictTenantId: named,
+      });
+      // cleared only when a later lookup confirms the row
+      answers[orgId] = tenantOf(orgId, kept);
+      expect((await provision(orgId)).status).toBe(200);
+      expect(await mapOf(orgId)).toMatchObject({ targetWorkspaceId: kept, conflictTenantId: null });
     });
 
     it('C2: 404 (no tenant for the org) writes no row; provisioning succeeds', async () => {
