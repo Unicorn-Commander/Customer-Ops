@@ -101,4 +101,67 @@ describe('ContactOpsOrgLookupClient', () => {
     }
     expect(fetchSpy).not.toHaveBeenCalled();
   });
+
+  describe('the failure answers (C2): no row, never a throw', () => {
+    it('404 and 422 mean "no tenant for that org"', async () => {
+      const client = new ContactOpsOrgLookupClient(makeConfig(LIVE));
+      global.fetch = fakeFetch({ [ORG_A]: { status: 404, body: { detail: 'x' } } }) as any;
+      await expect(client.lookupTenant(ORG_A)).resolves.toEqual({ kind: 'no_tenant' });
+      global.fetch = fakeFetch({ [ORG_A]: { status: 422, body: { detail: 'x' } } }) as any;
+      await expect(client.lookupTenant(ORG_A)).resolves.toEqual({ kind: 'no_tenant' });
+    });
+
+    it('a non-uuid org id is "no tenant" without asking Contact-Ops', async () => {
+      const fetchSpy = jest.fn();
+      global.fetch = fetchSpy as any;
+      const client = new ContactOpsOrgLookupClient(makeConfig(LIVE));
+      await expect(client.lookupTenant('org-acme')).resolves.toEqual({ kind: 'no_tenant' });
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it.each([401, 403, 500, 503])('HTTP %i is "unavailable"', async (status) => {
+      global.fetch = fakeFetch({ [ORG_A]: { status, body: { detail: 'x' } } }) as any;
+      const client = new ContactOpsOrgLookupClient(makeConfig(LIVE));
+      await expect(client.lookupTenant(ORG_A)).resolves.toMatchObject({ kind: 'unavailable' });
+    });
+
+    it('a transport error, a non-JSON body or a failed token mint is "unavailable"', async () => {
+      const client = new ContactOpsOrgLookupClient(makeConfig(LIVE));
+      global.fetch = jest.fn(async () => {
+        throw new Error('ECONNREFUSED');
+      }) as any;
+      await expect(client.lookupTenant(ORG_A)).resolves.toMatchObject({ kind: 'unavailable' });
+
+      global.fetch = jest.fn(async (url: string) =>
+        url === TOKEN_URL
+          ? res(200, { access_token: 'lookup-cc-token' })
+          : ({
+              ok: true,
+              status: 200,
+              json: async () => {
+                throw new SyntaxError('Unexpected token <');
+              },
+            } as unknown as Response),
+      ) as any;
+      await expect(client.lookupTenant(ORG_A)).resolves.toMatchObject({ kind: 'unavailable' });
+
+      const fresh = new ContactOpsOrgLookupClient(makeConfig(LIVE));
+      global.fetch = jest.fn(async () => res(401, { error: 'invalid_client' })) as any;
+      await expect(fresh.lookupTenant(ORG_A)).resolves.toMatchObject({ kind: 'unavailable' });
+    });
+
+    it('a lookup that hangs past CONTACT_OPS_TIMEOUT_MS is "unavailable"', async () => {
+      global.fetch = jest.fn((url: string, init: any) =>
+        url === TOKEN_URL
+          ? Promise.resolve(res(200, { access_token: 'lookup-cc-token' }))
+          : new Promise<Response>((_resolve, reject) => {
+              init.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+            }),
+      ) as any;
+      const client = new ContactOpsOrgLookupClient(
+        makeConfig({ ...LIVE, CONTACT_OPS_TIMEOUT_MS: '20' }),
+      );
+      await expect(client.lookupTenant(ORG_A)).resolves.toMatchObject({ kind: 'unavailable' });
+    });
+  });
 });

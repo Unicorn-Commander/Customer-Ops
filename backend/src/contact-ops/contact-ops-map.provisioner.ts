@@ -40,6 +40,16 @@ export class ContactOpsMapProvisioner {
   async ensureForOrg(orgId: string): Promise<ContactOpsMapOutcome> {
     const answer = await this.lookup.lookupTenant(orgId);
     if (answer.kind !== 'tenant') {
+      // No row. The relationship create keeps answering 409 until a replay or
+      // the re-run (scripts) finds a tenant.
+      if (answer.kind === 'no_tenant') {
+        this.logger.log(`contact-ops map: Contact-Ops has no tenant for org ${orgId}; no row`);
+      } else if (answer.kind !== 'dormant') {
+        this.logger.warn(
+          `contact-ops map: lookup for org ${orgId} ${answer.kind} (${answer.detail}); no row, ` +
+            'retried on the next provisioning replay or re-run',
+        );
+      }
       return { kind: 'skipped', reason: answer.kind };
     }
     return this.writeRow(orgId, answer.tenantId);

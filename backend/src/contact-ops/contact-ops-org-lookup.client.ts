@@ -19,7 +19,7 @@
  *
  * The answer is trusted only for the org that was asked: an answer naming
  * another org id (or a tenant id that is not a uuid) is a `mismatch`, never a
- * map.
+ * map. Never throws.
  */
 
 import { Injectable, Logger } from '@nestjs/common';
@@ -63,15 +63,25 @@ export class ContactOpsOrgLookupClient {
     );
   }
 
-  /** The Contact-Ops tenant for exactly this Ops-Center org id. */
+  /** The Contact-Ops tenant for exactly this Ops-Center org id. Never throws. */
   async lookupTenant(orgId: string): Promise<OrgTenantLookup> {
     if (!this.isConfigured()) return { kind: 'dormant' };
+    // Contact-Ops answers 422 for a non-uuid; no tenant can exist for one.
+    if (!UUID_RE.test(orgId)) return { kind: 'no_tenant' };
+    try {
+      return await this.ask(orgId);
+    } catch (err) {
+      return { kind: 'unavailable', detail: (err as Error).message || 'transport error' };
+    }
+  }
+
+  private async ask(orgId: string): Promise<OrgTenantLookup> {
     const base = this.env('CONTACT_OPS_BASE_URL')!.replace(/\/$/, '');
 
     const token = await this.lookupToken();
     if (!token) return { kind: 'unavailable', detail: 'no lookup token' };
 
-    const res = await fetch(
+    const res = await this.fetchWithTimeout(
       `${base}/api/service/ops-center-orgs/${encodeURIComponent(orgId)}/tenant`,
       {
         method: 'GET',
@@ -79,11 +89,13 @@ export class ContactOpsOrgLookupClient {
         headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
       },
     );
+    if (res.status === 404 || res.status === 422) return { kind: 'no_tenant' };
+    if (res.status === 401) this.cached = null;
     if (res.status !== 200) return { kind: 'unavailable', detail: `HTTP ${res.status}` };
     const body = (await res.json()) as Record<string, unknown>;
 
-    const answeredOrg = body['ops_center_org_id'];
-    const tenantId = body['tenant_id'];
+    const answeredOrg = body?.['ops_center_org_id'];
+    const tenantId = body?.['tenant_id'];
     if (typeof answeredOrg !== 'string' || answeredOrg.toLowerCase() !== orgId.toLowerCase()) {
       return { kind: 'mismatch', detail: 'answer names another org id' };
     }
@@ -101,7 +113,7 @@ export class ContactOpsOrgLookupClient {
   /** Client-credentials token of the dedicated lookup client, cached by exp. */
   private async lookupToken(): Promise<string | null> {
     if (this.cached && this.cached.expMs - 30_000 > Date.now()) return this.cached.token;
-    const res = await fetch(this.env('CONTACT_OPS_LOOKUP_TOKEN_URL')!, {
+    const res = await this.fetchWithTimeout(this.env('CONTACT_OPS_LOOKUP_TOKEN_URL')!, {
       method: 'POST',
       redirect: 'error',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -117,5 +129,17 @@ export class ContactOpsOrgLookupClient {
     const ttl = typeof json.expires_in === 'number' ? json.expires_in : 300;
     this.cached = { token: json.access_token, expMs: Date.now() + ttl * 1000 };
     return json.access_token;
+  }
+
+  private async fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+    const raw = Number(this.config.get<string>('CONTACT_OPS_TIMEOUT_MS'));
+    const ms = Number.isFinite(raw) && raw > 0 ? raw : 8000;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ms);
+    try {
+      return await fetch(url, { ...init, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
   }
 }

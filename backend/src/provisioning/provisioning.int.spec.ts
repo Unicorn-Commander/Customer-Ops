@@ -316,6 +316,7 @@ suite('contract D provisioning on a real PostgreSQL', () => {
     /** org id -> what the fake Contact-Ops lookup answers next (default 404). */
     let answers: Record<string, () => Response | Promise<Response>>;
     let asked: string[];
+    const HANG = () => json(599, {});
 
     function json(status: number, body: unknown): Response {
       return new Response(JSON.stringify(body), {
@@ -349,7 +350,14 @@ suite('contract D provisioning on a real PostgreSQL', () => {
           expect(init?.headers?.Authorization).toBe('Bearer lookup-cc');
           const org = decodeURIComponent(m[1]);
           asked.push(org);
-          return (answers[org] ?? (() => json(404, { detail: 'no tenant' })))();
+          const answer = answers[org] ?? (() => json(404, { detail: 'no tenant' }));
+          // A hung Contact-Ops: only the caller's abort signal ends it, as with real fetch.
+          if (answer === HANG) {
+            return new Promise<Response>((_resolve, reject) =>
+              init?.signal?.addEventListener('abort', () => reject(new Error('aborted'))),
+            );
+          }
+          return answer();
         }
         return realFetch(input, init);
       }) as typeof fetch;
@@ -396,6 +404,36 @@ suite('contract D provisioning on a real PostgreSQL', () => {
       answers[orgId] = tenantOf(orgId, randomUUID());
       expect((await provision(orgId)).status).toBe(200);
       expect(await mapOf(orgId)).toMatchObject({ targetWorkspaceId: kept });
+    });
+
+    it('C2: 404 (no tenant for the org) writes no row; provisioning succeeds', async () => {
+      const orgId = randomUUID();
+      expect((await provision(orgId)).status).toBe(201);
+      expect(asked).toEqual([orgId]);
+      expect(await mapOf(orgId)).toBeNull();
+    });
+
+    it('C2: 401, 503, a timeout or a refused connection writes no row; provisioning succeeds', async () => {
+      process.env.CONTACT_OPS_TIMEOUT_MS = '50';
+      const failures: Array<() => Response | Promise<Response>> = [
+        () => json(401, { detail: 'bad token' }),
+        () => json(503, { detail: 'cannot verify tokens' }),
+        HANG,
+        () => {
+          throw new TypeError('fetch failed');
+        },
+      ];
+      try {
+        for (const fail of failures) {
+          const orgId = randomUUID();
+          answers[orgId] = fail;
+          expect((await provision(orgId)).status).toBe(201);
+          expect(await mapOf(orgId)).toBeNull();
+          expect((await provision(orgId)).status).toBe(200);
+        }
+      } finally {
+        delete process.env.CONTACT_OPS_TIMEOUT_MS;
+      }
     });
 
     it('DORMANT: with the lookup client unset, no lookup is made and no row is written', async () => {

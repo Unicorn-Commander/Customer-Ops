@@ -87,7 +87,13 @@ export class ProvisioningService {
     created: boolean,
     ws: Workspace,
   ): Promise<{ created: boolean; view: WorkspaceStatusView }> {
-    await this.contactMap.ensureForOrg(ws.id);
+    // The map is best effort here: provisioning succeeds whatever the lookup
+    // or the map write does, and the next replay tries again.
+    try {
+      await this.contactMap.ensureForOrg(ws.id);
+    } catch (error) {
+      this.logger.warn(`contact-ops map for ${ws.id} not written: ${(error as Error).name}`);
+    }
     return { created, view: view(ws) };
   }
 
