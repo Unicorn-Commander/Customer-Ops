@@ -5,13 +5,17 @@ import { BrigadeTokenSource } from '../common/federation/brigade-token-source';
 
 /**
  * The federation workspace map (added with the per-workspace map in 0d09be3).
- * `resolveSync` returning null means "this workspace has no explicit mapping for
- * that app", and every client then falls back to ctx.workspaceId — i.e. exactly
- * the behaviour these specs were written against. Override per-test if a case
- * ever needs a real mapping.
+ * `routableTarget` is the request-time DB read of the workspace's contact-ops
+ * row (R5-2): null means no routable row (none, or in conflict), and the client
+ * then addresses no tenant at all. By default the row maps the test workspace
+ * onto itself ('ws-aaaa', CTX below), the addressing these specs were written
+ * against. Pass null for an unmapped workspace.
  */
-function makeFedMap(mapped: string | null = null) {
-  return { resolveSync: jest.fn().mockReturnValue(mapped), isConflicted: jest.fn(() => false) } as any;
+function makeFedMap(mapped: string | null = 'ws-aaaa') {
+  return {
+    resolveSync: jest.fn().mockReturnValue(mapped),
+    routableTarget: jest.fn(async () => mapped),
+  } as any;
 }
 
 /** These tests exercise STATIC auth mode (CONTACT_OPS_SERVICE_TOKEN forwarded),
@@ -100,8 +104,8 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
     // "connected" must be FALSE so create answers 409 not_connected, not 503.
     const client = new ContactOpsClient(makeConfig({}), makeBrigade(), makeFedMap('co-tenant-a'));
 
-    it('isWorkspaceConnected is false (mapped but no base URL)', () => {
-      expect(client.isWorkspaceConnected(CTX)).toBe(false);
+    it('isWorkspaceConnected is false (mapped but no base URL)', async () => {
+      await expect(client.isWorkspaceConnected(CTX)).resolves.toBe(false);
     });
 
     it('verifyContact -> not_connected (no fetch), NOT unavailable', async () => {
@@ -164,13 +168,13 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
         const c = new ContactOpsClient(makeConfig(env), makeBrigade(), makeFedMap(null));
         await expect(c.verifyContact(CTX, 'p1')).resolves.toBe('not_connected');
         expect(global.fetch).not.toHaveBeenCalled();
-        expect(c.isWorkspaceConnected(CTX)).toBe(false);
+        await expect(c.isWorkspaceConnected(CTX)).resolves.toBe(false);
       });
       it('unavailable (not not_connected) on a timeout for a MAPPED workspace', async () => {
         global.fetch = jest.fn().mockRejectedValue(new Error('timeout')) as any;
         const c = new ContactOpsClient(makeConfig(env), makeBrigade(), makeFedMap('co-tenant-a'));
         await expect(c.verifyContact(CTX, 'p1')).resolves.toBe('unavailable');
-        expect(c.isWorkspaceConnected(CTX)).toBe(true);
+        await expect(c.isWorkspaceConnected(CTX)).resolves.toBe(true);
       });
     });
 
@@ -214,7 +218,7 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
         }) as any;
         const fed = {
           resolveSync: jest.fn((ws: string) => TENANTS[ws] ?? null),
-          isConflicted: jest.fn(() => false),
+          routableTarget: jest.fn(async (ws: string) => TENANTS[ws] ?? null),
         } as any;
         return new ContactOpsClient(makeConfig(env), makeBrigade(), fed);
       };

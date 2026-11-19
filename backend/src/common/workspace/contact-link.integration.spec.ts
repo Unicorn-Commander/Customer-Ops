@@ -1,5 +1,5 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import { JwtService } from '@nestjs/jwt';
 import { randomUUID } from 'crypto';
@@ -11,6 +11,7 @@ import { WorkspaceAdminModule } from './workspace-admin.module';
 import { BrigadeTokenSource } from '../federation/brigade-token-source';
 import { FederationWorkspaceMapService } from '../federation/federation-workspace-map.service';
 import { __resetAccessListCacheForTests } from '../../auth/access-list';
+import { ContactOpsClient } from '../../contact-ops/contact-ops.client';
 const testUrl = process.env.CUSTOMER_ONBOARDING_TEST_DB_URL;
 const suite = testUrl ? describe : describe.skip;
 suite('Contact connection actual HTTP and isolated PostgreSQL', () => {
@@ -225,8 +226,49 @@ suite('Contact connection actual HTTP and isolated PostgreSQL', () => {
     lookupTenant = target;
     expect((await request(ownerToken)).status).toBe(201);
     expect(await rowNow()).toMatchObject({ targetWorkspaceId: target, conflictTenantId: null });
-    expect(app.get(FederationWorkspaceMapService).isConflicted(ws, 'contact-ops')).toBe(false);
+    await expect(
+      app.get(FederationWorkspaceMapService).routableTarget(ws, 'contact-ops'),
+    ).resolves.toBe(target);
     expect(app.get(FederationWorkspaceMapService).resolveSync(ws, 'contact-ops')).toBe(target);
+  });
+  it('R5-2: a conflict marked by ANOTHER process stops the very next Contact-Ops request', async () => {
+    expect((await request(ownerToken)).status).toBe(201);
+    const serverMap = app.get(FederationWorkspaceMapService);
+    const contact = new ContactOpsClient(
+      app.get(ConfigService),
+      { exchangedToken: jest.fn(async () => null) } as unknown as BrigadeTokenSource,
+      serverMap,
+    );
+    const inner = global.fetch;
+    const addressed: string[] = [];
+    global.fetch = jest.fn(async (url: any, options: any) => {
+      if (String(url) !== 'https://contact-owner-proof.invalid/mcp') return inner(url, options);
+      addressed.push(options.headers['X-Workspace-Id']);
+      return new Response(
+        JSON.stringify({ jsonrpc: '2.0', id: 1, result: { structuredContent: { items: [] } } }),
+      );
+    }) as any;
+    // The backfill command's own process: its own PostgreSQL connection.
+    const other = new PrismaService({ datasources: { db: { url: testUrl! } } });
+    try {
+      const ctx = { workspaceId: ws, ucUid: null };
+      await contact.listContacts(ctx, {});
+      expect(addressed).toEqual([target]);
+      await other.federationWorkspaceMap.update({
+        where: { localWorkspaceId_targetApp: { localWorkspaceId: ws, targetApp: 'contact-ops' } },
+        data: { conflictTenantId: randomUUID() },
+      });
+      // The server's cache still holds the row as routable; no reload has run.
+      expect(serverMap.resolveSync(ws, 'contact-ops')).toBe(target);
+      await contact.listContacts(ctx, { query: 'ada' });
+      await expect(contact.verifyContact(ctx, randomUUID())).resolves.toBe('not_connected');
+      await expect(contact.getWorkspaceProjection(ctx)).resolves.toBeNull();
+      await expect(contact.isWorkspaceConnected(ctx)).resolves.toBe(false);
+      expect(addressed).toEqual([target]);
+    } finally {
+      global.fetch = inner;
+      await other.$disconnect();
+    }
   });
   it('serializes concurrent replay onto exactly one map', async () => {
     const responses = await Promise.all([request(ownerToken), request(ownerToken)]);

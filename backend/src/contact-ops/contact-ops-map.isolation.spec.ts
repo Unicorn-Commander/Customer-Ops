@@ -78,6 +78,8 @@ function makePrisma(pre: MapRow[] = []) {
     // One transaction holding the R5-1 lock: the fake runs it on itself.
     $transaction: jest.fn(async (fn: any): Promise<any> => fn(prisma)),
     $executeRaw: jest.fn(async () => 1),
+    // The backfill's candidate listing: every org here already has its row or none.
+    workspace: { findMany: jest.fn(async () => []) },
     federationWorkspaceMap: {
       findMany: jest.fn(async () => rows.map((r) => ({ ...r }))),
       findUnique: jest.fn(async ({ where }: any) => find(where.localWorkspaceId_targetApp) ?? null),
@@ -140,6 +142,8 @@ describe('contact-ops map isolation across orgs (C3)', () => {
   let svc: CustomersService;
   let prisma: ReturnType<typeof makePrisma>;
   let contact: ContactOpsClient;
+  /** The server process's own map service (its per-process cache). */
+  let serverMap: FederationWorkspaceMapService;
 
   /** Boot the chain over `pre` (rows that existed before provisioning), then provision every org. */
   async function setup(pre: MapRow[] = []) {
@@ -188,6 +192,7 @@ describe('contact-ops map isolation across orgs (C3)', () => {
     const config = { get: (k: string) => ENV[k] } as unknown as ConfigService;
     prisma = makePrisma(pre);
     const fedMap = new FederationWorkspaceMapService(prisma as any, config);
+    serverMap = fedMap;
     const writer = new ContactOpsMapProvisioner(
       prisma as any,
       new ContactOpsOrgLookupClient(config),
@@ -384,6 +389,111 @@ describe('contact-ops map isolation across orgs (C3)', () => {
       const search = await svc.searchContactsForUser(user, 'b', ORG_NONE);
       expect(search.notConnected).toBe(false);
       expect(addressed).toEqual([TENANT_A]);
+    });
+  });
+
+  describe('R5-2: routability is read from the database at the request, never from a cache', () => {
+    const config = { get: (k: string) => ENV[k] } as unknown as ConfigService;
+    const ctx = { workspaceId: ORG_A, ucUid: 'kc-ada-sub' };
+
+    /** The backfill command: its OWN process, its own map service, marking A's row. */
+    async function backfillMarksA() {
+      const saved = LOOKUP[ORG_A];
+      LOOKUP[ORG_A] = {
+        status: 200,
+        body: { ops_center_org_id: ORG_A, tenant_id: TENANT_B, tenant_slug: 'b' },
+      };
+      try {
+        const own = new FederationWorkspaceMapService(prisma as any, config);
+        const writer = new ContactOpsMapProvisioner(
+          prisma as any,
+          new ContactOpsOrgLookupClient(config),
+          own,
+        );
+        await writer.backfill({ apply: true });
+      } finally {
+        LOOKUP[ORG_A] = saved;
+      }
+      expect(prisma.rows.find((r) => r.localWorkspaceId === ORG_A)).toMatchObject({
+        targetWorkspaceId: TENANT_A,
+        conflictTenantId: TENANT_B,
+      });
+    }
+
+    /** Every public read and write for org A; returns every URL fetched meanwhile. */
+    async function everyRequestForA(): Promise<string[]> {
+      const inner = global.fetch;
+      const fetched: string[] = [];
+      global.fetch = jest.fn((url: string, init: any) => {
+        fetched.push(String(url));
+        return inner(url, init);
+      }) as any;
+      try {
+        expect((await contact.listContacts(ctx, {})).items).toEqual([]);
+        expect((await contact.listContacts(ctx, { query: 'a' })).items).toEqual([]);
+        expect(await contact.getContactSummaries(ctx, ['pa-1'])).toEqual(new Map());
+        expect(await contact.getContact(ctx, 'pa-1')).toBeNull();
+        expect(await contact.verifyContact(ctx, 'pa-1')).toBe('not_connected');
+        expect(await contact.getWorkspaceProjection(ctx)).toBeNull();
+        expect(
+          await contact.upsertContact(ctx, {
+            source: 'lead-intake',
+            sourceDedupKey: 'lead-ada-example',
+            displayName: 'Ada Example',
+            email: 'ada@example.com',
+          }),
+        ).toBeNull();
+        expect(await svc.searchContactsForUser(user, 'a', ORG_A)).toEqual({
+          items: [],
+          notConnected: true,
+        });
+        const err = await svc.createForUser(user, { contactId: 'pa-1' }, ORG_A).catch((e) => e);
+        expect(err).toBeInstanceOf(ConflictException);
+      } finally {
+        global.fetch = inner;
+      }
+      return fetched;
+    }
+
+    it('a conflict marked by ANOTHER process is enforced on the very next request: no outbound call', async () => {
+      expect((await svc.searchContactsForUser(user, 'a', ORG_A)).notConnected).toBe(false);
+      expect(addressed).toEqual([TENANT_A]);
+      addressed = [];
+      await backfillMarksA(); // the server's own cache is NOT reloaded
+      expect(await everyRequestForA()).toEqual([]);
+      expect(addressed).toEqual([]);
+    });
+
+    it('a failed reload never makes a conflicted row routable', async () => {
+      await backfillMarksA();
+      prisma.federationWorkspaceMap.findMany.mockRejectedValueOnce(new Error('connection reset'));
+      await serverMap.reload();
+      expect(await everyRequestForA()).toEqual([]);
+    });
+
+    it('an older reload that lands after the mark cannot erase it', async () => {
+      const stale = prisma.rows.map((r) => ({ ...r }));
+      await backfillMarksA();
+      prisma.federationWorkspaceMap.findMany.mockResolvedValueOnce(stale);
+      await serverMap.reload();
+      expect(await everyRequestForA()).toEqual([]);
+    });
+
+    it('a failed request-time read refuses: no outbound call', async () => {
+      prisma.federationWorkspaceMap.findUnique.mockRejectedValue(new Error('connection reset'));
+      try {
+        expect(await everyRequestForA()).toEqual([]);
+      } finally {
+        prisma.federationWorkspaceMap.findUnique.mockReset();
+      }
+    });
+
+    it('a row removed after the cache loaded is not routable', async () => {
+      prisma.rows.splice(
+        prisma.rows.findIndex((r) => r.localWorkspaceId === ORG_A),
+        1,
+      );
+      expect(await everyRequestForA()).toEqual([]);
     });
   });
 });
