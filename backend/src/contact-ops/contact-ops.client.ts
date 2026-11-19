@@ -50,6 +50,7 @@ import {
 import { SeamHealth } from '../health/seam-health';
 import { shortBody } from '../health/probe-util';
 import { mapWithConcurrency } from '../common/concurrency';
+import { canonicalTenantId } from './tenant-id';
 
 /**
  * Max simultaneous get_person calls when resolving a batch of contact summaries.
@@ -146,9 +147,11 @@ export class ContactOpsClient extends ContactOpsPort {
    *  never from the per-process cache: no row, a row in conflict with the org
    *  lookup, or a failed read all refuse. Used for BOTH the bearer claim /
    *  X-Workspace-Id header AND the workspace-projection URL path, so the token
-   *  tenant and the addressed tenant never disagree. */
-  private route(ctx: FederationContext): Promise<string | null> {
-    return this.federationMap.routableTarget(ctx.workspaceId, 'contact-ops');
+   *  tenant and the addressed tenant never disagree. Canonical (lowercase, R5-3):
+   *  a confirmed legacy row stored in another case goes on the wire lowercase. */
+  private async route(ctx: FederationContext): Promise<string | null> {
+    const target = await this.federationMap.routableTarget(ctx.workspaceId, 'contact-ops');
+    return target === null ? null : canonicalTenantId(target);
   }
 
   /** The auth mode: `static` forwards CONTACT_OPS_SERVICE_TOKEN (legacy / dev);

@@ -159,7 +159,11 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
         await expect(c.verifyContact(CTX, 'p1')).resolves.toBe('unavailable');
         // Dormant (no base URL) but MAPPED: "connected" is now false, so the
         // create path answers 409 not_connected instead of 503 unavailable.
-        const dormant = new ContactOpsClient(makeConfig({}), makeBrigade(), makeFedMap('co-tenant-a'));
+        const dormant = new ContactOpsClient(
+          makeConfig({}),
+          makeBrigade(),
+          makeFedMap('co-tenant-a'),
+        );
         await expect(dormant.verifyContact(CTX, 'p1')).resolves.toBe('not_connected');
       });
 
@@ -181,7 +185,10 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
     describe('cross-org isolation (two mapped workspaces, two Contact-Ops tenants)', () => {
       const WS_A: FederationContext = { workspaceId: 'ws-org-a', ucUid: 'ua' };
       const WS_B: FederationContext = { workspaceId: 'ws-org-b', ucUid: 'ub' };
-      const TENANTS: Record<string, string> = { 'ws-org-a': 'co-tenant-a', 'ws-org-b': 'co-tenant-b' };
+      const TENANTS: Record<string, string> = {
+        'ws-org-a': 'co-tenant-a',
+        'ws-org-b': 'co-tenant-b',
+      };
       // Fake Contact-Ops: each tenant owns only its own people; the request is
       // answered from the tenant named in X-Workspace-Id.
       const PEOPLE: Record<string, Record<string, { name: string; email: string }>> = {
@@ -679,5 +686,48 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
         nextCursor: null,
       });
     });
+  });
+});
+
+describe('R5-3: the tenant id goes on the wire in canonical (lowercase) form', () => {
+  const origFetch = global.fetch;
+  afterEach(() => {
+    global.fetch = origFetch;
+  });
+  // A confirmed legacy row stored UPPERCASE (the lookup names it lowercase).
+  const STORED = 'AAAAAAAA-0000-4000-8000-00000000000A';
+  const CANONICAL = STORED.toLowerCase();
+
+  it('X-Workspace-Id, the bearer workspace claim and the projection path are lowercase', async () => {
+    const calls: Array<{ url: string; headers: Record<string, string> }> = [];
+    global.fetch = jest.fn(async (url: string, init: any) => {
+      calls.push({ url: String(url), headers: init.headers });
+      return String(url).includes('/api/v1/workspaces/')
+        ? jsonResponse({ workspace_id: CANONICAL, name: 'Example' })
+        : jsonResponse(rpcOk({ items: [], count: 0 }));
+    }) as any;
+    const brigade = { exchangedToken: jest.fn().mockResolvedValue('exchanged-token') };
+    const client = new ContactOpsClient(
+      makeConfig({
+        CONTACT_OPS_BASE_URL: 'https://contacts.example.test',
+        CONTACT_OPS_AUTH_MODE: 'brigade-sts',
+      }),
+      brigade as unknown as BrigadeTokenSource,
+      makeFedMap(STORED),
+    );
+
+    await client.listContacts(CTX, {});
+    await client.verifyContact(CTX, 'p1');
+    await client.getWorkspaceProjection(CTX);
+
+    expect(calls).toHaveLength(3);
+    for (const c of calls) expect(c.headers['X-Workspace-Id']).toBe(CANONICAL);
+    expect(brigade.exchangedToken.mock.calls.map((c) => c[0].workspaceId)).toEqual([
+      CANONICAL,
+      CANONICAL,
+      CANONICAL,
+    ]);
+    expect(calls[2].url).toBe(`https://contacts.example.test/api/v1/workspaces/${CANONICAL}`);
+    expect(JSON.stringify(calls)).not.toContain(STORED);
   });
 });

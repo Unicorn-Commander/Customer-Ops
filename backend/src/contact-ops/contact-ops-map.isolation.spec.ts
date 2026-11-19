@@ -496,4 +496,21 @@ describe('contact-ops map isolation across orgs (C3)', () => {
       expect(await everyRequestForA()).toEqual([]);
     });
   });
+
+  it('R5-3: a confirmed UPPERCASE legacy row is addressed by its lowercase tenant id', async () => {
+    await setup([
+      {
+        localWorkspaceId: ORG_A,
+        targetApp: 'contact-ops',
+        targetWorkspaceId: TENANT_A.toUpperCase(),
+      },
+    ]);
+    // The lookup (lowercase TENANT_A) confirmed it: not in conflict.
+    expect(
+      prisma.rows.find((r) => r.localWorkspaceId === ORG_A)?.conflictTenantId ?? null,
+    ).toBeNull();
+    const search = await svc.searchContactsForUser(user, 'a', ORG_A);
+    expect(search.items.map((c) => c.contactId)).toEqual(['pa-1']);
+    expect(addressed).toEqual([TENANT_A]);
+  });
 });
