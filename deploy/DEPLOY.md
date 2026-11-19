@@ -193,6 +193,40 @@ Do these as a deliberate, separately-reviewed change — **not** at first bring-
    (it's live on bigboy): `CONTACT_OPS_BASE_URL=https://mcp.contacts.magicunicorn.dev`
    (confirm the exact MCP base) + a service token. Then:
    `docker compose -f deploy/docker-compose.dogfood.yml up -d backend`.
+
+   **Contact-Ops map from the org lookup (Contact-Ops #42).** Provisioning
+   writes each org workspace's `contact-ops` map row from Contact-Ops'
+   `GET /api/service/ops-center-orgs/{org_id}/tenant`, using the dedicated
+   lookup client (audience `contact-ops-org-lookup`), never another credential:
+   `CONTACT_OPS_LOOKUP_CLIENT_ID`, `CONTACT_OPS_LOOKUP_CLIENT_SECRET` (from
+   Vaultwarden) and `CONTACT_OPS_LOOKUP_TOKEN_URL` (the realm's
+   `.../protocol/openid-connect/token`). With any of them unset it is DORMANT:
+   one WARN at boot, no row written, unmapped workspaces keep answering 409.
+   Existing workspaces: `docker compose -f deploy/docker-compose.dogfood.yml exec
+   backend npm run contact-ops:map-backfill` prints the org id -> tenant id
+   pairs (dry run; booting it writes nothing, the map seed does not run there);
+   add `-- --apply` to write them. A row that disagrees with the lookup keeps
+   its tenant but is marked in conflict (`conflict_tenant_id`, migration
+   `20261118000000`) and is NOT routable: that workspace answers 409
+   not-connected and no Contact-Ops tenant is contacted. The mark is cleared
+   only by a lookup that confirms a tenant for that org: a provisioning replay
+   or `--apply` when the lookup names the row's own tenant again, or the owner
+   connection route when the lookup names the tenant the owner asks for (the
+   row is then re-pointed to it and the mark cleared in one transaction; any
+   other answer is 409 and nothing changes). A row the lookup cannot confirm
+   (no tenant / unavailable) stays routable as before. Tenant ids are compared
+   lowercase.
+   Both modes also re-check every EXISTING row (section `EXISTING ROWS`:
+   confirmed / CONFLICT / UNCONFIRMED) and never change a tenant; only
+   `--apply` sets or clears the conflict mark. The command exits 2 when any row
+   is not confirmed, including a conflict found during `--apply` (0 all
+   confirmed, 1 lookup dormant).
+   Every contact-ops writer follows the same rule: `FEDERATION_WORKSPACE_MAP_SEED`
+   skips (and logs) contact-ops entries and never overwrites an existing row,
+   and the owner connection route writes only the tenant the lookup names for
+   that workspace (else 409; dormant lookup -> 409 "Contact-Ops link is not
+   available yet"). It never re-points a row that is NOT marked in conflict
+   (409 before any lookup).
 2. **Turn the tenant fence live** (the security flip — do both together):
    - point the runtime at the NOBYPASSRLS role:
      `DATABASE_URL=postgresql://localhost:5432/customer_ops<app-pw>@customer-ops-postgres:5432/customerops?schema=public`

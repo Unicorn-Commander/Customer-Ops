@@ -2,16 +2,20 @@ import { ConfigService } from '@nestjs/config';
 import { ContactOpsClient } from './contact-ops.client';
 import { FederationContext } from './contact-ops.port';
 import { BrigadeTokenSource } from '../common/federation/brigade-token-source';
+import { FederationWorkspaceMapService } from '../common/federation/federation-workspace-map.service';
 
 /**
  * The federation workspace map (added with the per-workspace map in 0d09be3).
- * `resolveSync` returning null means "this workspace has no explicit mapping for
- * that app", and every client then falls back to ctx.workspaceId — i.e. exactly
- * the behaviour these specs were written against. Override per-test if a case
- * ever needs a real mapping.
+ * `routableTarget` is the request-time DB read of the workspace's contact-ops
+ * row (R5-2): null means no routable row (none, or in conflict), and the client
+ * then addresses no tenant at all. By default the row maps the test workspace
+ * onto itself ('ws-aaaa', CTX below), the addressing these specs were written
+ * against. Pass null for an unmapped workspace.
  */
-function makeFedMap(mapped: string | null = null) {
-  return { resolveSync: jest.fn().mockReturnValue(mapped) } as any;
+function makeFedMap(mapped: string | null = 'ws-aaaa') {
+  return {
+    routableTarget: jest.fn(async () => mapped),
+  } as any;
 }
 
 /** These tests exercise STATIC auth mode (CONTACT_OPS_SERVICE_TOKEN forwarded),
@@ -100,8 +104,8 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
     // "connected" must be FALSE so create answers 409 not_connected, not 503.
     const client = new ContactOpsClient(makeConfig({}), makeBrigade(), makeFedMap('co-tenant-a'));
 
-    it('isWorkspaceConnected is false (mapped but no base URL)', () => {
-      expect(client.isWorkspaceConnected(CTX)).toBe(false);
+    it('isWorkspaceConnected is false (mapped but no base URL)', async () => {
+      await expect(client.isWorkspaceConnected(CTX)).resolves.toBe(false);
     });
 
     it('verifyContact -> not_connected (no fetch), NOT unavailable', async () => {
@@ -155,7 +159,11 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
         await expect(c.verifyContact(CTX, 'p1')).resolves.toBe('unavailable');
         // Dormant (no base URL) but MAPPED: "connected" is now false, so the
         // create path answers 409 not_connected instead of 503 unavailable.
-        const dormant = new ContactOpsClient(makeConfig({}), makeBrigade(), makeFedMap('co-tenant-a'));
+        const dormant = new ContactOpsClient(
+          makeConfig({}),
+          makeBrigade(),
+          makeFedMap('co-tenant-a'),
+        );
         await expect(dormant.verifyContact(CTX, 'p1')).resolves.toBe('not_connected');
       });
 
@@ -164,20 +172,23 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
         const c = new ContactOpsClient(makeConfig(env), makeBrigade(), makeFedMap(null));
         await expect(c.verifyContact(CTX, 'p1')).resolves.toBe('not_connected');
         expect(global.fetch).not.toHaveBeenCalled();
-        expect(c.isWorkspaceConnected(CTX)).toBe(false);
+        await expect(c.isWorkspaceConnected(CTX)).resolves.toBe(false);
       });
       it('unavailable (not not_connected) on a timeout for a MAPPED workspace', async () => {
         global.fetch = jest.fn().mockRejectedValue(new Error('timeout')) as any;
         const c = new ContactOpsClient(makeConfig(env), makeBrigade(), makeFedMap('co-tenant-a'));
         await expect(c.verifyContact(CTX, 'p1')).resolves.toBe('unavailable');
-        expect(c.isWorkspaceConnected(CTX)).toBe(true);
+        await expect(c.isWorkspaceConnected(CTX)).resolves.toBe(true);
       });
     });
 
     describe('cross-org isolation (two mapped workspaces, two Contact-Ops tenants)', () => {
       const WS_A: FederationContext = { workspaceId: 'ws-org-a', ucUid: 'ua' };
       const WS_B: FederationContext = { workspaceId: 'ws-org-b', ucUid: 'ub' };
-      const TENANTS: Record<string, string> = { 'ws-org-a': 'co-tenant-a', 'ws-org-b': 'co-tenant-b' };
+      const TENANTS: Record<string, string> = {
+        'ws-org-a': 'co-tenant-a',
+        'ws-org-b': 'co-tenant-b',
+      };
       // Fake Contact-Ops: each tenant owns only its own people; the request is
       // answered from the tenant named in X-Workspace-Id.
       const PEOPLE: Record<string, Record<string, { name: string; email: string }>> = {
@@ -212,7 +223,9 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
             }),
           );
         }) as any;
-        const fed = { resolveSync: jest.fn((ws: string) => TENANTS[ws] ?? null) } as any;
+        const fed = {
+          routableTarget: jest.fn(async (ws: string) => TENANTS[ws] ?? null),
+        } as any;
         return new ContactOpsClient(makeConfig(env), makeBrigade(), fed);
       };
       beforeEach(() => (seenTenants.length = 0));
@@ -672,5 +685,161 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
         nextCursor: null,
       });
     });
+  });
+});
+
+describe('R5-3: the tenant id goes on the wire in canonical (lowercase) form', () => {
+  const origFetch = global.fetch;
+  afterEach(() => {
+    global.fetch = origFetch;
+  });
+  // A confirmed legacy row stored UPPERCASE (the lookup names it lowercase).
+  const STORED = 'AAAAAAAA-0000-4000-8000-00000000000A';
+  const CANONICAL = STORED.toLowerCase();
+
+  it('X-Workspace-Id, the bearer workspace claim and the projection path are lowercase', async () => {
+    const calls: Array<{ url: string; headers: Record<string, string> }> = [];
+    global.fetch = jest.fn(async (url: string, init: any) => {
+      calls.push({ url: String(url), headers: init.headers });
+      return String(url).includes('/api/v1/workspaces/')
+        ? jsonResponse({ workspace_id: CANONICAL, name: 'Example' })
+        : jsonResponse(rpcOk({ items: [], count: 0 }));
+    }) as any;
+    const brigade = { exchangedToken: jest.fn().mockResolvedValue('exchanged-token') };
+    const client = new ContactOpsClient(
+      makeConfig({
+        CONTACT_OPS_BASE_URL: 'https://contacts.example.test',
+        CONTACT_OPS_AUTH_MODE: 'brigade-sts',
+      }),
+      brigade as unknown as BrigadeTokenSource,
+      makeFedMap(STORED),
+    );
+
+    await client.listContacts(CTX, {});
+    await client.verifyContact(CTX, 'p1');
+    await client.getWorkspaceProjection(CTX);
+
+    expect(calls).toHaveLength(3);
+    for (const c of calls) expect(c.headers['X-Workspace-Id']).toBe(CANONICAL);
+    expect(brigade.exchangedToken.mock.calls.map((c) => c[0].workspaceId)).toEqual([
+      CANONICAL,
+      CANONICAL,
+      CANONICAL,
+    ]);
+    expect(calls[2].url).toBe(`https://contacts.example.test/api/v1/workspaces/${CANONICAL}`);
+    expect(JSON.stringify(calls)).not.toContain(STORED);
+  });
+});
+
+describe('R6-1: ping() routes through the DB-backed contact-ops decision', () => {
+  const origFetch = global.fetch;
+  afterEach(() => {
+    global.fetch = origFetch;
+  });
+  const PROBE_WS = 'ws-probe';
+  const TENANT = 'cccccccc-0000-4000-8000-00000000000c';
+
+  /** The real map service over a fake Prisma: `row` is the probe workspace's
+   *  contact-ops row (undefined = none); `readFails` makes the DB read throw.
+   *  The in-memory cache holds the tenant, as a stale reload would. */
+  async function setup(
+    row: { targetWorkspaceId: string; conflictTenantId: string | null } | undefined,
+    readFails = false,
+  ) {
+    const prisma = {
+      federationWorkspaceMap: {
+        findUnique: jest.fn(async () => {
+          if (readFails) throw new Error('connection refused');
+          return row ?? null;
+        }),
+        // The cache was loaded earlier with the stored id, or with a routable
+        // tenant when the row is gone (a stale reload).
+        findMany: jest.fn(async () => [
+          {
+            localWorkspaceId: PROBE_WS,
+            targetApp: 'contact-ops',
+            targetWorkspaceId: row?.targetWorkspaceId ?? TENANT,
+          },
+        ]),
+      },
+    };
+    const map = new FederationWorkspaceMapService(prisma as any, makeConfig({}));
+    await map.reload();
+    const fetchSpy = jest.fn(async () => jsonResponse({ jsonrpc: '2.0', id: 1, result: {} }));
+    global.fetch = fetchSpy as any;
+    const brigade = { exchangedToken: jest.fn().mockResolvedValue('exchanged-token') };
+    const client = new ContactOpsClient(
+      makeConfig({
+        CONTACT_OPS_BASE_URL: 'https://contacts.example.test',
+        CONTACT_OPS_AUTH_MODE: 'brigade-sts',
+        HEALTH_PROBE_WORKSPACE_ID: PROBE_WS,
+      }),
+      brigade as unknown as BrigadeTokenSource,
+      map,
+    );
+    return { client, fetchSpy, brigade };
+  }
+
+  const NOT_CONNECTED = {
+    seam: 'contact-ops',
+    configured: false,
+    ok: false,
+    status: null,
+    detail: 'not-connected',
+    latencyMs: null,
+  };
+
+  it('conflicted probe row: no fetch, no token exchange, not-connected', async () => {
+    const { client, fetchSpy, brigade } = await setup({
+      targetWorkspaceId: TENANT,
+      conflictTenantId: 'dddddddd-0000-4000-8000-00000000000d',
+    });
+    await expect(client.ping()).resolves.toEqual(NOT_CONNECTED);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(brigade.exchangedToken).not.toHaveBeenCalled();
+  });
+
+  it('unmapped probe workspace: no fetch, no token exchange, not-connected', async () => {
+    const { client, fetchSpy, brigade } = await setup(undefined);
+    await expect(client.ping()).resolves.toEqual(NOT_CONNECTED);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(brigade.exchangedToken).not.toHaveBeenCalled();
+  });
+
+  it('failed DB read: no fetch, no token exchange, not-connected', async () => {
+    const { client, fetchSpy, brigade } = await setup(
+      { targetWorkspaceId: TENANT, conflictTenantId: null },
+      true,
+    );
+    await expect(client.ping()).resolves.toEqual(NOT_CONNECTED);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(brigade.exchangedToken).not.toHaveBeenCalled();
+  });
+
+  it('uppercase legacy probe row: header and STS input are lowercase', async () => {
+    const { client, fetchSpy, brigade } = await setup({
+      targetWorkspaceId: TENANT.toUpperCase(),
+      conflictTenantId: null,
+    });
+    const h = await client.ping();
+    expect(h.ok).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const init = (fetchSpy.mock.calls[0] as any[])[1];
+    expect(init.headers['X-Workspace-Id']).toBe(TENANT);
+    expect(brigade.exchangedToken.mock.calls.map((c) => c[0].workspaceId)).toEqual([TENANT]);
+  });
+
+  it('healthy mapped probe row: pings once, tools/list, ok', async () => {
+    const { client, fetchSpy, brigade } = await setup({
+      targetWorkspaceId: TENANT,
+      conflictTenantId: null,
+    });
+    await expect(client.ping()).resolves.toMatchObject({ ok: true, status: 200, detail: 'ok' });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchSpy.mock.calls[0] as any[];
+    expect(url).toBe('https://contacts.example.test/mcp');
+    expect(JSON.parse(init.body).method).toBe('tools/list');
+    expect(init.headers['X-Workspace-Id']).toBe(TENANT);
+    expect(brigade.exchangedToken).toHaveBeenCalledTimes(1);
   });
 });

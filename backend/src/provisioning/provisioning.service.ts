@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { MembershipService } from '../common/workspace/membership.service';
 import { UcRegistryClient } from '../common/uc-registry/uc-registry.client';
 import { isUuidV7 } from '../common/uc-registry/uuidv7';
+import { ContactOpsMapProvisioner } from '../contact-ops/contact-ops-map.provisioner';
 import { PROVISIONING_APP_KEY, WORKSPACE_STATES, WorkspaceState } from './provisioning.config';
 
 /** The control plane's workspace id format (contract D). */
@@ -28,6 +29,10 @@ export interface WorkspaceStatusView {
  * created at their first sign-in from the control plane's entitlement answer.
  * `owner.email` is never stored or logged; nothing from the body but the org id,
  * slug and display name is kept.
+ *
+ * CONTACT-OPS MAP: every POST (the first one and each replay) asks Contact-Ops'
+ * org lookup for this org id and writes the workspace's contact-ops map row from
+ * the answer when there is none yet (ContactOpsMapProvisioner).
  */
 @Injectable()
 export class ProvisioningService {
@@ -37,6 +42,7 @@ export class ProvisioningService {
     private readonly prisma: PrismaService,
     private readonly membership: MembershipService,
     private readonly registry: UcRegistryClient,
+    private readonly contactMap: ContactOpsMapProvisioner,
   ) {}
 
   /** POST: create or adopt the org's workspace. `created` is false on a replay. */
@@ -52,7 +58,7 @@ export class ProvisioningService {
     }
 
     const existing = await this.prisma.workspace.findUnique({ where: { id: input.orgId } });
-    if (existing) return { created: false, view: view(existing) };
+    if (existing) return this.withContactMap(false, existing);
 
     // Register with uc-registry only when the org id is a v7 the registry will
     // accept as-is: for any other id the client would mint and register a
@@ -65,16 +71,30 @@ export class ProvisioningService {
           data: { id: input.orgId, slug, displayName: input.displayName },
         });
         this.logger.log(`Provisioned workspace ${created.id} for its Ops-Center organization`);
-        return { created: true, view: view(created) };
+        return this.withContactMap(true, created);
       } catch (error) {
         if (!isUniqueViolation(error)) throw error;
         // Either a concurrent call / first sign-in created this org's row (adopt
         // it), or the slug belongs to another workspace (try the next candidate).
         const raced = await this.prisma.workspace.findUnique({ where: { id: input.orgId } });
-        if (raced) return { created: false, view: view(raced) };
+        if (raced) return this.withContactMap(false, raced);
       }
     }
     throw new BadRequestException('No free slug for this workspace.');
+  }
+
+  private async withContactMap(
+    created: boolean,
+    ws: Workspace,
+  ): Promise<{ created: boolean; view: WorkspaceStatusView }> {
+    // The map is best effort here: provisioning succeeds whatever the lookup
+    // or the map write does, and the next replay tries again.
+    try {
+      await this.contactMap.ensureForOrg(ws.id);
+    } catch (error) {
+      this.logger.warn(`contact-ops map for ${ws.id} not written: ${(error as Error).name}`);
+    }
+    return { created, view: view(ws) };
   }
 
   private async register(input: CreateInput): Promise<void> {

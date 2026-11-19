@@ -9,13 +9,16 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { AuditAction, User } from '@prisma/client';
+import { AuditAction, Prisma, User } from '@prisma/client';
 import { IsString, IsUUID, Length } from 'class-validator';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { JwtOnly } from '../../auth/decorators/jwt-only.decorator';
 import { CurrentUser } from '../decorators/current-user.decorator';
 import { BrigadeTokenSource } from '../federation/brigade-token-source';
 import { FederationWorkspaceMapService } from '../federation/federation-workspace-map.service';
+import { ContactOpsOrgLookupClient } from '../../contact-ops/contact-ops-org-lookup.client';
+import { canonicalTenantId, sameTenant } from '../../contact-ops/tenant-id';
+import { lockContactOpsRow } from '../../contact-ops/contact-ops-map.lock';
 import { PrismaService } from '../../prisma/prisma.service';
 import { MembershipService } from './membership.service';
 import { tenancyEnabled } from './feature-flags';
@@ -36,6 +39,7 @@ export class ContactLinkController {
     private readonly brigade: BrigadeTokenSource,
     private readonly config: ConfigService,
     private readonly mapping: FederationWorkspaceMapService,
+    private readonly lookup: ContactOpsOrgLookupClient,
   ) {}
 
   @Post()
@@ -52,12 +56,19 @@ export class ContactLinkController {
     const sourceWorkspace = await this.prisma.workspace.findUnique({ where: { id: workspaceId } });
     if (!sourceWorkspace || sourceWorkspace.status !== 'active')
       throw new ForbiddenException('Active workspace required.');
-    const target = dto.target_workspace_id;
+    const target = canonicalTenantId(dto.target_workspace_id);
     const where = {
       localWorkspaceId_targetApp: { localWorkspaceId: workspaceId, targetApp: 'contact-ops' },
     };
     const existing = await this.prisma.federationWorkspaceMap.findUnique({ where });
-    if (existing && existing.targetWorkspaceId !== target) {
+    // A row that differs is replaced only when it is MARKED in conflict (R4-1):
+    // the lookup below must then name exactly this target, and a person (this
+    // owner) chose it. An unmarked row is never silently re-pointed.
+    const repairFrom =
+      existing && !sameTenant(existing.targetWorkspaceId, target)
+        ? existing.targetWorkspaceId
+        : null;
+    if (repairFrom && !existing!.conflictTenantId) {
       throw new ConflictException(
         'An existing Contact connection cannot be replaced by this action.',
       );
@@ -66,6 +77,18 @@ export class ContactLinkController {
     if (!base || new URL(base).protocol !== 'https:') {
       throw new ServiceUnavailableException(
         'A trusted HTTPS Contact-Ops endpoint must be configured.',
+      );
+    }
+    // Same-org rule (R3-2, GATE-175): a contact-ops row is written only for the
+    // tenant Contact-Ops' org lookup names for THIS workspace's org id (contract
+    // D: the workspace id is the org id). Checked before any remote call.
+    const answer = await this.lookup.lookupTenant(workspaceId);
+    if (answer.kind === 'dormant') {
+      throw new ConflictException('Contact-Ops link is not available yet');
+    }
+    if (answer.kind !== 'tenant' || !sameTenant(answer.tenantId, target)) {
+      throw new ConflictException(
+        'Contact-Ops does not confirm this tenant for this workspace; no Customer connection was changed.',
       );
     }
     const proof = await this.brigade.exchangedToken({
@@ -102,7 +125,7 @@ export class ContactLinkController {
       grant = envelope.result?.structuredContent;
       if (
         !grant ||
-        grant.tenant_id !== target ||
+        !sameTenant(grant.tenant_id, target) ||
         grant.role !== 'viewer' ||
         grant.client_id !== 'customer-ops' ||
         !grant.service_subject
@@ -129,20 +152,51 @@ export class ContactLinkController {
       });
       if (!owner || owner.role !== 'OWNER' || owner.status !== 'ACTIVE')
         throw new ForbiddenException('Active workspace owner required.');
-      // Serialize competing target connections and refuse an implicit overwrite.
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${workspaceId + ':contact-ops'}))`;
+      // Serialize with every other contact-ops row writer (R5-1: provisioning,
+      // the conflict mark, backfill --apply) and refuse an implicit overwrite.
+      await lockContactOpsRow(tx, workspaceId);
       const current = await tx.federationWorkspaceMap.findUnique({ where });
-      if (current && current.targetWorkspaceId !== target)
-        throw new ConflictException('Contact connection changed concurrently.');
-      await tx.federationWorkspaceMap.upsert({
-        where,
-        create: {
-          localWorkspaceId: workspaceId,
-          targetApp: 'contact-ops',
-          targetWorkspaceId: target,
-        },
-        update: {},
-      });
+      const currentTarget = current?.targetWorkspaceId ?? null;
+      // Proceed only over the row as it was checked: absent, already this
+      // target, or the same conflicted row the lookup has just overruled.
+      const stillAsChecked =
+        sameTenant(currentTarget, target) ||
+        (currentTarget === null
+          ? repairFrom === null
+          : currentTarget === repairFrom && !!current!.conflictTenantId);
+      if (!stillAsChecked) throw new ConflictException('Contact connection changed concurrently.');
+      // The write is conditional on the row being exactly as read (R5-1): insert
+      // only if absent, update only where target and mark are unchanged. The
+      // lookup just confirmed this tenant for this org: the row points at it (a
+      // conflicted row is re-pointed) and any conflict mark is cleared.
+      const written = current
+        ? (
+            await tx.federationWorkspaceMap.updateMany({
+              where: {
+                localWorkspaceId: workspaceId,
+                targetApp: 'contact-ops',
+                targetWorkspaceId: current.targetWorkspaceId,
+                conflictTenantId: current.conflictTenantId,
+              },
+              data: { targetWorkspaceId: target, conflictTenantId: null },
+            })
+          ).count
+        : await tx.federationWorkspaceMap
+            .create({
+              data: {
+                localWorkspaceId: workspaceId,
+                targetApp: 'contact-ops',
+                targetWorkspaceId: target,
+              },
+            })
+            .then(
+              () => 1,
+              (error: unknown) => {
+                if (isUniqueViolation(error)) return 0;
+                throw error;
+              },
+            );
+      if (written !== 1) throw new ConflictException('Contact connection changed concurrently.');
       await tx.auditLog.create({
         data: {
           workspaceId,
@@ -153,6 +207,7 @@ export class ContactLinkController {
           details: {
             targetApp: 'contact-ops',
             targetWorkspaceId: target,
+            ...(repairFrom ? { repairedConflictFrom: repairFrom } : {}),
             serviceSubject: grant.service_subject!,
             role: 'viewer',
           },
@@ -167,4 +222,8 @@ export class ContactLinkController {
       role: 'viewer',
     };
   }
+}
+
+function isUniqueViolation(error: unknown): boolean {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002';
 }

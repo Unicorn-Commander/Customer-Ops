@@ -30,6 +30,7 @@ import { MembershipService } from '../common/workspace/membership.service';
 import { WorkspaceContextService } from '../common/workspace/workspace-context.service';
 import { AuditService } from '../audit/audit.service';
 import { GdprService } from '../gdpr/gdpr.service';
+import { lockContactOpsRow } from '../contact-ops/contact-ops-map.lock';
 
 const dbUrl =
   process.env.PROVISIONING_TEST_DATABASE_URL ?? process.env.CUSTOMER_OPS_RLS_OWNER_DATABASE_URL;
@@ -207,6 +208,9 @@ suite('contract D provisioning on a real PostgreSQL', () => {
       await db.personalAccessToken.deleteMany({ where: { userId: { in: users } } });
       await db.m365Connection.deleteMany({ where: { userId: { in: users } } });
       await db.auditLog.deleteMany({ where: { workspaceId: { in: workspaces } } });
+      await db.federationWorkspaceMap.deleteMany({
+        where: { localWorkspaceId: { in: workspaces } },
+      });
       await db.customer.deleteMany({ where: { workspaceId: { in: workspaces } } });
       await db.membership.deleteMany({ where: { workspaceId: { in: workspaces } } });
       await db.workspace.deleteMany({ where: { id: { in: workspaces } } });
@@ -297,6 +301,218 @@ suite('contract D provisioning on a real PostgreSQL', () => {
       expect(wrongKey.status).toBe(400);
       expect((await call('POST', BASE, createBody(orgId))).status).toBe(400);
       expect(await db.workspace.count({ where: { id: orgId } })).toBe(0);
+    });
+  });
+
+  describe("the contact-ops map from Contact-Ops' org lookup (C1)", () => {
+    const CO = 'https://contacts.example.com';
+    const TOKEN_URL = 'https://sso.example.com/realms/uchub/protocol/openid-connect/token';
+    const LOOKUP_ENV = {
+      CONTACT_OPS_BASE_URL: CO,
+      CONTACT_OPS_LOOKUP_CLIENT_ID: 'contact-ops-org-lookup-client',
+      CONTACT_OPS_LOOKUP_CLIENT_SECRET: 'fixture-secret-not-real',
+      CONTACT_OPS_LOOKUP_TOKEN_URL: TOKEN_URL,
+    };
+    const realFetch = global.fetch;
+    /** org id -> what the fake Contact-Ops lookup answers next (default 404). */
+    let answers: Record<string, () => Response | Promise<Response>>;
+    let asked: string[];
+    const HANG = () => json(599, {});
+    const STALL_BODY = () => json(598, {});
+
+    function json(status: number, body: unknown): Response {
+      return new Response(JSON.stringify(body), {
+        status,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    function tenantOf(orgId: string, tenantId: string, echo = orgId) {
+      return () => json(200, { ops_center_org_id: echo, tenant_id: tenantId, tenant_slug: 'acme' });
+    }
+    async function mapOf(orgId: string) {
+      return db.federationWorkspaceMap.findUnique({
+        where: {
+          localWorkspaceId_targetApp: { localWorkspaceId: orgId, targetApp: 'contact-ops' },
+        },
+      });
+    }
+
+    beforeEach(() => {
+      Object.assign(process.env, LOOKUP_ENV);
+      answers = {};
+      asked = [];
+      global.fetch = (async (input: any, init?: any) => {
+        const url = String(input);
+        if (url === TOKEN_URL) return json(200, { access_token: 'lookup-cc', expires_in: 300 });
+        const m =
+          /^https:\/\/contacts\.example\.com\/api\/service\/ops-center-orgs\/([^/]+)\/tenant$/.exec(
+            url,
+          );
+        if (m) {
+          expect(init?.headers?.Authorization).toBe('Bearer lookup-cc');
+          const org = decodeURIComponent(m[1]);
+          asked.push(org);
+          const answer = answers[org] ?? (() => json(404, { detail: 'no tenant' }));
+          // A hung Contact-Ops: only the caller's abort signal ends it, as with real fetch.
+          if (answer === HANG) {
+            return new Promise<Response>((_resolve, reject) =>
+              init?.signal?.addEventListener('abort', () => reject(new Error('aborted'))),
+            );
+          }
+          // Headers arrive, the body never finishes: only the abort signal ends it (R3-4).
+          if (answer === STALL_BODY) {
+            const body = new ReadableStream<Uint8Array>({
+              start(c) {
+                c.enqueue(new TextEncoder().encode('{"ops_center_org_id":'));
+                init?.signal?.addEventListener('abort', () => c.error(new Error('aborted')));
+              },
+            });
+            return new Response(body, { status: 200 });
+          }
+          return answer();
+        }
+        return realFetch(input, init);
+      }) as typeof fetch;
+    });
+    afterEach(() => {
+      global.fetch = realFetch;
+      for (const k of Object.keys(LOOKUP_ENV)) delete process.env[k];
+    });
+
+    it('a new workspace gets its map row from the lookup answer for THAT org id', async () => {
+      const orgId = randomUUID();
+      const tenant = randomUUID();
+      answers[orgId] = tenantOf(orgId, tenant);
+      expect((await provision(orgId)).status).toBe(201);
+      expect(asked).toEqual([orgId]);
+      expect(await mapOf(orgId)).toMatchObject({ targetWorkspaceId: tenant });
+    });
+
+    it('a replay writes the row when the first provisioning could not', async () => {
+      const orgId = randomUUID();
+      const tenant = randomUUID();
+      answers[orgId] = () => json(503, { detail: 'cannot verify tokens' });
+      expect((await provision(orgId)).status).toBe(201);
+      expect(await mapOf(orgId)).toBeNull();
+      answers[orgId] = tenantOf(orgId, tenant);
+      expect((await provision(orgId)).status).toBe(200);
+      expect(await mapOf(orgId)).toMatchObject({ targetWorkspaceId: tenant });
+    });
+
+    it('an answer for another org id writes no row', async () => {
+      const orgId = randomUUID();
+      answers[orgId] = tenantOf(orgId, randomUUID(), randomUUID());
+      expect((await provision(orgId)).status).toBe(201);
+      expect(await mapOf(orgId)).toBeNull();
+    });
+
+    it('an existing row that disagrees with the lookup is left as it is', async () => {
+      const orgId = randomUUID();
+      const kept = randomUUID();
+      expect((await provision(orgId)).status).toBe(201);
+      await db.federationWorkspaceMap.create({
+        data: { localWorkspaceId: orgId, targetApp: 'contact-ops', targetWorkspaceId: kept },
+      });
+      const named = randomUUID();
+      answers[orgId] = tenantOf(orgId, named);
+      expect((await provision(orgId)).status).toBe(200);
+      // R3-1: tenant kept, marked in conflict (unroutable); a replay is idempotent
+      expect(await mapOf(orgId)).toMatchObject({
+        targetWorkspaceId: kept,
+        conflictTenantId: named,
+      });
+      expect((await provision(orgId)).status).toBe(200);
+      expect(await mapOf(orgId)).toMatchObject({
+        targetWorkspaceId: kept,
+        conflictTenantId: named,
+      });
+      // cleared only when a later lookup confirms the row
+      answers[orgId] = tenantOf(orgId, kept);
+      expect((await provision(orgId)).status).toBe(200);
+      expect(await mapOf(orgId)).toMatchObject({ targetWorkspaceId: kept, conflictTenantId: null });
+    });
+
+    it('R5-1: a replay waits on the owner lock: it never writes between the owner read and write', async () => {
+      const orgId = randomUUID();
+      const ownerTenant = randomUUID();
+      const lookupTenant = randomUUID();
+      expect((await provision(orgId)).status).toBe(201); // 404: no row yet
+      answers[orgId] = tenantOf(orgId, lookupTenant);
+      let replay!: Promise<{ status: number }>;
+      // The owner route's transaction, as it runs: lock, read (no row), write.
+      await db.$transaction(
+        async (tx) => {
+          await lockContactOpsRow(tx, orgId);
+          expect(
+            await tx.federationWorkspaceMap.findUnique({
+              where: {
+                localWorkspaceId_targetApp: { localWorkspaceId: orgId, targetApp: 'contact-ops' },
+              },
+            }),
+          ).toBeNull();
+          replay = provision(orgId);
+          // The replay has its lookup answer and now waits on the lock.
+          for (let i = 0; i < 100 && asked.length < 2; i++)
+            await new Promise((r) => setTimeout(r, 20));
+          expect(asked).toEqual([orgId, orgId]);
+          await new Promise((r) => setTimeout(r, 300));
+          expect(await mapOf(orgId)).toBeNull();
+          await tx.federationWorkspaceMap.create({
+            data: {
+              localWorkspaceId: orgId,
+              targetApp: 'contact-ops',
+              targetWorkspaceId: ownerTenant,
+            },
+          });
+        },
+        { timeout: 15_000 },
+      );
+      expect((await replay).status).toBe(200);
+      // The owner's row stands; the replay saw it after commit and marked the disagreement.
+      expect(await mapOf(orgId)).toMatchObject({
+        targetWorkspaceId: ownerTenant,
+        conflictTenantId: lookupTenant,
+      });
+    });
+
+    it('C2: 404 (no tenant for the org) writes no row; provisioning succeeds', async () => {
+      const orgId = randomUUID();
+      expect((await provision(orgId)).status).toBe(201);
+      expect(asked).toEqual([orgId]);
+      expect(await mapOf(orgId)).toBeNull();
+    });
+
+    it('C2: 401, 503, a timeout, a stalled body or a refused connection writes no row; provisioning succeeds', async () => {
+      process.env.CONTACT_OPS_TIMEOUT_MS = '50';
+      const failures: Array<() => Response | Promise<Response>> = [
+        () => json(401, { detail: 'bad token' }),
+        () => json(503, { detail: 'cannot verify tokens' }),
+        HANG,
+        STALL_BODY,
+        () => {
+          throw new TypeError('fetch failed');
+        },
+      ];
+      try {
+        for (const fail of failures) {
+          const orgId = randomUUID();
+          answers[orgId] = fail;
+          expect((await provision(orgId)).status).toBe(201);
+          expect(await mapOf(orgId)).toBeNull();
+          expect((await provision(orgId)).status).toBe(200);
+        }
+      } finally {
+        delete process.env.CONTACT_OPS_TIMEOUT_MS;
+      }
+    });
+
+    it('DORMANT: with the lookup client unset, no lookup is made and no row is written', async () => {
+      delete process.env.CONTACT_OPS_LOOKUP_CLIENT_SECRET;
+      const orgId = randomUUID();
+      answers[orgId] = tenantOf(orgId, randomUUID());
+      expect((await provision(orgId)).status).toBe(201);
+      expect(asked).toEqual([]);
+      expect(await mapOf(orgId)).toBeNull();
     });
   });
 

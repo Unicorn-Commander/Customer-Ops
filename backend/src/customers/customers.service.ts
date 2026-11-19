@@ -580,7 +580,8 @@ export class CustomersService {
   }> {
     const q = (query ?? '').trim().slice(0, 100);
     const fedCtx = await this.federationContext(user, requestedWorkspaceId);
-    if (!this.contactOps.isWorkspaceConnected(fedCtx)) return { items: [], notConnected: true };
+    if (!(await this.contactOps.isWorkspaceConnected(fedCtx)))
+      return { items: [], notConnected: true };
     if (!q) return { items: [], notConnected: false };
     const page = await this.contactOps.listContacts(fedCtx, { query: q, limit: 10 });
     return {

@@ -50,6 +50,7 @@ import {
 import { SeamHealth } from '../health/seam-health';
 import { shortBody } from '../health/probe-util';
 import { mapWithConcurrency } from '../common/concurrency';
+import { canonicalTenantId } from './tenant-id';
 
 /**
  * Max simultaneous get_person calls when resolving a batch of contact summaries.
@@ -123,20 +124,16 @@ export class ContactOpsClient extends ContactOpsPort {
    * (WORKSPACE_PER_REQUEST_ENABLED); CO still re-gates membership server-side,
    * so the header is a hint, never the authz boundary.
    */
-  private async authHeaders(ctx: FederationContext): Promise<Record<string, string>> {
+  private async authHeaders(ws: string, ucUid: string | null): Promise<Record<string, string>> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       // CO's MCP endpoint (Streamable HTTP) requires this Accept.
       Accept: 'application/json, text/event-stream',
     };
-    // Workspace addressing. CONTACT_OPS_WORKSPACE_OVERRIDE maps this app's local
-    // workspace onto Contact-Ops' uc-registry tenant id for the single-workspace
-    // dogfood (until the suite shares one uc-registry id — SUITE-IDENTITY §0.1).
-    const ws = this.federationMap.resolveSync(ctx.workspaceId, 'contact-ops') ?? ctx.workspaceId;
     const bearer = await this.bearerFor(ws);
     if (bearer) headers['Authorization'] = `Bearer ${bearer}`;
     headers['X-Workspace-Id'] = ws;
-    if (ctx.ucUid) headers['X-Uc-Uid'] = ctx.ucUid;
+    if (ucUid) headers['X-Uc-Uid'] = ucUid;
     return headers;
   }
 
@@ -145,12 +142,16 @@ export class ContactOpsClient extends ContactOpsPort {
     return w && w.trim() ? w.trim() : null;
   }
 
-  /** The workspace id to address Contact-Ops with: the override when set, else the
-   *  resolved context id. Used for BOTH the bearer claim / X-Workspace-Id header
-   *  AND the workspace-projection URL path, so the token tenant and the addressed
-   *  tenant never disagree. */
-  private effectiveWorkspaceId(ctx: FederationContext): string {
-    return this.federationMap.resolveSync(ctx.workspaceId, 'contact-ops') ?? ctx.workspaceId;
+  /** The Contact-Ops tenant to address for this request, or null: address none.
+   *  Read from the workspace's contact-ops row in the DB at the request (R5-2),
+   *  never from the per-process cache: no row, a row in conflict with the org
+   *  lookup, or a failed read all refuse. Used for BOTH the bearer claim /
+   *  X-Workspace-Id header AND the workspace-projection URL path, so the token
+   *  tenant and the addressed tenant never disagree. Canonical (lowercase, R5-3):
+   *  a confirmed legacy row stored in another case goes on the wire lowercase. */
+  private async route(ctx: FederationContext): Promise<string | null> {
+    const target = await this.federationMap.routableTarget(ctx.workspaceId, 'contact-ops');
+    return target === null ? null : canonicalTenantId(target);
   }
 
   /** The auth mode: `static` forwards CONTACT_OPS_SERVICE_TOKEN (legacy / dev);
@@ -203,6 +204,22 @@ export class ContactOpsClient extends ContactOpsPort {
     name: string,
     args: Record<string, unknown>,
   ): Promise<ToolOutcome> {
+    if (!this.baseUrl) return { kind: 'unavailable' };
+    const ws = await this.route(ctx);
+    if (!ws) {
+      this.logger.warn(`Contact-Ops MCP ${name} refused: no routable contact-ops map row`);
+      return { kind: 'unavailable' };
+    }
+    return this.callToolAt(ws, ctx.ucUid, name, args);
+  }
+
+  /** One MCP tool call addressed to tenant `ws` (already routed). Never throws. */
+  private async callToolAt(
+    ws: string,
+    ucUid: string | null,
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<ToolOutcome> {
     const base = this.baseUrl;
     if (!base) return { kind: 'unavailable' };
 
@@ -217,7 +234,7 @@ export class ContactOpsClient extends ContactOpsPort {
     try {
       res = await this.fetchWithTimeout(`${base}/mcp`, {
         method: 'POST',
-        headers: await this.authHeaders(ctx),
+        headers: await this.authHeaders(ws, ucUid),
         body: JSON.stringify(body),
       });
     } catch (err) {
@@ -281,7 +298,9 @@ export class ContactOpsClient extends ContactOpsPort {
   /**
    * Probe the Contact-Ops seam with a side-effect-free MCP `tools/list` over the
    * SAME transport/auth a real read uses (so a silent 401/403 surfaces as an
-   * `auth-error` rather than placeholder contact rows). Never throws.
+   * `auth-error` rather than placeholder contact rows). The probe workspace is
+   * routed like any request; with no routable row it answers `not-connected`
+   * without a request. Never throws.
    */
   async ping(): Promise<SeamHealth> {
     const seam = 'contact-ops';
@@ -296,15 +315,23 @@ export class ContactOpsClient extends ContactOpsPort {
       };
     }
     const base = this.baseUrl;
-    const ws =
-      this.federationMap.resolveSync(
-        this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ?? '',
-        'contact-ops',
-      ) ??
-      this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ??
-      '';
-    // Contact-Ops' FederationContext is the read-only (no-entitlements) shape.
-    const ctx: FederationContext = { workspaceId: ws, ucUid: null };
+    // The same DB-backed decision as every other Contact-Ops call (R6-1): no
+    // row, a conflicted row or a failed read means no tenant to address, so no
+    // token exchange and no request.
+    const ws = await this.route({
+      workspaceId: this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ?? '',
+      ucUid: null,
+    });
+    if (!ws) {
+      return {
+        seam,
+        configured: false,
+        ok: false,
+        status: null,
+        detail: 'not-connected',
+        latencyMs: null,
+      };
+    }
     const body = { jsonrpc: '2.0', id: ++this.rpcId, method: 'tools/list', params: {} };
 
     const startedAt = Date.now();
@@ -312,7 +339,7 @@ export class ContactOpsClient extends ContactOpsPort {
     try {
       res = await this.fetchWithTimeout(`${base}/mcp`, {
         method: 'POST',
-        headers: await this.authHeaders(ctx),
+        headers: await this.authHeaders(ws, null),
         body: JSON.stringify(body),
       });
     } catch (err) {
@@ -416,19 +443,22 @@ export class ContactOpsClient extends ContactOpsPort {
     };
   }
 
-  isWorkspaceConnected(ctx: FederationContext): boolean {
+  async isWorkspaceConnected(ctx: FederationContext): Promise<boolean> {
     // A mapped workspace is only "connected" when there is also a reachable
     // target: with CONTACT_OPS_BASE_URL unset (dormant), no Contact-Ops call
     // could ever land, so the create path must answer 409 not_connected
     // (audit 9c049f6d Q2) instead of 503 unavailable.
     if (!this.baseUrl) return false;
-    return this.federationMap.resolveSync(ctx.workspaceId, 'contact-ops') !== null;
+    // A row the org lookup contradicts keeps its tenant but is not routable (R3-1);
+    // read from the DB, not the cache (R5-2).
+    return (await this.route(ctx)) !== null;
   }
 
   async verifyContact(ctx: FederationContext, contactId: string): Promise<ContactVerdict> {
-    if (!this.isWorkspaceConnected(ctx)) return 'not_connected';
+    const ws = this.baseUrl ? await this.route(ctx) : null;
+    if (!ws) return 'not_connected';
     if (!contactId || contactId.startsWith('prov:')) return 'missing';
-    const r = await this.callToolOutcome(ctx, 'get_person', { person_id: contactId });
+    const r = await this.callToolAt(ws, ctx.ucUid, 'get_person', { person_id: contactId });
     if (r.kind === 'rejected') return 'missing';
     if (r.kind === 'unavailable') return 'unavailable';
     const pid = r.data['person_id'];
@@ -507,13 +537,15 @@ export class ContactOpsClient extends ContactOpsPort {
   ): Promise<FederatedWorkspaceProjection | null> {
     const base = this.baseUrl;
     if (!base) return null;
+    const ws = await this.route(ctx);
+    if (!ws) return null;
 
     let res: Response;
     try {
-      res = await this.fetchWithTimeout(
-        `${base}/api/v1/workspaces/${encodeURIComponent(this.effectiveWorkspaceId(ctx))}`,
-        { method: 'GET', headers: await this.authHeaders(ctx) },
-      );
+      res = await this.fetchWithTimeout(`${base}/api/v1/workspaces/${encodeURIComponent(ws)}`, {
+        method: 'GET',
+        headers: await this.authHeaders(ws, ctx.ucUid),
+      });
     } catch (err) {
       this.logger.warn(
         `Contact-Ops workspace projection transport error: ${(err as Error).message}`,
@@ -532,7 +564,7 @@ export class ContactOpsClient extends ContactOpsPort {
     } catch {
       return null;
     }
-    const wid = (raw['workspace_id'] as string) ?? this.effectiveWorkspaceId(ctx);
+    const wid = (raw['workspace_id'] as string) ?? ws;
     return {
       workspaceId: wid,
       slug: (raw['slug'] as string) ?? '',

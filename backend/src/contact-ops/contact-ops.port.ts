@@ -46,11 +46,12 @@ export type ContactVerdict = 'exists' | 'missing' | 'unavailable' | 'not_connect
 
 export abstract class ContactOpsPort {
   /**
-   * Does ctx.workspaceId have a contact-ops mapping (federation_workspace_map)?
-   * Pure in-memory; false means every Contact-Ops call for it would address the
+   * Does ctx.workspaceId have a routable contact-ops mapping
+   * (federation_workspace_map: a row, not in conflict)? Read from the DB at the
+   * request (R5-2); false means every Contact-Ops call for it would address the
    * wrong tenant, so callers answer "not connected" instead of asking.
    */
-  abstract isWorkspaceConnected(ctx: FederationContext): boolean;
+  abstract isWorkspaceConnected(ctx: FederationContext): Promise<boolean>;
 
   /**
    * Does this contact id exist in Contact-Ops for ctx.workspaceId? Unlike
