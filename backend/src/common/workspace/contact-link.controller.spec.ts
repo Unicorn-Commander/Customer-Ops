@@ -1,6 +1,6 @@
 import { ConflictException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { User } from '@prisma/client';
+import { Prisma, User } from '@prisma/client';
 import { ContactLinkController, ConnectContactDto } from './contact-link.controller';
 import { OrgTenantLookup } from '../../contact-ops/contact-ops-org-lookup.client';
 
@@ -27,6 +27,7 @@ function setup(answer: OrgTenantLookup, pre: Row | null = null) {
   const rows: Array<Record<string, unknown>> = [];
   /** The one contact-ops row, as the fake database holds it. */
   let row: Row | null = pre ? { ...pre } : null;
+  let afterRead: (() => void) | null = null;
   const tx = {
     $queryRaw: jest.fn().mockResolvedValue([]),
     $executeRaw: jest.fn().mockResolvedValue(0),
@@ -35,14 +36,26 @@ function setup(answer: OrgTenantLookup, pre: Row | null = null) {
       findUnique: jest.fn().mockResolvedValue({ role: 'OWNER', status: 'ACTIVE' }),
     },
     federationWorkspaceMap: {
-      findUnique: jest.fn(async () => (row ? { ...row } : null)),
-      upsert: jest.fn(async ({ create, update }: any) => {
-        if (row) Object.assign(row, update);
-        else {
-          rows.push(create);
-          row = { conflictTenantId: null, ...create };
-        }
+      findUnique: jest.fn(async () => {
+        const read = row ? { ...row } : null;
+        // A writer that lands between this read and the owner's write (R5-1).
+        afterRead?.();
+        afterRead = null;
+        return read;
+      }),
+      // Postgres semantics: the unique (local_workspace_id, target_app) key.
+      create: jest.fn(async ({ data }: any) => {
+        if (row) throw uniqueViolation();
+        rows.push(data);
+        row = { conflictTenantId: null, ...data };
         return row;
+      }),
+      updateMany: jest.fn(async ({ where, data }: any) => {
+        const hit =
+          !!row &&
+          Object.entries(where).every(([k, v]) => (row as Record<string, unknown>)[k] === v);
+        if (hit) Object.assign(row!, data);
+        return { count: hit ? 1 : 0 };
       }),
     },
     auditLog: { create: jest.fn().mockResolvedValue({}) },
@@ -67,7 +80,26 @@ function setup(answer: OrgTenantLookup, pre: Row | null = null) {
     mapping as any,
     lookup as any,
   );
-  return { ctl, rows, lookup, brigade, tx, mapping, row: () => row };
+  return {
+    ctl,
+    rows,
+    lookup,
+    brigade,
+    tx,
+    mapping,
+    row: () => row,
+    /** Run `fn` right after the owner transaction's next read of the row. */
+    interleave: (fn: (put: (r: Row) => void) => void) => {
+      afterRead = () => fn((r) => (row = { ...r }));
+    },
+  };
+}
+
+function uniqueViolation() {
+  return new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+    code: 'P2002',
+    clientVersion: 'test',
+  });
 }
 
 function dto(target = TENANT): ConnectContactDto {
@@ -161,7 +193,7 @@ describe('ContactLinkController contact-ops writes are fenced by the org lookup 
       expect(lookup.lookupTenant).toHaveBeenCalledWith(WS);
       expect(row()).toEqual({ ...conflicted, targetWorkspaceId: TENANT, conflictTenantId: null });
       // One write, inside the owner transaction, and audited.
-      expect(tx.federationWorkspaceMap.upsert).toHaveBeenCalledTimes(1);
+      expect(tx.federationWorkspaceMap.updateMany).toHaveBeenCalledTimes(1);
       expect(tx.auditLog.create).toHaveBeenCalledTimes(1);
       expect(mapping.reload).toHaveBeenCalled();
     });
@@ -175,7 +207,8 @@ describe('ContactLinkController contact-ops writes are fenced by the org lookup 
       const err = await ctl.connect(owner, WS, dto()).catch((e) => e);
       expect(err).toBeInstanceOf(ConflictException);
       expect(row()).toEqual(conflicted);
-      expect(tx.federationWorkspaceMap.upsert).not.toHaveBeenCalled();
+      expect(tx.federationWorkspaceMap.updateMany).not.toHaveBeenCalled();
+      expect(tx.federationWorkspaceMap.create).not.toHaveBeenCalled();
       expect(brigade.exchangedToken).not.toHaveBeenCalled();
       expect(remote).not.toHaveBeenCalled();
     });
@@ -190,7 +223,8 @@ describe('ContactLinkController contact-ops writes are fenced by the org lookup 
       expect(err).toBeInstanceOf(ConflictException);
       expect(lookup.lookupTenant).not.toHaveBeenCalled();
       expect(row()).toEqual(plain);
-      expect(tx.federationWorkspaceMap.upsert).not.toHaveBeenCalled();
+      expect(tx.federationWorkspaceMap.updateMany).not.toHaveBeenCalled();
+      expect(tx.federationWorkspaceMap.create).not.toHaveBeenCalled();
     });
   });
 
@@ -225,5 +259,84 @@ describe('ContactLinkController contact-ops writes are fenced by the org lookup 
       });
       expect(row()).toMatchObject({ targetWorkspaceId: TENANT, conflictTenantId: null });
     });
+  });
+});
+
+describe('R5-1: the owner write is conditional on the row exactly as it checked', () => {
+  const origFetch = global.fetch;
+  const origTenancy = process.env.CUSTOMER_OPS_TENANCY_ENABLED;
+
+  beforeEach(() => {
+    process.env.CUSTOMER_OPS_TENANCY_ENABLED = 'true';
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        result: {
+          structuredContent: {
+            tenant_id: TENANT,
+            role: 'viewer',
+            client_id: 'customer-ops',
+            service_subject: 'svc-customer-ops',
+          },
+        },
+      }),
+    })) as any;
+  });
+
+  afterEach(() => {
+    global.fetch = origFetch;
+    if (origTenancy === undefined) delete process.env.CUSTOMER_OPS_TENANCY_ENABLED;
+    else process.env.CUSTOMER_OPS_TENANCY_ENABLED = origTenancy;
+  });
+
+  it('provisioning inserts tenant B between the owner read and write -> B kept, owner 409', async () => {
+    const { ctl, row, interleave, tx } = setup({
+      kind: 'tenant',
+      tenantId: TENANT,
+      tenantSlug: 'a',
+    });
+    const B: Row = {
+      localWorkspaceId: WS,
+      targetApp: 'contact-ops',
+      targetWorkspaceId: OTHER,
+      conflictTenantId: null,
+    };
+    interleave((put) => put(B));
+    const err = await ctl.connect(owner, WS, dto()).catch((e) => e);
+    expect(err).toBeInstanceOf(ConflictException);
+    expect(row()).toEqual(B);
+    expect(tx.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it('a conflicted row re-marked by another writer between read and write -> 409, unchanged', async () => {
+    const conflicted: Row = {
+      localWorkspaceId: WS,
+      targetApp: 'contact-ops',
+      targetWorkspaceId: OTHER,
+      conflictTenantId: TENANT,
+    };
+    const { ctl, row, interleave } = setup(
+      { kind: 'tenant', tenantId: TENANT, tenantSlug: 'a' },
+      conflicted,
+    );
+    const THIRD = 'cccccccc-0000-4000-8000-00000000000c';
+    interleave((put) => put({ ...conflicted, conflictTenantId: THIRD }));
+    const err = await ctl.connect(owner, WS, dto()).catch((e) => e);
+    expect(err).toBeInstanceOf(ConflictException);
+    expect(row()).toEqual({ ...conflicted, conflictTenantId: THIRD });
+  });
+
+  it('takes the per-workspace contact-ops advisory lock BEFORE it reads the row', async () => {
+    const { ctl, tx } = setup({ kind: 'tenant', tenantId: TENANT, tenantSlug: 'a' });
+    await ctl.connect(owner, WS, dto());
+    const lock = tx.$executeRaw.mock.calls.findIndex((c: any[]) =>
+      String(c[0]?.join?.('') ?? c[0]).includes('pg_advisory_xact_lock'),
+    );
+    expect(lock).toBeGreaterThanOrEqual(0);
+    expect(tx.$executeRaw.mock.calls[lock].slice(1)).toEqual([`${WS}:contact-ops`]);
+    expect(tx.$executeRaw.mock.invocationCallOrder[lock]).toBeLessThan(
+      tx.federationWorkspaceMap.findUnique.mock.invocationCallOrder[0],
+    );
   });
 });

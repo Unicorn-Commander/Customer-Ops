@@ -21,6 +21,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { FederationWorkspaceMapService } from '../common/federation/federation-workspace-map.service';
 import { ContactOpsOrgLookupClient } from './contact-ops-org-lookup.client';
 import { canonicalTenantId, sameTenant } from './tenant-id';
+import { lockContactOpsRow } from './contact-ops-map.lock';
 
 export const CONTACT_OPS_TARGET_APP = 'contact-ops';
 
@@ -50,6 +51,9 @@ export type ContactOpsMapRowCheck =
   | { orgId: string; rowTenantId: string; status: 'confirmed'; lookupTenantId: string }
   | { orgId: string; rowTenantId: string; status: 'conflict'; lookupTenantId: string }
   | { orgId: string; rowTenantId: string; status: 'unconfirmed'; reason: string };
+
+/** A compare's outcome, and whether it wrote (so the map is reloaded after commit). */
+type Compared = { outcome: ContactOpsMapOutcome; changed: boolean };
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -158,8 +162,21 @@ export class ContactOpsMapProvisioner {
     if (answer.kind !== 'tenant') {
       return { orgId, rowTenantId, status: 'unconfirmed', reason: answer.reason };
     }
-    if (apply) await this.compare(orgId, rowTenantId, answer.tenantId);
-    else if (!sameTenant(answer.tenantId, rowTenantId)) {
+    if (apply) {
+      // Re-read under the lock (R5-1): the row is compared as it is now, not as
+      // the run's first listing saw it.
+      const result = await this.locked(orgId, async (tx) => {
+        const current = await this.currentTarget(tx, orgId);
+        return current === null
+          ? null
+          : { current, ...(await this.compare(tx, orgId, current, answer.tenantId)) };
+      });
+      if (result === null) {
+        return { orgId, rowTenantId, status: 'unconfirmed', reason: 'row_removed' };
+      }
+      if (result.changed) await this.federationMap.reload();
+      rowTenantId = result.current;
+    } else if (!sameTenant(answer.tenantId, rowTenantId)) {
       this.logConflict(orgId, rowTenantId, answer.tenantId);
     }
     return sameTenant(answer.tenantId, rowTenantId)
@@ -191,26 +208,47 @@ export class ContactOpsMapProvisioner {
   }
 
   private async writeRow(orgId: string, tenantId: string): Promise<ContactOpsMapOutcome> {
-    const existing = await this.currentTarget(orgId);
-    if (existing !== null) return this.compare(orgId, existing, tenantId);
+    let result: Compared;
     try {
-      await this.prisma.federationWorkspaceMap.create({
-        data: {
-          localWorkspaceId: orgId,
-          targetApp: CONTACT_OPS_TARGET_APP,
-          targetWorkspaceId: tenantId,
-        },
+      result = await this.locked(orgId, async (tx): Promise<Compared> => {
+        const existing = await this.currentTarget(tx, orgId);
+        if (existing !== null) return this.compare(tx, orgId, existing, tenantId);
+        await tx.federationWorkspaceMap.create({
+          data: {
+            localWorkspaceId: orgId,
+            targetApp: CONTACT_OPS_TARGET_APP,
+            targetWorkspaceId: tenantId,
+          },
+        });
+        return { outcome: { kind: 'written', tenantId }, changed: true };
       });
     } catch (error) {
-      // A concurrent replay (or a person) wrote the row first: compare, never overwrite.
+      // A writer outside the lock inserted first: compare, never overwrite.
       if (!isUniqueViolation(error)) throw error;
-      const raced = await this.currentTarget(orgId);
-      if (raced === null) throw error;
-      return this.compare(orgId, raced, tenantId);
+      result = await this.locked(orgId, async (tx) => {
+        const raced = await this.currentTarget(tx, orgId);
+        if (raced === null) throw error;
+        return this.compare(tx, orgId, raced, tenantId);
+      });
     }
-    await this.federationMap.reload();
-    this.logger.log(`contact-ops map written for org ${orgId} -> tenant ${tenantId}`);
-    return { kind: 'written', tenantId };
+    // After commit, so the reload sees this write.
+    if (result.changed) await this.federationMap.reload();
+    if (result.outcome.kind === 'written') {
+      this.logger.log(`contact-ops map written for org ${orgId} -> tenant ${tenantId}`);
+    }
+    return result.outcome;
+  }
+
+  /**
+   * Runs `fn` in one transaction holding the per-workspace contact-ops lock
+   * (R5-1), the same lock the owner connection route takes, so a row is read
+   * and written by one writer at a time.
+   */
+  private locked<T>(orgId: string, fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+    return this.prisma.$transaction(async (tx) => {
+      await lockContactOpsRow(tx, orgId);
+      return fn(tx);
+    });
   }
 
   /**
@@ -220,16 +258,20 @@ export class ContactOpsMapProvisioner {
    * pointing where it did, so a concurrent change is never stamped.
    */
   private async compare(
+    tx: Prisma.TransactionClient,
     orgId: string,
     existing: string,
     tenantId: string,
-  ): Promise<ContactOpsMapOutcome> {
+  ): Promise<Compared> {
     const conflictTenantId = sameTenant(existing, tenantId) ? null : tenantId;
     if (conflictTenantId) this.logConflict(orgId, existing, tenantId);
-    await this.setConflict(orgId, existing, conflictTenantId);
-    return conflictTenantId
-      ? { kind: 'conflict', existingTenantId: existing, lookupTenantId: tenantId }
-      : { kind: 'already', tenantId };
+    const changed = await this.setConflict(tx, orgId, existing, conflictTenantId);
+    return {
+      outcome: conflictTenantId
+        ? { kind: 'conflict', existingTenantId: existing, lookupTenantId: tenantId }
+        : { kind: 'already', tenantId },
+      changed,
+    };
   }
 
   private logConflict(orgId: string, existing: string, tenantId: string): void {
@@ -241,11 +283,12 @@ export class ContactOpsMapProvisioner {
   }
 
   private async setConflict(
+    tx: Prisma.TransactionClient,
     orgId: string,
     rowTenantId: string,
     conflictTenantId: string | null,
-  ): Promise<void> {
-    const { count } = await this.prisma.federationWorkspaceMap.updateMany({
+  ): Promise<boolean> {
+    const { count } = await tx.federationWorkspaceMap.updateMany({
       where: {
         localWorkspaceId: orgId,
         targetApp: CONTACT_OPS_TARGET_APP,
@@ -257,11 +300,11 @@ export class ContactOpsMapProvisioner {
       },
       data: { conflictTenantId },
     });
-    if (count > 0) await this.federationMap.reload();
+    return count > 0;
   }
 
-  private async currentTarget(orgId: string): Promise<string | null> {
-    const row = await this.prisma.federationWorkspaceMap.findUnique({
+  private async currentTarget(tx: Prisma.TransactionClient, orgId: string): Promise<string | null> {
+    const row = await tx.federationWorkspaceMap.findUnique({
       where: {
         localWorkspaceId_targetApp: { localWorkspaceId: orgId, targetApp: CONTACT_OPS_TARGET_APP },
       },

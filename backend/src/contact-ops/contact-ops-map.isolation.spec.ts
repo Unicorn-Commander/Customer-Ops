@@ -73,8 +73,11 @@ function makePrisma(pre: MapRow[] = []) {
   const rows: MapRow[] = pre.map((r) => ({ ...r }));
   const find = (k: { localWorkspaceId: string; targetApp: string }) =>
     rows.find((r) => r.localWorkspaceId === k.localWorkspaceId && r.targetApp === k.targetApp);
-  return {
+  const prisma = {
     rows,
+    // One transaction holding the R5-1 lock: the fake runs it on itself.
+    $transaction: jest.fn(async (fn: any): Promise<any> => fn(prisma)),
+    $executeRaw: jest.fn(async () => 1),
     federationWorkspaceMap: {
       findMany: jest.fn(async () => rows.map((r) => ({ ...r }))),
       findUnique: jest.fn(async ({ where }: any) => find(where.localWorkspaceId_targetApp) ?? null),
@@ -92,6 +95,7 @@ function makePrisma(pre: MapRow[] = []) {
       }),
     },
   };
+  return prisma;
 }
 
 function makeTx(ws: string) {

@@ -30,6 +30,7 @@ import { MembershipService } from '../common/workspace/membership.service';
 import { WorkspaceContextService } from '../common/workspace/workspace-context.service';
 import { AuditService } from '../audit/audit.service';
 import { GdprService } from '../gdpr/gdpr.service';
+import { lockContactOpsRow } from '../contact-ops/contact-ops-map.lock';
 
 const dbUrl =
   process.env.PROVISIONING_TEST_DATABASE_URL ?? process.env.CUSTOMER_OPS_RLS_OWNER_DATABASE_URL;
@@ -429,6 +430,49 @@ suite('contract D provisioning on a real PostgreSQL', () => {
       answers[orgId] = tenantOf(orgId, kept);
       expect((await provision(orgId)).status).toBe(200);
       expect(await mapOf(orgId)).toMatchObject({ targetWorkspaceId: kept, conflictTenantId: null });
+    });
+
+    it('R5-1: a replay waits on the owner lock: it never writes between the owner read and write', async () => {
+      const orgId = randomUUID();
+      const ownerTenant = randomUUID();
+      const lookupTenant = randomUUID();
+      expect((await provision(orgId)).status).toBe(201); // 404: no row yet
+      answers[orgId] = tenantOf(orgId, lookupTenant);
+      let replay!: Promise<{ status: number }>;
+      // The owner route's transaction, as it runs: lock, read (no row), write.
+      await db.$transaction(
+        async (tx) => {
+          await lockContactOpsRow(tx, orgId);
+          expect(
+            await tx.federationWorkspaceMap.findUnique({
+              where: {
+                localWorkspaceId_targetApp: { localWorkspaceId: orgId, targetApp: 'contact-ops' },
+              },
+            }),
+          ).toBeNull();
+          replay = provision(orgId);
+          // The replay has its lookup answer and now waits on the lock.
+          for (let i = 0; i < 100 && asked.length < 2; i++)
+            await new Promise((r) => setTimeout(r, 20));
+          expect(asked).toEqual([orgId, orgId]);
+          await new Promise((r) => setTimeout(r, 300));
+          expect(await mapOf(orgId)).toBeNull();
+          await tx.federationWorkspaceMap.create({
+            data: {
+              localWorkspaceId: orgId,
+              targetApp: 'contact-ops',
+              targetWorkspaceId: ownerTenant,
+            },
+          });
+        },
+        { timeout: 15_000 },
+      );
+      expect((await replay).status).toBe(200);
+      // The owner's row stands; the replay saw it after commit and marked the disagreement.
+      expect(await mapOf(orgId)).toMatchObject({
+        targetWorkspaceId: ownerTenant,
+        conflictTenantId: lookupTenant,
+      });
     });
 
     it('C2: 404 (no tenant for the org) writes no row; provisioning succeeds', async () => {

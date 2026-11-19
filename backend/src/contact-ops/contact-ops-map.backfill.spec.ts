@@ -61,6 +61,9 @@ function setup() {
     { localWorkspaceId: ORG_MAPPED, targetApp: 'contact-ops', targetWorkspaceId: TENANT_KEPT },
   ];
   const prisma = {
+    // One transaction holding the R5-1 lock: the fake runs it on itself.
+    $transaction: jest.fn(async (fn: any) => fn(prisma)),
+    $executeRaw: jest.fn(async () => 1),
     workspace: {
       findMany: jest.fn(async ({ where }: any) =>
         workspaces.filter((w) => !where?.status || w.status === where.status),
@@ -226,6 +229,9 @@ function setupExisting() {
   ];
   const before = JSON.stringify(rows);
   const prisma = {
+    // One transaction holding the R5-1 lock: the fake runs it on itself.
+    $transaction: jest.fn(async (fn: any) => fn(prisma)),
+    $executeRaw: jest.fn(async () => 1),
     workspace: {
       findMany: jest.fn(async ({ where }: any) =>
         workspaces.filter((w) => !where?.status || w.status === where.status),
@@ -237,7 +243,14 @@ function setupExisting() {
           .filter((r) => !where?.targetApp || r.targetApp === where.targetApp)
           .map((r) => ({ ...r })),
       ),
-      findUnique: jest.fn(),
+      // The R5-1 re-read under the lock.
+      findUnique: jest.fn(async ({ where }: any) => {
+        const k = where.localWorkspaceId_targetApp;
+        const r = rows.find(
+          (x) => x.localWorkspaceId === k.localWorkspaceId && x.targetApp === k.targetApp,
+        );
+        return r ? { ...r } : null;
+      }),
       create: jest.fn(),
       update: jest.fn(),
       upsert: jest.fn(),
@@ -497,4 +510,107 @@ describe('the backfill command boots without seeding (R3-3)', () => {
       }
     },
   );
+});
+
+describe('R5-1: every provisioner write of the contact-ops row is serialized by the owner lock', () => {
+  const ORG = '0190c000-7e57-7000-8000-0000000000a1';
+  const ROW_TENANT = 'eeeeeeee-0000-4000-8000-0000000000a1';
+  const LOOKUP_TENANT = 'ffffffff-0000-4000-8000-0000000000a1';
+
+  /** Writes are accepted only inside a transaction, after the advisory lock for that org. */
+  function lockedSetup(pre: Record<string, any> | null, tenantId: string) {
+    let row = pre ? { ...pre } : null;
+    const order: string[] = [];
+    let locked = false;
+    const refuse = (op: string) =>
+      jest.fn(async () => {
+        throw new Error(`unlocked ${op} of the contact-ops row`);
+      });
+    const tx = {
+      $executeRaw: jest.fn(async (sql: TemplateStringsArray, ...values: unknown[]) => {
+        if (sql.join('').includes('pg_advisory_xact_lock') && values[0] === `${ORG}:contact-ops`) {
+          locked = true;
+          order.push('lock');
+        }
+        return 1;
+      }),
+      federationWorkspaceMap: {
+        findUnique: jest.fn(async () => {
+          order.push(locked ? 'read' : 'unlocked-read');
+          return row ? { ...row } : null;
+        }),
+        create: jest.fn(async ({ data }: any) => {
+          order.push(locked ? 'create' : 'unlocked-create');
+          row = { conflictTenantId: null, ...data };
+          return row;
+        }),
+        updateMany: jest.fn(async ({ data }: any) => {
+          order.push(locked ? 'update' : 'unlocked-update');
+          Object.assign(row!, data);
+          return { count: 1 };
+        }),
+      },
+    };
+    const prisma = {
+      $transaction: jest.fn(async (fn: any) => {
+        locked = false;
+        try {
+          return await fn(tx);
+        } finally {
+          locked = false;
+        }
+      }),
+      workspace: { findMany: jest.fn(async () => [{ id: ORG, status: 'active' }]) },
+      federationWorkspaceMap: {
+        findMany: jest.fn(async () => (row ? [{ ...row }] : [])),
+        findUnique: jest.fn(async () => (row ? { ...row } : null)),
+        create: refuse('create'),
+        updateMany: refuse('updateMany'),
+        upsert: refuse('upsert'),
+      },
+    };
+    const lookup = {
+      isConfigured: () => true,
+      lookupTenant: jest.fn(async () => ({ kind: 'tenant', tenantId, tenantSlug: 'a' })),
+    };
+    const fedMap = { reload: jest.fn().mockResolvedValue(undefined) };
+    const svc = new ContactOpsMapProvisioner(prisma as any, lookup as any, fedMap as any);
+    return { svc, order, row: () => row };
+  }
+
+  it('provisioning insert: lock, then read, then insert (one transaction)', async () => {
+    const { svc, order, row } = lockedSetup(null, LOOKUP_TENANT);
+    await expect(svc.ensureForOrg(ORG)).resolves.toEqual({
+      kind: 'written',
+      tenantId: LOOKUP_TENANT,
+    });
+    expect(order).toEqual(['lock', 'read', 'create']);
+    expect(row()).toMatchObject({ targetWorkspaceId: LOOKUP_TENANT });
+  });
+
+  it('conflict mark (provisioning replay): lock, then read, then the conditional mark', async () => {
+    const pre = {
+      localWorkspaceId: ORG,
+      targetApp: 'contact-ops',
+      targetWorkspaceId: ROW_TENANT,
+      conflictTenantId: null,
+    };
+    const { svc, order, row } = lockedSetup(pre, LOOKUP_TENANT);
+    await expect(svc.ensureForOrg(ORG)).resolves.toMatchObject({ kind: 'conflict' });
+    expect(order).toEqual(['lock', 'read', 'update']);
+    expect(row()).toMatchObject({ targetWorkspaceId: ROW_TENANT, conflictTenantId: LOOKUP_TENANT });
+  });
+
+  it('backfill --apply verifying an existing row: lock, then read, then the conditional mark', async () => {
+    const pre = {
+      localWorkspaceId: ORG,
+      targetApp: 'contact-ops',
+      targetWorkspaceId: ROW_TENANT,
+      conflictTenantId: null,
+    };
+    const { svc, order } = lockedSetup(pre, LOOKUP_TENANT);
+    const report = await svc.backfill({ apply: true });
+    expect(report.existing).toEqual([expect.objectContaining({ status: 'conflict' })]);
+    expect(order).toEqual(['lock', 'read', 'update']);
+  });
 });

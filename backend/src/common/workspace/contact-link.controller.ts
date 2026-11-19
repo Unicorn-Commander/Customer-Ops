@@ -9,7 +9,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { AuditAction, User } from '@prisma/client';
+import { AuditAction, Prisma, User } from '@prisma/client';
 import { IsString, IsUUID, Length } from 'class-validator';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { JwtOnly } from '../../auth/decorators/jwt-only.decorator';
@@ -18,6 +18,7 @@ import { BrigadeTokenSource } from '../federation/brigade-token-source';
 import { FederationWorkspaceMapService } from '../federation/federation-workspace-map.service';
 import { ContactOpsOrgLookupClient } from '../../contact-ops/contact-ops-org-lookup.client';
 import { canonicalTenantId, sameTenant } from '../../contact-ops/tenant-id';
+import { lockContactOpsRow } from '../../contact-ops/contact-ops-map.lock';
 import { PrismaService } from '../../prisma/prisma.service';
 import { MembershipService } from './membership.service';
 import { tenancyEnabled } from './feature-flags';
@@ -151,8 +152,9 @@ export class ContactLinkController {
       });
       if (!owner || owner.role !== 'OWNER' || owner.status !== 'ACTIVE')
         throw new ForbiddenException('Active workspace owner required.');
-      // Serialize competing target connections and refuse an implicit overwrite.
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${workspaceId + ':contact-ops'}))`;
+      // Serialize with every other contact-ops row writer (R5-1: provisioning,
+      // the conflict mark, backfill --apply) and refuse an implicit overwrite.
+      await lockContactOpsRow(tx, workspaceId);
       const current = await tx.federationWorkspaceMap.findUnique({ where });
       const currentTarget = current?.targetWorkspaceId ?? null;
       // Proceed only over the row as it was checked: absent, already this
@@ -163,17 +165,38 @@ export class ContactLinkController {
           ? repairFrom === null
           : currentTarget === repairFrom && !!current!.conflictTenantId);
       if (!stillAsChecked) throw new ConflictException('Contact connection changed concurrently.');
-      await tx.federationWorkspaceMap.upsert({
-        where,
-        create: {
-          localWorkspaceId: workspaceId,
-          targetApp: 'contact-ops',
-          targetWorkspaceId: target,
-        },
-        // The lookup just confirmed this tenant for this org: the row points at
-        // it (a conflicted row is re-pointed) and any conflict mark is cleared.
-        update: { targetWorkspaceId: target, conflictTenantId: null },
-      });
+      // The write is conditional on the row being exactly as read (R5-1): insert
+      // only if absent, update only where target and mark are unchanged. The
+      // lookup just confirmed this tenant for this org: the row points at it (a
+      // conflicted row is re-pointed) and any conflict mark is cleared.
+      const written = current
+        ? (
+            await tx.federationWorkspaceMap.updateMany({
+              where: {
+                localWorkspaceId: workspaceId,
+                targetApp: 'contact-ops',
+                targetWorkspaceId: current.targetWorkspaceId,
+                conflictTenantId: current.conflictTenantId,
+              },
+              data: { targetWorkspaceId: target, conflictTenantId: null },
+            })
+          ).count
+        : await tx.federationWorkspaceMap
+            .create({
+              data: {
+                localWorkspaceId: workspaceId,
+                targetApp: 'contact-ops',
+                targetWorkspaceId: target,
+              },
+            })
+            .then(
+              () => 1,
+              (error: unknown) => {
+                if (isUniqueViolation(error)) return 0;
+                throw error;
+              },
+            );
+      if (written !== 1) throw new ConflictException('Contact connection changed concurrently.');
       await tx.auditLog.create({
         data: {
           workspaceId,
@@ -199,4 +222,8 @@ export class ContactLinkController {
       role: 'viewer',
     };
   }
+}
+
+function isUniqueViolation(error: unknown): boolean {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002';
 }
