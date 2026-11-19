@@ -2,6 +2,7 @@ import { ConfigService } from '@nestjs/config';
 import { ContactOpsClient } from './contact-ops.client';
 import { FederationContext } from './contact-ops.port';
 import { BrigadeTokenSource } from '../common/federation/brigade-token-source';
+import { FederationWorkspaceMapService } from '../common/federation/federation-workspace-map.service';
 
 /**
  * The federation workspace map (added with the per-workspace map in 0d09be3).
@@ -13,7 +14,6 @@ import { BrigadeTokenSource } from '../common/federation/brigade-token-source';
  */
 function makeFedMap(mapped: string | null = 'ws-aaaa') {
   return {
-    resolveSync: jest.fn().mockReturnValue(mapped),
     routableTarget: jest.fn(async () => mapped),
   } as any;
 }
@@ -224,7 +224,6 @@ describe('ContactOpsClient (Contact-Ops MOCKED)', () => {
           );
         }) as any;
         const fed = {
-          resolveSync: jest.fn((ws: string) => TENANTS[ws] ?? null),
           routableTarget: jest.fn(async (ws: string) => TENANTS[ws] ?? null),
         } as any;
         return new ContactOpsClient(makeConfig(env), makeBrigade(), fed);
@@ -729,5 +728,118 @@ describe('R5-3: the tenant id goes on the wire in canonical (lowercase) form', (
     ]);
     expect(calls[2].url).toBe(`https://contacts.example.test/api/v1/workspaces/${CANONICAL}`);
     expect(JSON.stringify(calls)).not.toContain(STORED);
+  });
+});
+
+describe('R6-1: ping() routes through the DB-backed contact-ops decision', () => {
+  const origFetch = global.fetch;
+  afterEach(() => {
+    global.fetch = origFetch;
+  });
+  const PROBE_WS = 'ws-probe';
+  const TENANT = 'cccccccc-0000-4000-8000-00000000000c';
+
+  /** The real map service over a fake Prisma: `row` is the probe workspace's
+   *  contact-ops row (undefined = none); `readFails` makes the DB read throw.
+   *  The in-memory cache holds the tenant, as a stale reload would. */
+  async function setup(
+    row: { targetWorkspaceId: string; conflictTenantId: string | null } | undefined,
+    readFails = false,
+  ) {
+    const prisma = {
+      federationWorkspaceMap: {
+        findUnique: jest.fn(async () => {
+          if (readFails) throw new Error('connection refused');
+          return row ?? null;
+        }),
+        // The cache was loaded earlier with the stored id, or with a routable
+        // tenant when the row is gone (a stale reload).
+        findMany: jest.fn(async () => [
+          {
+            localWorkspaceId: PROBE_WS,
+            targetApp: 'contact-ops',
+            targetWorkspaceId: row?.targetWorkspaceId ?? TENANT,
+          },
+        ]),
+      },
+    };
+    const map = new FederationWorkspaceMapService(prisma as any, makeConfig({}));
+    await map.reload();
+    const fetchSpy = jest.fn(async () => jsonResponse({ jsonrpc: '2.0', id: 1, result: {} }));
+    global.fetch = fetchSpy as any;
+    const brigade = { exchangedToken: jest.fn().mockResolvedValue('exchanged-token') };
+    const client = new ContactOpsClient(
+      makeConfig({
+        CONTACT_OPS_BASE_URL: 'https://contacts.example.test',
+        CONTACT_OPS_AUTH_MODE: 'brigade-sts',
+        HEALTH_PROBE_WORKSPACE_ID: PROBE_WS,
+      }),
+      brigade as unknown as BrigadeTokenSource,
+      map,
+    );
+    return { client, fetchSpy, brigade };
+  }
+
+  const NOT_CONNECTED = {
+    seam: 'contact-ops',
+    configured: false,
+    ok: false,
+    status: null,
+    detail: 'not-connected',
+    latencyMs: null,
+  };
+
+  it('conflicted probe row: no fetch, no token exchange, not-connected', async () => {
+    const { client, fetchSpy, brigade } = await setup({
+      targetWorkspaceId: TENANT,
+      conflictTenantId: 'dddddddd-0000-4000-8000-00000000000d',
+    });
+    await expect(client.ping()).resolves.toEqual(NOT_CONNECTED);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(brigade.exchangedToken).not.toHaveBeenCalled();
+  });
+
+  it('unmapped probe workspace: no fetch, no token exchange, not-connected', async () => {
+    const { client, fetchSpy, brigade } = await setup(undefined);
+    await expect(client.ping()).resolves.toEqual(NOT_CONNECTED);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(brigade.exchangedToken).not.toHaveBeenCalled();
+  });
+
+  it('failed DB read: no fetch, no token exchange, not-connected', async () => {
+    const { client, fetchSpy, brigade } = await setup(
+      { targetWorkspaceId: TENANT, conflictTenantId: null },
+      true,
+    );
+    await expect(client.ping()).resolves.toEqual(NOT_CONNECTED);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(brigade.exchangedToken).not.toHaveBeenCalled();
+  });
+
+  it('uppercase legacy probe row: header and STS input are lowercase', async () => {
+    const { client, fetchSpy, brigade } = await setup({
+      targetWorkspaceId: TENANT.toUpperCase(),
+      conflictTenantId: null,
+    });
+    const h = await client.ping();
+    expect(h.ok).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const init = (fetchSpy.mock.calls[0] as any[])[1];
+    expect(init.headers['X-Workspace-Id']).toBe(TENANT);
+    expect(brigade.exchangedToken.mock.calls.map((c) => c[0].workspaceId)).toEqual([TENANT]);
+  });
+
+  it('healthy mapped probe row: pings once, tools/list, ok', async () => {
+    const { client, fetchSpy, brigade } = await setup({
+      targetWorkspaceId: TENANT,
+      conflictTenantId: null,
+    });
+    await expect(client.ping()).resolves.toMatchObject({ ok: true, status: 200, detail: 'ok' });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchSpy.mock.calls[0] as any[];
+    expect(url).toBe('https://contacts.example.test/mcp');
+    expect(JSON.parse(init.body).method).toBe('tools/list');
+    expect(init.headers['X-Workspace-Id']).toBe(TENANT);
+    expect(brigade.exchangedToken).toHaveBeenCalledTimes(1);
   });
 });

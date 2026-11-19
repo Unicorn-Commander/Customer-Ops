@@ -298,7 +298,9 @@ export class ContactOpsClient extends ContactOpsPort {
   /**
    * Probe the Contact-Ops seam with a side-effect-free MCP `tools/list` over the
    * SAME transport/auth a real read uses (so a silent 401/403 surfaces as an
-   * `auth-error` rather than placeholder contact rows). Never throws.
+   * `auth-error` rather than placeholder contact rows). The probe workspace is
+   * routed like any request; with no routable row it answers `not-connected`
+   * without a request. Never throws.
    */
   async ping(): Promise<SeamHealth> {
     const seam = 'contact-ops';
@@ -313,13 +315,23 @@ export class ContactOpsClient extends ContactOpsPort {
       };
     }
     const base = this.baseUrl;
-    const ws =
-      this.federationMap.resolveSync(
-        this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ?? '',
-        'contact-ops',
-      ) ??
-      this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ??
-      '';
+    // The same DB-backed decision as every other Contact-Ops call (R6-1): no
+    // row, a conflicted row or a failed read means no tenant to address, so no
+    // token exchange and no request.
+    const ws = await this.route({
+      workspaceId: this.config.get<string>('HEALTH_PROBE_WORKSPACE_ID') ?? '',
+      ucUid: null,
+    });
+    if (!ws) {
+      return {
+        seam,
+        configured: false,
+        ok: false,
+        status: null,
+        detail: 'not-connected',
+        latencyMs: null,
+      };
+    }
     const body = { jsonrpc: '2.0', id: ++this.rpcId, method: 'tools/list', params: {} };
 
     const startedAt = Date.now();

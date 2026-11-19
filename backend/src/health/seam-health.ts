@@ -12,13 +12,15 @@
 export interface SeamHealth {
   /** The seam identity: 'contact-ops' | 'accounting-ops' | 'email-ops' | ... */
   seam: string;
-  /** Whether a target is configured at all (the seam's BASE_URL is set). */
+  /** Whether a target is configured at all (the seam's BASE_URL is set; for
+   *  contact-ops, also a routable map row for the probe workspace). */
   configured: boolean;
   /** True iff a live probe authenticated (HTTP 200 to `tools/list`). */
   ok: boolean;
-  /** HTTP status of the probe; null when no probe was attempted (not configured). */
+  /** HTTP status of the probe; null when no probe was attempted. */
   status: number | null;
-  /** 'ok' | 'not-configured' | 'auth-error: <msg>' | 'unreachable: <msg>'. */
+  /** 'ok' | 'not-configured' | 'not-connected' (contact-ops: no routable map row
+   *  for the probe workspace; no probe sent) | 'auth-error: <msg>' | 'unreachable: <msg>'. */
   detail: string;
   /** Probe round-trip in ms; null when no probe was attempted. */
   latencyMs: number | null;
