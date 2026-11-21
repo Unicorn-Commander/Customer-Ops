@@ -25,9 +25,13 @@ import { createHash } from 'crypto';
  *
  * Fail posture (per the endpoint spec):
  *   - 200, a key absent          -> a true deny (the list is authoritative).
- *   - 5xx / timeout / network    -> fail-soft: serve last-good if we have it
- *                                   (don't kick a known-good org on a blip),
- *                                   else null (never-seen -> caller fail-closed).
+ *   - 5xx / timeout / network    -> fail-soft: serve last-good if it is younger
+ *                                   than ENTITLEMENTS_LAST_GOOD_MAX_AGE_MS
+ *                                   (default 15 minutes). Past that, enforce
+ *                                   falls back to the token claim (same as a
+ *                                   cold outage) and never serves the stale
+ *                                   grant. Open mode still serves it and logs.
+ *                                   No cache at all -> null (claim fallback).
  *   - 401 / 403 (bad token / not a member) -> null (fall back to the claim).
  *   - cache ~60s per (user, org)  -> an upgrade takes effect within the TTL.
  */
@@ -90,7 +94,11 @@ export class EntitlementsService {
   // Keyed by `sub|orgId` (stable across token refresh) so a 60s TTL gives
   // upgrade-within-60s AND fail-soft survives a token rotation.
   private readonly fresh = new Map<string, CacheEntry>();
-  private readonly lastGood = new Map<string, EntitlementsResult>();
+  private readonly lastGood = new Map<string, CacheEntry>();
+  /** How long a last-good answer may be served during an endpoint outage. */
+  private readonly lastGoodMaxAgeMs: number;
+  /** True only when UC_ENTITLEMENT_MODE is explicitly open. Unset stays enforce. */
+  private readonly entitlementModeOpen: boolean;
   /**
    * Service credential for the SERVER-SIDE, per-workspace lookup used by lanes
    * that have no forwardable user JWT (the `co_pat_` lane). Unset => that lookup
@@ -107,6 +115,12 @@ export class EntitlementsService {
     this.serviceToken = (config.get<string>('ENTITLEMENTS_SERVICE_TOKEN') || '').trim();
     this.ttlMs = this.int(config.get<string>('ENTITLEMENTS_CACHE_TTL_MS'), 60_000);
     this.timeoutMs = this.int(config.get<string>('ENTITLEMENTS_TIMEOUT_MS'), 5_000);
+    this.lastGoodMaxAgeMs = this.int(
+      config.get<string>('ENTITLEMENTS_LAST_GOOD_MAX_AGE_MS'),
+      15 * 60 * 1000,
+    );
+    this.entitlementModeOpen =
+      (config.get<string>('UC_ENTITLEMENT_MODE') ?? '').trim().toLowerCase() === 'open';
     // BOOT LOG — state plainly, in one place, whether each lane is actually
     // live. The previous log printed "Entitlements source: <url>" the moment a
     // URL was set, which read as "fully configured" even when the per-workspace
@@ -180,12 +194,10 @@ export class EntitlementsService {
         signal: controller.signal,
       });
     } catch (err) {
-      const cached = this.lastGood.get(key);
-      this.logger.warn(
-        `entitlements fetch failed (${(err as Error)?.name ?? 'error'}); ` +
-          `${cached ? 'serving last-good (fail-soft)' : 'no cache -> fail-closed (claim fallback)'}`,
+      return this.takeLastGood(
+        key,
+        `entitlements fetch failed (${(err as Error)?.name ?? 'error'})`,
       );
-      return cached ?? null;
     } finally {
       clearTimeout(timer);
     }
@@ -195,19 +207,14 @@ export class EntitlementsService {
     if (res.status === 401 || res.status === 403) return null;
 
     if (res.status >= 500 || !res.ok) {
-      const cached = this.lastGood.get(key);
-      this.logger.warn(
-        `entitlements endpoint ${res.status}; ` +
-          `${cached ? 'serving last-good (fail-soft)' : 'no cache -> fail-closed (claim fallback)'}`,
-      );
-      return cached ?? null;
+      return this.takeLastGood(key, `entitlements endpoint ${res.status}`);
     }
 
     let body: any;
     try {
       body = await res.json();
     } catch {
-      return this.lastGood.get(key) ?? null;
+      return this.takeLastGood(key, 'entitlements body unparseable');
     }
 
     const data: EntitlementsResult = {
@@ -218,8 +225,38 @@ export class EntitlementsService {
         : [],
     };
     this.put(this.fresh, key, { at: now, data });
-    this.put(this.lastGood, key, data);
+    this.put(this.lastGood, key, { at: now, data });
     return data;
+  }
+
+  /**
+   * Last-good during an outage. Inside the max age, serve it. Past it, enforce
+   * returns null (the caller's token-claim fallback) and open keeps the cached
+   * answer. The log names feature keys only — never the bearer.
+   */
+  private takeLastGood(key: string, reason: string): EntitlementsResult | null {
+    const cached = this.lastGood.get(key);
+    if (!cached) {
+      this.logger.warn(`${reason}; no cache -> fail-closed (claim fallback)`);
+      return null;
+    }
+    const names = cached.data.featureKeys.join(',');
+    if (Date.now() - cached.at <= this.lastGoodMaxAgeMs) {
+      this.logger.warn(`${reason}; serving last-good (fail-soft)`);
+      return cached.data;
+    }
+    if (this.entitlementModeOpen) {
+      this.logger.warn(
+        `${reason}; entitlements last-good is older than ${this.lastGoodMaxAgeMs}ms; ` +
+          `UC_ENTITLEMENT_MODE=open still serves it (names only: [${names}]).`,
+      );
+      return cached.data;
+    }
+    this.logger.warn(
+      `${reason}; entitlements last-good is older than ${this.lastGoodMaxAgeMs}ms; ` +
+        `not serving the stale grant, falling back to the token claim (names only: [${names}]).`,
+    );
+    return null;
   }
 
   /**

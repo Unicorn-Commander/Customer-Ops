@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EntitlementsService } from './entitlements.service';
 
@@ -96,6 +97,93 @@ describe('EntitlementsService', () => {
     await s.resolve(RS);
     fetchMock.mockRejectedValueOnce(Object.assign(new Error('aborted'), { name: 'AbortError' }));
     expect((await s.resolve(RS))?.tier).toBe('managed');
+  });
+
+  describe('last-good max age', () => {
+    const T0 = 1_700_000_000_000;
+    const FIFTEEN_MIN = 15 * 60 * 1000;
+
+    afterEach(() => jest.restoreAllMocks());
+
+    function at(ms: number) {
+      jest.spyOn(Date, 'now').mockReturnValue(ms);
+    }
+
+    it('still serves last-good when the outage is inside the max age', async () => {
+      at(T0);
+      const s = svc({ ENTITLEMENTS_ENDPOINT_URL: URL, ENTITLEMENTS_CACHE_TTL_MS: '0' });
+      fetchMock.mockResolvedValueOnce(ok(GRANTS));
+      await s.resolve(RS);
+      at(T0 + FIFTEEN_MIN);
+      fetchMock.mockResolvedValueOnce(status(503));
+      expect((await s.resolve(RS))?.featureKeys).toContain('customer_ops_access');
+    });
+
+    it('past the max age, enforce falls back to the claim and never serves the stale grant', async () => {
+      const warns: string[] = [];
+      jest.spyOn(Logger.prototype, 'warn').mockImplementation((m: any) => void warns.push(String(m)));
+      at(T0);
+      const s = svc({ ENTITLEMENTS_ENDPOINT_URL: URL, ENTITLEMENTS_CACHE_TTL_MS: '0' });
+      fetchMock.mockResolvedValueOnce(ok(GRANTS));
+      await s.resolve(RS);
+      at(T0 + FIFTEEN_MIN + 1);
+      fetchMock.mockResolvedValueOnce(status(503));
+      expect(await s.resolve(RS)).toBeNull();
+      const line = warns.find((w) => /last-good/i.test(w) && /claim/i.test(w));
+      expect(line).toBeTruthy();
+      expect(line).toContain('customer_ops_access');
+      expect(line).not.toContain(RS);
+    });
+
+    it('open mode still serves a stale last-good and only logs the names', async () => {
+      const warns: string[] = [];
+      jest.spyOn(Logger.prototype, 'warn').mockImplementation((m: any) => void warns.push(String(m)));
+      at(T0);
+      const s = svc({
+        ENTITLEMENTS_ENDPOINT_URL: URL,
+        ENTITLEMENTS_CACHE_TTL_MS: '0',
+        UC_ENTITLEMENT_MODE: 'open',
+      });
+      fetchMock.mockResolvedValueOnce(ok(GRANTS));
+      await s.resolve(RS);
+      at(T0 + FIFTEEN_MIN + 1);
+      fetchMock.mockResolvedValueOnce(status(500));
+      expect((await s.resolve(RS))?.featureKeys).toContain('customer_ops_access');
+      const line = warns.find((w) => /open/i.test(w) && /last-good/i.test(w));
+      expect(line).toBeTruthy();
+      expect(line).toContain('email_ops_access');
+      expect(line).not.toContain(RS);
+    });
+
+    it('ENTITLEMENTS_LAST_GOOD_MAX_AGE_MS overrides the 15 minute default', async () => {
+      at(T0);
+      const s = svc({
+        ENTITLEMENTS_ENDPOINT_URL: URL,
+        ENTITLEMENTS_CACHE_TTL_MS: '0',
+        ENTITLEMENTS_LAST_GOOD_MAX_AGE_MS: '1000',
+      });
+      fetchMock.mockResolvedValueOnce(ok(GRANTS));
+      await s.resolve(RS);
+      at(T0 + 1001);
+      fetchMock.mockResolvedValueOnce(status(503));
+      expect(await s.resolve(RS)).toBeNull();
+    });
+
+    it('an unparseable body past the max age also falls back to the claim', async () => {
+      at(T0);
+      const s = svc({ ENTITLEMENTS_ENDPOINT_URL: URL, ENTITLEMENTS_CACHE_TTL_MS: '0' });
+      fetchMock.mockResolvedValueOnce(ok(GRANTS));
+      await s.resolve(RS);
+      at(T0 + FIFTEEN_MIN + 1);
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw new Error('not json');
+        },
+      } as unknown as Response);
+      expect(await s.resolve(RS)).toBeNull();
+    });
   });
 
   /**
