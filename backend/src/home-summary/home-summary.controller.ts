@@ -4,8 +4,10 @@ import {
   Controller,
   ExecutionContext,
   Get,
+  Inject,
   Injectable,
   NotFoundException,
+  Optional,
   Query,
   Req,
   Type,
@@ -33,12 +35,17 @@ import { HomeSummaryService } from './home-summary.service';
  * runs — decoding cannot invent trust it did not have. `exp` is re-checked here so
  * the fence stands on its own even if the strategy's opinion changed.
  */
+/** DI token for an alternative claim decoder (a test seam; unused in prod). */
+export const GUARD_DECODE_TOKEN = 'HOME_SUMMARY_CALLER_DECODE';
+export type DecodeFn = (request: any) => VerifiedTokenClaims | undefined;
+
 @Injectable()
 export class ServiceCallerGuard implements CanActivate {
   constructor(
     private readonly config: ConfigService,
-    /** Test seam: default decodes the bearer that reached this guard. */
-    private readonly decode: (request: any) => VerifiedTokenClaims | undefined = defaultDecode,
+    @Optional()
+    @Inject(GUARD_DECODE_TOKEN)
+    private readonly decode: DecodeFn = defaultDecode,
   ) {}
 
   canActivate(context: ExecutionContext): boolean {
@@ -68,10 +75,7 @@ function defaultDecode(request: any): VerifiedTokenClaims | undefined {
 }
 
 /** Nest DI factory for the service caller guard (pins an optional decoder seam). */
-export function serviceCallerGuard(
-  config: ConfigService,
-  decode?: (request: any) => VerifiedTokenClaims | undefined,
-): ServiceCallerGuard {
+export function serviceCallerGuard(config: ConfigService, decode?: DecodeFn): ServiceCallerGuard {
   return new ServiceCallerGuard(config, decode);
 }
 
