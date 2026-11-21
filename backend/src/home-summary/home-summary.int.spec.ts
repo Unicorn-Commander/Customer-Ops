@@ -4,7 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import { AddressInfo } from 'net';
 import * as jwt from 'jsonwebtoken';
-import { PrismaClient, RelationshipStage } from '@prisma/client';
+import { PrismaClient, RelationshipStage, WorkspaceRole } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { JwtStrategy } from '../auth/strategies/jwt.strategy';
 import { AuthService } from '../auth/auth.service';
@@ -13,7 +13,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ContactOpsPort } from '../contact-ops/contact-ops.port';
 import { HomeSummaryController } from './home-summary.controller';
 import { ServiceCallerGuard } from './home-summary.caller';
-import { HomeSummaryService } from './home-summary.service';
+import { HomeSummaryService, homeScopeForRole } from './home-summary.service';
 
 /**
  * HOME-SUMMARY CONTRACT v1 acceptance over the REAL Prisma client + a fake JWKS.
@@ -312,6 +312,31 @@ describeDb('home-summary (CONTRACT v1, real DB, fake JWKS)', () => {
 
   const q = `?workspace=${WS}&email=${encodeURIComponent(EMAIL.toUpperCase())}&org=ops-org&sub=kc`;
 
+  // CONTRACT v1.1 (task 0c469c1f): the person's ROLE in THIS workspace decides
+  // the scope of every metric and item. OWNER/ADMIN => WORKSPACE TOTALS (all
+  // live rows in the workspace, incl. the two-owner seed and the unassigned
+  // lead above); MEMBER => only their own (ownerUserKey = their app user key);
+  // VIEWER => #63's nothing. The scope keys on the STORED Membership.role, never
+  // on a claim, a header or a caller-supplied reason.
+  async function asRole<T>(role: WorkspaceRole, fn: () => Promise<T>): Promise<T> {
+    await owner.membership.update({
+      where: { userKey_workspaceId: { userKey: KC_SUB, workspaceId: WS } },
+      data: { role },
+    });
+    try {
+      return await fn();
+    } finally {
+      await owner.membership.update({
+        where: { userKey_workspaceId: { userKey: KC_SUB, workspaceId: WS } },
+        data: { role: 'MEMBER' },
+      });
+    }
+  }
+
+  async function seededUsersRowCount(): Promise<number> {
+    return owner.user.count({ where: { keycloakId: { in: [KC_SUB, OTHER_SUB] } } });
+  }
+
   it('REAL PATH: a service token with NO User row gets ok and does not provision a user', async () => {
     // The service account has no User row (it is a client_credentials token).
     const serviceUsers = await owner.user.count({ where: { keycloakId: 'kc-home-caller' } });
@@ -511,5 +536,109 @@ describeDb('home-summary (CONTRACT v1, real DB, fake JWKS)', () => {
       users: await owner.user.count(),
     };
     expect(after).toEqual(before);
+  });
+
+  // ── CONTRACT v1.1 role scope ──────────────────────────────────────────────
+
+  it('v1.1 pure scope helper: OWNER/ADMIN are workspace, MEMBER is own, VIEWER/absent none', () => {
+    expect(homeScopeForRole(WorkspaceRole.OWNER)).toBe('workspace');
+    expect(homeScopeForRole(WorkspaceRole.ADMIN)).toBe('workspace');
+    expect(homeScopeForRole(WorkspaceRole.MANAGER)).toBe('own');
+    expect(homeScopeForRole(WorkspaceRole.MEMBER)).toBe('own');
+    expect(homeScopeForRole(WorkspaceRole.VIEWER)).toBe('none');
+    expect(homeScopeForRole(null)).toBe('none');
+  });
+
+  it('v1.1 OWNER sees WORKSPACE TOTALS across both members book (incl. unassigned)', async () => {
+    const usersBefore = await seededUsersRowCount();
+    const res = await asRole(WorkspaceRole.OWNER, () => call(q, signServiceToken()));
+    expect(res.status).toBe(200);
+    expect(res.body.state).toBe('ok');
+    const byLabel = Object.fromEntries(res.body.metrics.map((m: any) => [m.label, m.value]));
+    expect(byLabel).toEqual({
+      'Active customers': 2,
+      'Open leads': 4,
+      'Follow-ups due': 2,
+      'Quotes out': 3,
+    });
+    for (const m of res.body.metrics) {
+      expect(m.href).not.toMatch(/localhost|127\.0\.0\.1/);
+    }
+    // Item window is workspace-wide too: the overdue other-owner follow-up now
+    // LEADS the list (soonest first), then Aaron's overdue ACME row.
+    expect(res.body.items).toHaveLength(3);
+    const titles = res.body.items.map((i: any) => i.title);
+    expect(titles).toEqual([
+      'Name of contact-secret',
+      'Name of contact-acme',
+      'Name of contact-initech',
+    ]);
+    expect(res.body.items[0].subtitle).toBe('Other owner follow-up');
+    for (const item of res.body.items) {
+      expect(item.kind).toBe('follow_up');
+      expect(item.href).toMatch(/^https:\/\/customerops\.example\.com\/dashboard\/customers\//);
+    }
+    // The read never provisions or edits a user row.
+    expect(await seededUsersRowCount()).toBe(usersBefore);
+  });
+
+  it('v1.1 ADMIN also sees WORKSPACE TOTALS (same numbers as OWNER)', async () => {
+    const admin = await asRole(WorkspaceRole.ADMIN, () => call(q, signServiceToken()));
+    const ownerRes = await asRole(WorkspaceRole.OWNER, () => call(q, signServiceToken()));
+    expect(admin.status).toBe(200);
+    expect(admin.body.metrics).toEqual(ownerRes.body.metrics);
+    expect(admin.body.items).toEqual(ownerRes.body.items);
+    const byLabel = Object.fromEntries(admin.body.metrics.map((m: any) => [m.label, m.value]));
+    expect(byLabel).toEqual({
+      'Active customers': 2,
+      'Open leads': 4,
+      'Follow-ups due': 2,
+      'Quotes out': 3,
+    });
+  });
+
+  it("v1.1 MEMBER still sees ONLY their own book (never another member's rows)", async () => {
+    const usersBefore = await seededUsersRowCount();
+    const res = await asRole(WorkspaceRole.MEMBER, () => call(q, signServiceToken()));
+    expect(res.status).toBe(200);
+    const byLabel = Object.fromEntries(res.body.metrics.map((m: any) => [m.label, m.value]));
+    expect(byLabel).toEqual({
+      'Active customers': 2,
+      'Open leads': 3,
+      'Follow-ups due': 1,
+      'Quotes out': 2,
+    });
+    expect(res.body.items.map((i: any) => i.title)).toEqual([
+      'Name of contact-acme',
+      'Name of contact-initech',
+    ]);
+    expect(JSON.stringify(res.body)).not.toContain('contact-secret');
+    expect(JSON.stringify(res.body)).not.toContain('Other owner follow-up');
+    expect(await seededUsersRowCount()).toBe(usersBefore);
+  });
+
+  it('v1.1 VIEWER keeps #63 behaviour (nothing), even though the workspace has data', async () => {
+    const res = await asRole(WorkspaceRole.VIEWER, () => call(q, signServiceToken()));
+    expect(res.status).toBe(200);
+    expect(res.body.state).toBe('empty');
+    expect(res.body.metrics).toEqual([]);
+    expect(res.body.items).toEqual([]);
+  });
+
+  it('v1.1 scope follows the STORED membership row, not a query claim', async () => {
+    // A caller cannot widen its scope by claiming a role/scope in the query.
+    const res = await call(
+      `${q}&role=OWNER&scope=workspace`,
+      signServiceToken({ role: 'OWNER', scope: 'workspace' }),
+    );
+    expect(res.status).toBe(200);
+    const byLabel = Object.fromEntries(res.body.metrics.map((m: any) => [m.label, m.value]));
+    // Aaron's stored role is MEMBER here: still only his own book.
+    expect(byLabel).toEqual({
+      'Active customers': 2,
+      'Open leads': 3,
+      'Follow-ups due': 1,
+      'Quotes out': 2,
+    });
   });
 });
