@@ -44,7 +44,11 @@ function configOf(env: Record<string, string> = {}): ConfigService {
   return { get: (k: string) => env[k] } as unknown as ConfigService;
 }
 
-function harness(env: Record<string, string> = {}, server: string[] | null = null) {
+function harness(
+  env: Record<string, string> = {},
+  server: string[] | null = null,
+  memberships?: { workspaceId: string; isDefault?: boolean }[],
+) {
   const store: any[] = [];
   const prisma = {
     personalAccessToken: {
@@ -78,6 +82,9 @@ function harness(env: Record<string, string> = {}, server: string[] | null = nul
   } as unknown as PrismaService;
   const membership = {
     resolveAndAuthorize: jest.fn(async (_u: User, req?: string | null) => req ?? WS),
+    ...(memberships
+      ? { listActiveMemberships: jest.fn(async () => memberships) }
+      : {}),
   } as unknown as MembershipService;
   const resolver = {
     skusFor: jest.fn(async () => server),
@@ -223,5 +230,79 @@ describe('PAT entitlement snapshot age and default expiry', () => {
 
     await service.findByPlaintext(minted.plaintext);
     expect(hits()).toHaveLength(1);
+  });
+});
+
+describe('PAT mint binds a null server-side source to one workspace', () => {
+  const WS_PAID = '0190a000-7e57-7000-8000-0000000000a1';
+  const WS_OTHER = '0190a000-7e57-7000-8000-0000000000b2';
+  const both = [
+    { workspaceId: WS_PAID, isDefault: true },
+    { workspaceId: WS_OTHER, isDefault: false },
+  ];
+  let warns: string[];
+
+  beforeEach(() => {
+    clearOwnerEntitlementClaims();
+    warns = [];
+    jest.spyOn(Logger.prototype, 'warn').mockImplementation((m: any) => {
+      warns.push(String(m));
+    });
+  });
+
+  afterEach(() => jest.restoreAllMocks());
+
+  function named(workspaceId: string): User {
+    const u = payingUser(['customer-ops']) as User & { __entitlementClaimWorkspaceId?: string };
+    u.__entitlementClaimWorkspaceId = workspaceId;
+    return u;
+  }
+
+  it('enforce: a claim that names W1 is kept on a W1 PAT and dropped on a W2 PAT', async () => {
+    const { service } = harness({}, null, both);
+    const paid = await service.create(named(WS_PAID), { name: 'paid', workspaceId: WS_PAID });
+    expect(paid.entitlements).toEqual(['customer-ops']);
+    const other = await service.create(named(WS_PAID), { name: 'other', workspaceId: WS_OTHER });
+    expect(other.entitlements).toEqual([]);
+  });
+
+  it('enforce: with no workspace on the claim, only the primary workspace keeps the SKU', async () => {
+    const { service } = harness({}, null, both);
+    const paid = await service.create(payingUser(['customer-ops']), {
+      name: 'paid',
+      workspaceId: WS_PAID,
+    });
+    expect(paid.entitlements).toEqual(['customer-ops']);
+    const other = await service.create(payingUser(['customer-ops']), {
+      name: 'other',
+      workspaceId: WS_OTHER,
+    });
+    expect(other.entitlements).toEqual([]);
+  });
+
+  it('the single-workspace case still snapshots the claim', async () => {
+    const { service } = harness({}, null, [{ workspaceId: WS, isDefault: true }]);
+    const minted = await service.create(payingUser(['customer-ops']), { name: 'only' });
+    expect(minted.workspaceId).toBe(WS);
+    expect(minted.entitlements).toEqual(['customer-ops']);
+  });
+
+  it('open mode keeps the W2 snapshot and only logs', async () => {
+    const { service } = harness({ UC_ENTITLEMENT_MODE: 'open' }, null, both);
+    const minted = await service.create(named(WS_PAID), { name: 'other', workspaceId: WS_OTHER });
+    expect(minted.entitlements).toEqual(['customer-ops']);
+    expect(warns.some((w) => /open/i.test(w) && w.includes(WS_OTHER))).toBe(true);
+    expect(warns.join('\n')).not.toMatch(/co_pat_/);
+  });
+
+  it('after the max age, a current claim that names another workspace is not applied', async () => {
+    const { service, store } = harness({}, null, both);
+    const minted = await service.create(named(WS_PAID), { name: 'moved', workspaceId: WS_PAID });
+    store[0].workspaceId = WS_OTHER;
+    store[0].createdAt = new Date(Date.now() - 25 * HOUR);
+    rememberOwnerEntitlementClaim(aaron.id, ['customer-ops', 'ai-metered'], WS_PAID);
+
+    const resolved = await service.findByPlaintext(minted.plaintext);
+    expect(resolved!.entitlements).toEqual([]);
   });
 });

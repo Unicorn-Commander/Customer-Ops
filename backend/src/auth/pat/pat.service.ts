@@ -12,8 +12,11 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { MembershipService } from '../../common/workspace/membership.service';
 import { WorkspaceEntitlementsResolver } from '../../common/workspace/workspace-entitlements.resolver';
 import {
+  claimWorkspaceOf,
   entitlementsOf,
+  honourClaimWithoutSource,
   intersectEntitlements,
+  primaryWorkspaceIdFrom,
   WithWorkspaceClaim,
 } from '../../common/workspace/workspace.util';
 import { PAT_AVAILABLE_SCOPES, PAT_PREFIX, PatScope } from './pat.constants';
@@ -157,14 +160,17 @@ export class PatService {
     // here is the session token's live claim — but that claim is the user's
     // union across every org they belong to, so snapshotting it raw would let a
     // PAT bound to workspace B carry a SKU only workspace A bought. Intersect it
-    // with `workspaceId`'s server-side entitlements first (null source ⇒ the
-    // claim unchanged, today's shared-SaaS default). The snapshot is a FLOOR, not
-    // the authority: `findByPlaintext` re-intersects it with the workspace's
+    // with `workspaceId`'s server-side entitlements first. A null source (no
+    // pin, no mirror, no service token) honours the claim only for the
+    // workspace the claim names, or otherwise only the caller's primary
+    // workspace — see snapshotForMint. The snapshot is a FLOOR, not the
+    // authority: `findByPlaintext` re-intersects it with the workspace's
     // CURRENT server-side set on every request so revocation still lands.
     //
     // A resolver that cannot answer FAILS THE MINT (503) — see serverSideSkus.
-    const entitlements = intersectEntitlements(
-      entitlementsOf(user),
+    const entitlements = await this.snapshotForMint(
+      user,
+      workspaceId,
       await this.serverSideSkus(workspaceId),
     );
 
@@ -275,7 +281,7 @@ export class PatService {
         user,
         token: bareToken,
         workspaceId: bareToken.workspaceId,
-        entitlements: await this.effectiveEntitlementsFor(bareToken),
+        entitlements: await this.effectiveEntitlementsFor(bareToken, user),
       };
     }
 
@@ -311,7 +317,10 @@ export class PatService {
    *     set on failure. (Returning [] rather than throwing keeps auth itself
    *     working — the request is still authenticated, it just holds no SKUs.)
    */
-  private async effectiveEntitlementsFor(token: PersonalAccessToken): Promise<string[]> {
+  private async effectiveEntitlementsFor(
+    token: PersonalAccessToken,
+    user?: Pick<User, 'id' | 'keycloakId'>,
+  ): Promise<string[]> {
     const snapshot = token.entitlements ?? [];
     // No resolver injected at all (a unit-constructed PatService) => the mint
     // snapshot is the only source, the documented pre-resolver behaviour.
@@ -326,7 +335,7 @@ export class PatService {
     try {
       const server = await this.workspaceEntitlements.skusFor(token.workspaceId);
       if (server !== null) return intersectEntitlements(snapshot, server);
-      return this.snapshotWithoutServerSource(token, snapshot);
+      return this.snapshotWithoutServerSource(token, snapshot, user);
     } catch (err) {
       this.logger.error(
         `PAT ${token.id}: workspace entitlement resolve failed (${(err as Error)?.message ?? 'error'}) — failing closed (no entitlements)`,
@@ -445,12 +454,50 @@ export class PatService {
   }
 
   /**
+   * SKUs to freeze onto a new PAT. A present server-side list is the
+   * intersection. A null source, in enforce mode, keeps the claim only when
+   * it binds to this workspace (the workspace the claim names, else the
+   * caller's primary). Open mode keeps the claim and logs a mismatch.
+   */
+  private async snapshotForMint(
+    user: User & Partial<WithWorkspaceClaim>,
+    workspaceId: string,
+    server: string[] | null,
+  ): Promise<string[]> {
+    const claimed = entitlementsOf(user);
+    if (server !== null) return intersectEntitlements(claimed, server);
+
+    const binding = {
+      actingWorkspaceId: workspaceId,
+      claimWorkspaceId: claimWorkspaceOf(user),
+      primaryWorkspaceId: await this.primaryWorkspaceId(user),
+    };
+    if (this.entitlementMode() === 'open') {
+      if (!honourClaimWithoutSource(binding)) {
+        this.logger.warn(
+          `PAT mint for workspace ${workspaceId}: entitlement claim does not bind ` +
+            `(claimWorkspace=${binding.claimWorkspaceId ?? 'none'}, ` +
+            `primary=${binding.primaryWorkspaceId ?? 'none'}); ` +
+            `UC_ENTITLEMENT_MODE=open keeps the claim (names only: [${claimed.join(',')}]).`,
+        );
+      }
+      return intersectEntitlements(claimed, null);
+    }
+    return intersectEntitlements(claimed, null, binding);
+  }
+
+  /**
    * No server-side source. A fresh snapshot stands. Past the max age, enforce
    * mode re-reads the owner's current claim (intersected with the snapshot so
    * the set can only narrow) or returns [] for the existing entitlement 403.
-   * Open mode is a no-op besides a log: the snapshot is unchanged.
+   * A current claim that names a different workspace than the PAT is not
+   * applied. Open mode is a no-op besides a log: the snapshot is unchanged.
    */
-  private snapshotWithoutServerSource(token: PersonalAccessToken, snapshot: string[]): string[] {
+  private async snapshotWithoutServerSource(
+    token: PersonalAccessToken,
+    snapshot: string[],
+    user?: Pick<User, 'id' | 'keycloakId'>,
+  ): Promise<string[]> {
     if (!this.snapshotStale(token)) return snapshot;
 
     const maxHours = this.snapshotMaxAgeHours();
@@ -465,6 +512,25 @@ export class PatService {
 
     const current = readOwnerEntitlementClaim(token.userId);
     if (current && Date.now() - current.at <= this.snapshotMaxAgeMs()) {
+      const acting = (token.workspaceId ?? '').trim();
+      const named = (current.workspaceId ?? '').trim();
+      if (named && acting && named !== acting) {
+        this.logger.warn(
+          `PAT ${token.id}: current owner claim names workspace ${named}, not ${acting}; ` +
+            `not applying it (names only: [${current.entitlements.join(',')}]).`,
+        );
+        return [];
+      }
+      if (!named && acting && user) {
+        const primary = await this.primaryWorkspaceId(user);
+        if (primary && primary !== acting) {
+          this.logger.warn(
+            `PAT ${token.id}: current owner claim names no workspace and primary is ${primary}, ` +
+              `not ${acting}; not applying it (names only: [${current.entitlements.join(',')}]).`,
+          );
+          return [];
+        }
+      }
       const narrowed = intersectEntitlements(snapshot, current.entitlements);
       this.logger.warn(
         `PAT ${token.id}: entitlement snapshot is older than ${maxHours}h; using the owner's ` +
@@ -488,6 +554,25 @@ export class PatService {
       `PAT ${token.id} has no expiresAt (legacy null-expiry token). It keeps working; ` +
         `new tokens default to ${this.defaultExpiryDays()} days.`,
     );
+  }
+
+  private async primaryWorkspaceId(user: Pick<User, 'id' | 'keycloakId'>): Promise<string | null> {
+    const list = (
+      this.membership as {
+        listActiveMemberships?: (
+          u: Pick<User, 'id' | 'keycloakId'>,
+        ) => Promise<{ workspaceId?: string | null; isDefault?: boolean }[]>;
+      }
+    ).listActiveMemberships;
+    if (typeof list !== 'function') return null;
+    try {
+      return primaryWorkspaceIdFrom(await list.call(this.membership, user));
+    } catch (err) {
+      this.logger.warn(
+        `could not read primary workspace for user ${user.id}: ${(err as Error).message}`,
+      );
+      return null;
+    }
   }
 
   private entitlementMode(): 'open' | 'enforce' {

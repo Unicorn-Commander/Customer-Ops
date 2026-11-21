@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { User } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -183,6 +184,101 @@ describe('MONEY: a PAT for a paying user succeeds on a gated action', () => {
     const effective = await svc.effectiveEntitlements(bug, WS_PAID);
     const ctx: InferenceContext = { workspaceId: WS_PAID, ucUid: 'kc-aaron', entitlements: effective };
     expect(enforceGate().checkEntitlement(ctx, 'bundled').allowed).toBe(false);
+  });
+});
+
+function serviceWithMemberships(
+  caches: Record<string, unknown | undefined>,
+  memberships: { workspaceId: string; isDefault?: boolean }[],
+  env: Record<string, string> = {},
+): WorkspaceContextService {
+  const prisma = {
+    workspace: {
+      findUnique: jest.fn(async ({ where }: any) => {
+        if (!(where.id in caches)) return null;
+        return { entitlementCache: caches[where.id] ?? null };
+      }),
+    },
+  } as unknown as PrismaService;
+  const config = { get: (k: string) => env[k] } as unknown as ConfigService;
+  const membership = {
+    listActiveMemberships: jest.fn(async () => memberships),
+  } as unknown as MembershipService;
+  return new WorkspaceContextService(config, prisma, membership);
+}
+
+describe('cross-workspace claim when the per-workspace source is null', () => {
+  const bothNull = { [WS_PAID]: null, [WS_UNSUBBED]: null };
+  const bothMemberships = [
+    { workspaceId: WS_PAID, isDefault: true },
+    { workspaceId: WS_UNSUBBED, isDefault: false },
+  ];
+
+  it('a claim that names W1 is honoured in W1 and refused in W2 (enforce)', async () => {
+    const svc = serviceWithMemberships(bothNull, bothMemberships);
+    const member = userWithClaim(['customer-ops']);
+    member.__workspaceClaim = WS_PAID;
+
+    await expect(svc.effectiveEntitlements(member, WS_PAID)).resolves.toEqual(['customer-ops']);
+    await expect(svc.effectiveEntitlements(member, WS_UNSUBBED)).resolves.toEqual([]);
+
+    const denied = enforceGate().checkEntitlement(
+      {
+        workspaceId: WS_UNSUBBED,
+        ucUid: 'kc-aaron',
+        entitlements: await svc.effectiveEntitlements(member, WS_UNSUBBED),
+      },
+      'bundled',
+    );
+    expect(denied.allowed).toBe(false);
+    const allowed = enforceGate().checkEntitlement(
+      {
+        workspaceId: WS_PAID,
+        ucUid: 'kc-aaron',
+        entitlements: await svc.effectiveEntitlements(member, WS_PAID),
+      },
+      'bundled',
+    );
+    expect(allowed.allowed).toBe(true);
+  });
+
+  it('an org id on the claim, with no workspace id, names the workspace the SKU is for', async () => {
+    const svc = serviceWithMemberships(bothNull, bothMemberships);
+    const member = userWithClaim(['customer-ops']) as User &
+      Partial<WithWorkspaceClaim> & { __entitlementClaimWorkspaceId?: string };
+    member.__entitlementClaimWorkspaceId = WS_PAID;
+
+    await expect(svc.effectiveEntitlements(member, WS_PAID)).resolves.toEqual(['customer-ops']);
+    await expect(svc.effectiveEntitlements(member, WS_UNSUBBED)).resolves.toEqual([]);
+  });
+
+  it('with no workspace on the claim, only the primary workspace is honoured', async () => {
+    const svc = serviceWithMemberships(bothNull, bothMemberships);
+    const member = userWithClaim(['customer-ops']);
+
+    await expect(svc.effectiveEntitlements(member, WS_PAID)).resolves.toEqual(['customer-ops']);
+    await expect(svc.effectiveEntitlements(member, WS_UNSUBBED)).resolves.toEqual([]);
+  });
+
+  it('the single-workspace case is unchanged: the claim is honoured', async () => {
+    const svc = serviceWithMemberships({ [WS_PAID]: null }, [
+      { workspaceId: WS_PAID, isDefault: true },
+    ]);
+    await expect(svc.effectiveEntitlements(userWithClaim(['customer-ops']), WS_PAID)).resolves.toEqual([
+      'customer-ops',
+    ]);
+  });
+
+  it('open mode keeps the W2 claim and only logs', async () => {
+    const warns: string[] = [];
+    jest.spyOn(Logger.prototype, 'warn').mockImplementation((m: any) => void warns.push(String(m)));
+    const svc = serviceWithMemberships(bothNull, bothMemberships, { UC_ENTITLEMENT_MODE: 'open' });
+    const member = userWithClaim(['customer-ops']);
+    member.__workspaceClaim = WS_PAID;
+
+    await expect(svc.effectiveEntitlements(member, WS_UNSUBBED)).resolves.toEqual(['customer-ops']);
+    expect(warns.some((w) => /open/i.test(w) && w.includes(WS_UNSUBBED))).toBe(true);
+    jest.restoreAllMocks();
   });
 });
 

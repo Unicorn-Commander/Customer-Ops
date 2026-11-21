@@ -188,4 +188,24 @@ describe('JwtStrategy human realm bearer forwarding', () => {
     expect(auth.validateJwtPayload).toHaveBeenNthCalledWith(1, human);
     expect(auth.validateJwtPayload).toHaveBeenNthCalledWith(2, federation);
   });
+
+  it('records the entitlement claim workspace from org_id without changing the tenancy claim', async () => {
+    const { strategy } = makeStrategy();
+    const payload = {
+      sub: 'kc-human',
+      iss: 'https://auth.example.test/realms/uchub',
+      aud: 'customer-ops',
+      email: 'human@lantern-harbor.example',
+      email_verified: true,
+      org_id: '0190a000-7e57-7000-8000-0000000000a1',
+      entitlements: ['customer-ops'],
+    };
+
+    const resolved = await strategy.validate(payload);
+
+    expect((resolved as any).__workspaceClaim).toBeNull();
+    expect((resolved as any).__entitlementClaimWorkspaceId).toBe(
+      '0190a000-7e57-7000-8000-0000000000a1',
+    );
+  });
 });
