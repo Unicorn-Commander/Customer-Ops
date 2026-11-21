@@ -136,10 +136,12 @@ export class HomeSummaryService {
     const quotesHref = `${base}/dashboard/invoices`;
 
     // The person's own owner key is the APP's user id resolved from email — the
-    // `ownerUserKey` the cockpit writes (customers.controller.ts:51-65 writes the
-    // acting ucUid, which is Membership.userKey == keycloakId). Not the Ops-Center
-    // sub. VIEWER gets no owner-scoped numbers or customer names: the UI hides the
-    // owner book from a viewer, so this returns nothing for one.
+    // `ownerUserKey` the cockpit writes: the acting caller's ucUid, which is
+    // `__ucUid` (the token sub) or, failing that, `keycloakId` / `id`
+    // (workspace.util.ts ucUidOf; customers.controller.ts:51-65 passes the acting
+    // user into the list/write paths). Not the Ops-Center sub. VIEWER gets no
+    // owner-scoped numbers or customer names: the UI hides the owner book from a
+    // viewer, so this returns nothing for one.
     const ownerKey = user.keycloakId ?? null;
     if (!ownerKey) {
       return { state: 'empty', updatedAt: new Date().toISOString(), metrics: [], items: [] };
