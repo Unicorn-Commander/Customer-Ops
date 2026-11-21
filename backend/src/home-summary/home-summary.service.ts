@@ -29,13 +29,22 @@ export interface HomeSummary {
   items: HomeItem[];
 }
 
-/** The 4 rings this app contributes (HOME-SUMMARY CONTRACT v1 content). */
+/**
+ * The metric rings this app contributes (CONTRACT v1.1, DESKO-136/137). They
+ * are emitted in THIS order, each ONLY when its value is > 0, then cut to the
+ * first HOME_METRIC_CAP — so when all five are positive "Quotes out" (last)
+ * drops off.
+ */
 export const HOME_METRIC_LABELS = {
-  activeCustomers: 'Active customers',
+  customers: 'Customers',
+  prospects: 'Prospects',
   openLeads: 'Open leads',
   followUpsDue: 'Follow-ups due',
   quotesOut: 'Quotes out',
 } as const;
+
+/** The Home card shows at most four metric rings (CONTRACT cap). */
+export const HOME_METRIC_CAP = 4;
 
 /** The item window: the next 5 follow-ups by due date. */
 export const HOME_FOLLOW_UP_ITEMS = 5;
@@ -194,53 +203,57 @@ export class HomeSummaryService {
     startOfTomorrow.setUTCDate(startOfTomorrow.getUTCDate() + 1);
 
     // ONE round: every count + the item window in one read-only transaction.
+    // Every count uses the SAME ownerWhere scope: OWNER/ADMIN have no owner
+    // filter (unowned rows with ownerUserKey null COUNT in workspace totals;
+    // RLS already fences this workspace), MEMBER is filtered to their own key.
     const rows = await this.prisma.withWorkspaceReadOnly(workspaceId, ownerKey, async (tx) => {
-      const [activeCustomers, openLeads, followUpsDue, quotesOut, followUps] = await Promise.all([
-        // Active customers: the person owns a CUSTOMER-stage (ACTIVE) relationship.
-        tx.customer.count({
-          where: {
-            ...ownerWhere,
-            stage: RelationshipStage.CUSTOMER,
-            isLost: false,
-          },
-        }),
-        // Open leads: the person owns a still-LEAD relationship.
-        tx.customer.count({
-          where: { ...ownerWhere, stage: RelationshipStage.LEAD, isLost: false },
-        }),
-        // Follow-ups due: a next action due today or overdue, on a live lead.
-        tx.customer.count({
-          where: {
-            ...ownerWhere,
-            isLost: false,
-            nextActionAt: { lt: startOfTomorrow },
-          },
-        }),
-        // Quotes out: sent (not accepted/declined) on the person's book.
-        tx.quote.count({
-          where: {
-            status: 'sent',
-            customer: { ...ownerWhere, isLost: false },
-          },
-        }),
-        // The next 5 follow-ups by due date (soonest first).
-        tx.customer.findMany({
-          where: {
-            ...ownerWhere,
-            isLost: false,
-            nextActionAt: { not: null },
-          },
-          orderBy: [{ nextActionAt: 'asc' }, { id: 'asc' }],
-          take: HOME_FOLLOW_UP_ITEMS,
-          select: {
-            id: true,
-            contactId: true,
-            notes: true,
-            nextActionAt: true,
-          },
-        }),
-      ]);
-      return { activeCustomers, openLeads, followUpsDue, quotesOut, followUps };
+      const [customers, prospects, openLeads, followUpsDue, quotesOut, followUps] =
+        await Promise.all([
+          // Customers: a not-lost CUSTOMER-stage relationship.
+          tx.customer.count({
+            where: { ...ownerWhere, stage: RelationshipStage.CUSTOMER, isLost: false },
+          }),
+          // Prospects: a not-lost PROSPECT-stage relationship.
+          tx.customer.count({
+            where: { ...ownerWhere, stage: RelationshipStage.PROSPECT, isLost: false },
+          }),
+          // Open leads: a still-LEAD relationship.
+          tx.customer.count({
+            where: { ...ownerWhere, stage: RelationshipStage.LEAD, isLost: false },
+          }),
+          // Follow-ups due: a next action due today or overdue, on a live row.
+          tx.customer.count({
+            where: {
+              ...ownerWhere,
+              isLost: false,
+              nextActionAt: { lt: startOfTomorrow },
+            },
+          }),
+          // Quotes out: sent (not accepted/declined) on a not-lost customer.
+          tx.quote.count({
+            where: {
+              status: 'sent',
+              customer: { ...ownerWhere, isLost: false },
+            },
+          }),
+          // The next 5 follow-ups by due date (soonest first).
+          tx.customer.findMany({
+            where: {
+              ...ownerWhere,
+              isLost: false,
+              nextActionAt: { not: null },
+            },
+            orderBy: [{ nextActionAt: 'asc' }, { id: 'asc' }],
+            take: HOME_FOLLOW_UP_ITEMS,
+            select: {
+              id: true,
+              contactId: true,
+              notes: true,
+              nextActionAt: true,
+            },
+          }),
+        ]);
+      return { customers, prospects, openLeads, followUpsDue, quotesOut, followUps };
     });
 
     const titles = await this.resolveCustomerNames(user, workspaceId, rows.followUps);
@@ -253,35 +266,23 @@ export class HomeSummaryService {
       kind: 'follow_up',
     }));
 
-    const metrics: HomeMetric[] = [];
-    if (rows.activeCustomers > 0) {
-      metrics.push({
-        label: HOME_METRIC_LABELS.activeCustomers,
-        value: rows.activeCustomers,
-        href: customerHref,
-      });
-    }
-    if (rows.openLeads > 0) {
-      metrics.push({
-        label: HOME_METRIC_LABELS.openLeads,
-        value: rows.openLeads,
-        href: pipelineHref,
-      });
-    }
-    if (rows.followUpsDue > 0) {
-      metrics.push({
+    // CONTRACT v1.1 (DESKO-136/137): fixed order, each only when > 0, then the
+    // first HOME_METRIC_CAP. On a full workspace every count is positive and
+    // "Quotes out" (last) is the one that drops off.
+    const candidates: HomeMetric[] = [
+      { label: HOME_METRIC_LABELS.customers, value: rows.customers, href: customerHref },
+      { label: HOME_METRIC_LABELS.prospects, value: rows.prospects, href: pipelineHref },
+      { label: HOME_METRIC_LABELS.openLeads, value: rows.openLeads, href: pipelineHref },
+      {
         label: HOME_METRIC_LABELS.followUpsDue,
         value: rows.followUpsDue,
         href: customerHref,
-      });
-    }
-    if (rows.quotesOut > 0) {
-      metrics.push({
-        label: HOME_METRIC_LABELS.quotesOut,
-        value: rows.quotesOut,
-        href: quotesHref,
-      });
-    }
+      },
+      { label: HOME_METRIC_LABELS.quotesOut, value: rows.quotesOut, href: quotesHref },
+    ];
+    const metrics: HomeMetric[] = candidates
+      .filter((metric) => Number(metric.value) > 0)
+      .slice(0, HOME_METRIC_CAP);
 
     return {
       state: metrics.length === 0 && items.length === 0 ? 'empty' : 'ok',

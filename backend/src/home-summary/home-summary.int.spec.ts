@@ -618,7 +618,8 @@ describeDb('home-summary (CONTRACT v1, real DB, fake JWKS)', () => {
       'Name of contact-secret',
       'Name of contact-initech',
     ]);
-    expect(res.body.items[1].subtitle).toBe('Other owner follow-up');
+    expect(res.body.items[1].subtitle).toBe('Unassigned lead follow-up');
+    expect(res.body.items[2].subtitle).toBe('Other owner follow-up');
     for (const item of res.body.items) {
       expect(item.kind).toBe('follow_up');
       expect(item.href).toMatch(/^https:\/\/customerops\.example\.com\/dashboard\/customers\//);
