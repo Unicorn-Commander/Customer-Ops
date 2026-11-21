@@ -50,8 +50,9 @@
 #     owner `customer_ops_admin` (ADMIN_DATABASE_URL) — the backend `command`
 #     points `prisma migrate deploy` at ADMIN_DATABASE_URL explicitly, because the
 #     app role is NOBYPASSRLS / NOCREATEDB / NOCREATEROLE and cannot apply DDL.
-#   * Entitlements ENFORCE (UC_ENTITLEMENT_MODE=enforce) — set once Lago emits the
-#     claim; see .env.prod.example.
+#   * Entitlements: production runs open today. The mode is set in deploy/.env
+#     (see .env.prod.example), not in this file. Enforce would 403 a paying org
+#     until Lago emits the customer-ops claim; the desk flips the value later.
 #   * Federation seams wired one app at a time (see .env.prod.example) — all
 #     degrade-clean while a `*_BASE_URL` is blank.
 #   * Hardening: read-only root FS + explicit tmpfs, no-new-privileges, resource
