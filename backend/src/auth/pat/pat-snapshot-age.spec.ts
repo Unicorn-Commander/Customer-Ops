@@ -6,24 +6,22 @@ import { MembershipService } from '../../common/workspace/membership.service';
 import { WorkspaceEntitlementsResolver } from '../../common/workspace/workspace-entitlements.resolver';
 import { AgentInferenceClient } from '../../agents/inference/agent-inference.client';
 import { PatService } from './pat.service';
-import {
-  clearOwnerEntitlementClaims,
-  rememberOwnerEntitlementClaim,
-} from './owner-entitlement-claim';
 
 /**
- * PAT entitlement snapshot is not forever, and a new PAT is not immortal.
+ * PAT entitlement snapshot age is opt-in, and a missing in-process claim is
+ * not a deny. A new PAT is not immortal.
  *
- * With no server-side source, PatService used to return the mint-time snapshot
- * on every use (pat.service.ts, the `server === null` branch) and mint
- * expiresAt=null when the caller omitted one. These tests pin the bounds:
- *   - snapshot honoured for at most N hours (default 24), then the owner's
- *     current claim, or the existing entitlement 403 (empty SKU set);
- *   - a currently paying org (current claim or server-side SKU still holds
- *     customer-ops) is not refused under enforce;
- *   - open mode keeps today's snapshot (log only);
- *   - omitted expiresAt defaults to 90 days; a legacy null expiresAt still works
- *     and is logged by id once per process.
+ * Choice (a) from the dogfood sendback: the age cap applies only when a
+ * durable source exists. `skusFor === null` and no durable owner claim means
+ * keep the mint snapshot (today's behaviour) and log. The cap is off when
+ * `PAT_ENTITLEMENT_SNAPSHOT_MAX_AGE_HOURS` is unset. A process-local JWT map
+ * is not a durable source, so enforce + no server source + a stale snapshot +
+ * no claim in this process must NOT become `[]`.
+ *
+ * Also pinned: open mode is a log-only no-op when the cap is on; a server-side
+ * source still wins; omitted expiresAt defaults to 90 days; a legacy null
+ * expiresAt still works and is logged by id once per process; 0 hours is
+ * refused at startup (it would mark every snapshot stale).
  */
 
 const WS = '0190a000-7e57-7000-8000-00000000c007';
@@ -104,7 +102,6 @@ describe('PAT entitlement snapshot age and default expiry', () => {
   let warns: string[];
 
   beforeEach(() => {
-    clearOwnerEntitlementClaims();
     warns = [];
     jest.spyOn(Logger.prototype, 'warn').mockImplementation((m: any) => {
       warns.push(String(m));
@@ -127,36 +124,36 @@ describe('PAT entitlement snapshot age and default expiry', () => {
     expect(decision.allowed).toBe(true);
   });
 
-  it('after the max age, with no current claim, denies via the existing entitlement 403 (not the stale snapshot)', async () => {
-    const { service, store } = harness();
+  it('enforce + no server source + stale snapshot + no claim in this process keeps the snapshot', async () => {
+    // The dogfood shape: cap explicitly on, workspace source null, snapshot
+    // older than the cap, and this process has not seen a human JWT. Must not
+    // become [] (that 403'd working machine PATs).
+    const { service, store } = harness({ PAT_ENTITLEMENT_SNAPSHOT_MAX_AGE_HOURS: '24' });
     const minted = await service.create(payingUser(['customer-ops', 'ai-metered']), { name: 'agent' });
     store[0].createdAt = new Date(Date.now() - 25 * HOUR);
 
     const resolved = await service.findByPlaintext(minted.plaintext);
-    expect(resolved!.entitlements).toEqual([]);
-
-    const decision = enforceGate().checkEntitlement(
-      { workspaceId: WS, ucUid: 'kc-aaron', entitlements: resolved!.entitlements },
-      'bundled',
-    );
-    expect(decision.allowed).toBe(false);
-    expect(decision.reason).toMatch(/customer-ops/i);
-  });
-
-  it('after the max age, re-reads the owner current claim and keeps a paying org (drops a revoked SKU)', async () => {
-    const { service, store } = harness();
-    const minted = await service.create(payingUser(['customer-ops', 'ai-metered']), { name: 'agent' });
-    store[0].createdAt = new Date(Date.now() - 25 * HOUR);
-    rememberOwnerEntitlementClaim(aaron.id, ['customer-ops'], WS);
-
-    const resolved = await service.findByPlaintext(minted.plaintext);
-    expect(resolved!.entitlements).toEqual(['customer-ops']);
+    expect(resolved!.entitlements).toEqual(['customer-ops', 'ai-metered']);
     expect(
       enforceGate().checkEntitlement(
         { workspaceId: WS, ucUid: 'kc-aaron', entitlements: resolved!.entitlements },
         'bundled',
       ).allowed,
     ).toBe(true);
+    expect(warns.some((w) => w.includes(store[0].id) && /keeping the mint snapshot/i.test(w))).toBe(
+      true,
+    );
+    expect(warns.join('\n')).not.toMatch(/co_pat_/);
+  });
+
+  it('unset PAT_ENTITLEMENT_SNAPSHOT_MAX_AGE_HOURS leaves the cap off (enforce, 48h snapshot stands)', async () => {
+    const { service, store } = harness();
+    const minted = await service.create(payingUser(['customer-ops']), { name: 'agent' });
+    store[0].createdAt = new Date(Date.now() - 48 * HOUR);
+
+    const resolved = await service.findByPlaintext(minted.plaintext);
+    expect(resolved!.entitlements).toEqual(['customer-ops']);
+    expect(warns.some((w) => /snapshot is older/i.test(w))).toBe(false);
   });
 
   it('a server-side source still wins for an old snapshot, so a paying workspace is not refused', async () => {
@@ -168,8 +165,11 @@ describe('PAT entitlement snapshot age and default expiry', () => {
     expect(resolved!.entitlements).toEqual(['customer-ops']);
   });
 
-  it('open mode keeps the stale snapshot and only logs (no-op besides the log)', async () => {
-    const { service, store } = harness({ UC_ENTITLEMENT_MODE: 'open' });
+  it('open mode with the cap on keeps the stale snapshot and only logs', async () => {
+    const { service, store } = harness({
+      UC_ENTITLEMENT_MODE: 'open',
+      PAT_ENTITLEMENT_SNAPSHOT_MAX_AGE_HOURS: '24',
+    });
     const minted = await service.create(payingUser(['customer-ops']), { name: 'agent' });
     store[0].createdAt = new Date(Date.now() - 48 * HOUR);
 
@@ -179,14 +179,21 @@ describe('PAT entitlement snapshot age and default expiry', () => {
     expect(warns.join('\n')).not.toMatch(/co_pat_/);
   });
 
-  it('PAT_ENTITLEMENT_SNAPSHOT_MAX_AGE_HOURS overrides the 24h default', async () => {
-    const { service, store } = harness({ PAT_ENTITLEMENT_SNAPSHOT_MAX_AGE_HOURS: '1' });
+  it('a snapshot inside a set cap is kept with no age log', async () => {
+    const { service, store } = harness({ PAT_ENTITLEMENT_SNAPSHOT_MAX_AGE_HOURS: '24' });
     const minted = await service.create(payingUser(['customer-ops']), { name: 'agent' });
     store[0].createdAt = new Date(Date.now() - 2 * HOUR);
-    expect((await service.findByPlaintext(minted.plaintext))!.entitlements).toEqual([]);
-
-    store[0].createdAt = new Date(Date.now() - 30 * 60 * 1000);
     expect((await service.findByPlaintext(minted.plaintext))!.entitlements).toEqual(['customer-ops']);
+    expect(warns.some((w) => /snapshot is older/i.test(w))).toBe(false);
+  });
+
+  it('refuses to start when PAT_ENTITLEMENT_SNAPSHOT_MAX_AGE_HOURS is 0 or not a positive integer', () => {
+    for (const bad of ['0', '-1', '0.5', 'nope', '00']) {
+      expect(() => harness({ PAT_ENTITLEMENT_SNAPSHOT_MAX_AGE_HOURS: bad })).toThrow(
+        /PAT_ENTITLEMENT_SNAPSHOT_MAX_AGE_HOURS/,
+      );
+    }
+    expect(() => harness({ PAT_ENTITLEMENT_SNAPSHOT_MAX_AGE_HOURS: '24' })).not.toThrow();
   });
 
   it('omitting expiresAt mints a 90-day token; an explicit expiry is kept', async () => {
@@ -243,7 +250,6 @@ describe('PAT mint binds a null server-side source to one workspace', () => {
   let warns: string[];
 
   beforeEach(() => {
-    clearOwnerEntitlementClaims();
     warns = [];
     jest.spyOn(Logger.prototype, 'warn').mockImplementation((m: any) => {
       warns.push(String(m));
@@ -295,14 +301,15 @@ describe('PAT mint binds a null server-side source to one workspace', () => {
     expect(warns.join('\n')).not.toMatch(/co_pat_/);
   });
 
-  it('after the max age, a current claim that names another workspace is not applied', async () => {
-    const { service, store } = harness({}, null, both);
-    const minted = await service.create(named(WS_PAID), { name: 'moved', workspaceId: WS_PAID });
-    store[0].workspaceId = WS_OTHER;
+  it('with the cap on and no durable source, a stale snapshot is kept (mint-time bind is what refuses W2)', async () => {
+    const { service, store } = harness(
+      { PAT_ENTITLEMENT_SNAPSHOT_MAX_AGE_HOURS: '24' },
+      null,
+      both,
+    );
+    const minted = await service.create(named(WS_PAID), { name: 'paid', workspaceId: WS_PAID });
     store[0].createdAt = new Date(Date.now() - 25 * HOUR);
-    rememberOwnerEntitlementClaim(aaron.id, ['customer-ops', 'ai-metered'], WS_PAID);
-
     const resolved = await service.findByPlaintext(minted.plaintext);
-    expect(resolved!.entitlements).toEqual([]);
+    expect(resolved!.entitlements).toEqual(['customer-ops']);
   });
 });

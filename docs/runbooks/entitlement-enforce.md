@@ -263,10 +263,10 @@ agents, the relations-officer) consumes it in place of the bare
 
 A `co_pat_` bearer is **not a JWT**, so there is no token to forward to the suite
 entitlements endpoint on the caller's behalf (`EntitlementsService.resolve()`
-bails on `isRs256`). That means the mint-time snapshot is the **only** source on
-the PAT lane, and it is authoritative *forever*: a SKU revoked at the authority
-stays usable until the PAT itself is revoked or expired. **That is still true on
-a shipping node** — see the box above.
+bails on `isRs256`). With **no server-side source** the mint-time snapshot is the
+PAT's entitlement set until the PAT is revoked or it expires. **That is still
+true on a shipping node** — see the box above, and the age-cap rule below. The
+cap does not discard a snapshot just because it is old.
 
 The lane is now WIRED to resolve the PAT's **bound workspace** server-side on
 every request and intersect it with the snapshot, so that once a source exists
@@ -313,12 +313,22 @@ the snapshot becomes a **floor that can only narrow**:
   either the mirror row is past `expiresAt` (row 4) or there is no mirror at all
   (row 4b). Under-enforcement is never traded for availability here, and a
   failure is never allowed to read as "no source".
-- **NO server-side source is configured** (the shipping shared-SaaS default —
-  no `entitlementCache`, no endpoint credential, no mirror row): the mint-time
-  snapshot remains the only source and revocation is bounded **only by PAT
-  revoke/expiry**. ⚠️ This is unchanged from before and is *not* something this
-  repo can fix alone — populate `workspace_entitlements` (or `entitlementCache`)
-  to get the 60 s window.
+- **NO server-side source is configured** (the shipping shared-SaaS default,
+  and dogfood today — no `entitlementCache`, no endpoint credential, no mirror
+  row, so `WorkspaceEntitlementsResolver.skusFor` returns null): the mint-time
+  snapshot **stands**. `PAT_ENTITLEMENT_SNAPSHOT_MAX_AGE_HOURS` is **opt-in**.
+  **Unset means the cap is off** (today's behaviour: honour the snapshot until
+  the PAT is revoked or it expires). When the variable is a whole number of
+  hours **greater than 0** and the snapshot is older than that, enforce mode
+  still **keeps the snapshot and logs** unless a durable source exists to
+  narrow it. A durable source is a non-null `skusFor` answer. A process-local
+  map of the last human JWT is **not** durable: it is empty on a pod that has
+  not seen one, and returning `[]` for that emptiness 403'd working machine
+  PATs. Open mode keeps the snapshot and, when the cap is on and the snapshot
+  is past it, only logs. **`0` is refused at process start** (it would mark
+  every snapshot stale). ⚠️ Revocation inside 60 s still requires a populated
+  `workspace_entitlements` row or `entitlementCache`. The age cap does not
+  invent that source.
 
 `invalidate(workspaceId)` on the resolver drops the cache for an immediate
 refresh after an operator writes the pin by hand.
@@ -425,6 +435,7 @@ gated per-workspace by the SKU gates instead. Covered by
 | `ENTITLEMENTS_SERVICE_TOKEN` | unset ⇒ the per-workspace endpoint lookup is **dormant** | service credential for `GET {ENTITLEMENTS_ENDPOINT_URL}?workspace_id=…`. ⚠️ Setting `ENTITLEMENTS_ENDPOINT_URL` **without** this yields zero server-side enforcement; the service logs a loud `WARN` at boot when it sees that combination, and the boot log states plainly whether each lane is LIVE or INERT. The resolver gates the server-side lane on `EntitlementsService.isWorkspaceLookupConfigured()` (URL **and** credential) rather than on `isConfigured()` (URL only), so a half-configured lane never even attempts a call it cannot authenticate. |
 | `WORKSPACE_ENTITLEMENTS_OUTAGE_POSTURE` | `deny` | see the OUTAGE POSTURE box above. |
 | `WORKSPACE_ENTITLEMENTS_FAILURE_TTL_MS` | `1000` | see the OUTAGE POSTURE box above. |
+| `PAT_ENTITLEMENT_SNAPSHOT_MAX_AGE_HOURS` | **unset = cap off** | Opt-in age cap for a PAT mint snapshot when `skusFor` is null. Unset keeps the snapshot (dogfood / shared SaaS today). A positive integer of hours logs, and still **keeps** the snapshot, when there is no durable source — it must not become `[]` just because this pod has not seen a human JWT. A non-null server-side answer still wins and can only narrow, at any age. `0` or any other non-positive value **refuses process start**. Open mode never denies on age; it logs when the cap is on and the snapshot is past it. |
 
 `UC_ENTITLEMENT_MODE` is **untouched** — same variable, same reducer, same
 default (`enforce` for anything that is not literally `open`).
