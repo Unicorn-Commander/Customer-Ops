@@ -438,7 +438,10 @@ gated per-workspace by the SKU gates instead. Covered by
 | `PAT_ENTITLEMENT_SNAPSHOT_MAX_AGE_HOURS` | **unset = cap off** | Opt-in age cap for a PAT mint snapshot when `skusFor` is null. Unset keeps the snapshot (dogfood / shared SaaS today). A positive integer of hours logs, and still **keeps** the snapshot, when there is no durable source — it must not become `[]` just because this pod has not seen a human JWT. A non-null server-side answer still wins and can only narrow, at any age. `0` or any other non-positive value **refuses process start**. Open mode never denies on age; it logs when the cap is on and the snapshot is past it. |
 
 `UC_ENTITLEMENT_MODE` is **untouched** — same variable, same reducer, same
-default (`enforce` for anything that is not literally `open`).
+default (`enforce` for anything that is not literally `open`, including an
+empty value). Boot logs that mode once, for example
+`UC_ENTITLEMENT_MODE=(empty) — entitlement mode in force: enforce.` when the
+variable is unset. It does not log again per request.
 
 #### Sentinel: `personal_access_tokens.workspaceId` is nullable
 

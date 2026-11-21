@@ -19,6 +19,10 @@ import {
   primaryWorkspaceIdFrom,
   WithWorkspaceClaim,
 } from '../../common/workspace/workspace.util';
+import {
+  entitlementModeFrom,
+  logEntitlementModeOnce,
+} from '../../common/workspace/entitlement-mode';
 import { PAT_AVAILABLE_SCOPES, PAT_PREFIX, PatScope } from './pat.constants';
 import { generatePat, isPatToken, verifyPat } from './pat.util';
 
@@ -115,6 +119,7 @@ export class PatService {
     this.snapshotMaxAgeHours = PatService.parseSnapshotMaxAgeHours(
       this.config?.get<string>('PAT_ENTITLEMENT_SNAPSHOT_MAX_AGE_HOURS'),
     );
+    logEntitlementModeOnce(this.logger, this.config?.get<string>('UC_ENTITLEMENT_MODE'));
   }
 
   /**
@@ -570,8 +575,7 @@ export class PatService {
   }
 
   private entitlementMode(): 'open' | 'enforce' {
-    const raw = (this.config?.get<string>('UC_ENTITLEMENT_MODE') ?? '').trim().toLowerCase();
-    return raw === 'open' ? 'open' : 'enforce';
+    return entitlementModeFrom(this.config?.get<string>('UC_ENTITLEMENT_MODE'));
   }
 
   private snapshotStale(token: PersonalAccessToken): boolean {

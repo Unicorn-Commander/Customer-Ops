@@ -16,6 +16,7 @@ import {
   ucUidOf,
   WithWorkspaceClaim,
 } from './workspace.util';
+import { entitlementModeFrom, logEntitlementModeOnce } from './entitlement-mode';
 import { WorkspaceEntitlementsResolver } from './workspace-entitlements.resolver';
 
 /**
@@ -53,7 +54,9 @@ export class WorkspaceContextService {
      */
     @Optional()
     private readonly entitlementsResolver?: WorkspaceEntitlementsResolver,
-  ) {}
+  ) {
+    logEntitlementModeOnce(this.logger, this.config.get<string>('UC_ENTITLEMENT_MODE'));
+  }
 
   /**
    * Max staleness this (JWT/session) lane accepts from the resolver's in-process
@@ -191,8 +194,7 @@ export class WorkspaceContextService {
   }
 
   private entitlementMode(): 'open' | 'enforce' {
-    const raw = (this.config.get<string>('UC_ENTITLEMENT_MODE') ?? '').trim().toLowerCase();
-    return raw === 'open' ? 'open' : 'enforce';
+    return entitlementModeFrom(this.config.get<string>('UC_ENTITLEMENT_MODE'));
   }
 
   private async claimBinding(
