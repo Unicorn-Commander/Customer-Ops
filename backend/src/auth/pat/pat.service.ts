@@ -6,6 +6,7 @@ import {
   Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { PersonalAccessToken, User } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { MembershipService } from '../../common/workspace/membership.service';
@@ -16,7 +17,15 @@ import {
   WithWorkspaceClaim,
 } from '../../common/workspace/workspace.util';
 import { PAT_AVAILABLE_SCOPES, PAT_PREFIX, PatScope } from './pat.constants';
+import { readOwnerEntitlementClaim } from './owner-entitlement-claim';
 import { generatePat, isPatToken, verifyPat } from './pat.util';
+
+/** Hours a mint-time entitlement snapshot may stand in for a live claim. */
+const DEFAULT_SNAPSHOT_MAX_AGE_HOURS = 24;
+/** Days a new PAT lives when the caller does not pass expiresAt. */
+const DEFAULT_PAT_EXPIRY_DAYS = 90;
+const HOUR_MS = 3_600_000;
+const DAY_MS = 86_400_000;
 
 export interface CreatePatInput {
   name: string;
@@ -80,6 +89,8 @@ export interface PatResolution {
 @Injectable()
 export class PatService {
   private readonly logger = new Logger(PatService.name);
+  /** Legacy null-expiry PAT ids already logged in this process. */
+  private static readonly nullExpiryLogged = new Set<string>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -92,6 +103,9 @@ export class PatService {
      */
     @Optional()
     private readonly workspaceEntitlements?: WorkspaceEntitlementsResolver,
+    /** Absent in unit constructions that predate config. Defaults apply. */
+    @Optional()
+    private readonly config?: ConfigService,
   ) {}
 
   /**
@@ -255,6 +269,8 @@ export class PatService {
         return null;
       }
 
+      this.noteLegacyNullExpiry(bareToken);
+
       return {
         user,
         token: bareToken,
@@ -280,9 +296,13 @@ export class PatService {
    *     SKU revoked at the authority stops working within the resolver's TTL
    *     (default 60s) and a snapshot can never grant a SKU the workspace lacks.
    *   * server-side answer null (NO source configured — today's shared-SaaS
-   *     default) -> the snapshot, unchanged. This is the documented fallback; the
-   *     revocation window on that configuration is bounded only by PAT
-   *     revoke/expiry. See docs/runbooks/entitlement-enforce.md §1f.
+   *     default) -> the snapshot, but only for
+   *     `PAT_ENTITLEMENT_SNAPSHOT_MAX_AGE_HOURS` (default 24) after mint.
+   *     Past that, enforce mode re-reads the owner's current claim (narrowed
+   *     to the snapshot, so a still-paying org keeps its SKU and a revoked
+   *     SKU drops) or returns `[]`, which the existing entitlement gate turns
+   *     into its 403. Open mode keeps the snapshot and logs. See
+   *     docs/runbooks/entitlement-enforce.md §1f.
    *   * a token bound to NO workspace -> `[]` (deny). There is nothing to bind
    *     to, so the claim is unbindable — see the sentinel in findByPlaintext,
    *     which already refuses such a row; this is the second line of that fence.
@@ -305,8 +325,8 @@ export class PatService {
     }
     try {
       const server = await this.workspaceEntitlements.skusFor(token.workspaceId);
-      if (server === null) return snapshot; // no server-side source -> snapshot
-      return intersectEntitlements(snapshot, server);
+      if (server !== null) return intersectEntitlements(snapshot, server);
+      return this.snapshotWithoutServerSource(token, snapshot);
     } catch (err) {
       this.logger.error(
         `PAT ${token.id}: workspace entitlement resolve failed (${(err as Error)?.message ?? 'error'}) — failing closed (no entitlements)`,
@@ -424,8 +444,85 @@ export class PatService {
     return cleaned as PatScope[];
   }
 
+  /**
+   * No server-side source. A fresh snapshot stands. Past the max age, enforce
+   * mode re-reads the owner's current claim (intersected with the snapshot so
+   * the set can only narrow) or returns [] for the existing entitlement 403.
+   * Open mode is a no-op besides a log: the snapshot is unchanged.
+   */
+  private snapshotWithoutServerSource(token: PersonalAccessToken, snapshot: string[]): string[] {
+    if (!this.snapshotStale(token)) return snapshot;
+
+    const maxHours = this.snapshotMaxAgeHours();
+    if (this.entitlementMode() === 'open') {
+      this.logger.warn(
+        `PAT ${token.id}: entitlement snapshot is older than ${maxHours}h and no server-side ` +
+          `source is configured; UC_ENTITLEMENT_MODE=open keeps the mint snapshot ` +
+          `(names only: [${snapshot.join(',')}]).`,
+      );
+      return snapshot;
+    }
+
+    const current = readOwnerEntitlementClaim(token.userId);
+    if (current && Date.now() - current.at <= this.snapshotMaxAgeMs()) {
+      const narrowed = intersectEntitlements(snapshot, current.entitlements);
+      this.logger.warn(
+        `PAT ${token.id}: entitlement snapshot is older than ${maxHours}h; using the owner's ` +
+          `current claim (names only: [${narrowed.join(',')}]).`,
+      );
+      return narrowed;
+    }
+
+    this.logger.warn(
+      `PAT ${token.id}: entitlement snapshot is older than ${maxHours}h, no server-side source, ` +
+        `and no current owner claim — denying entitlements (existing entitlement 403).`,
+    );
+    return [];
+  }
+
+  private noteLegacyNullExpiry(token: Pick<PersonalAccessToken, 'id' | 'expiresAt'>): void {
+    if (token.expiresAt != null) return;
+    if (PatService.nullExpiryLogged.has(token.id)) return;
+    PatService.nullExpiryLogged.add(token.id);
+    this.logger.warn(
+      `PAT ${token.id} has no expiresAt (legacy null-expiry token). It keeps working; ` +
+        `new tokens default to ${this.defaultExpiryDays()} days.`,
+    );
+  }
+
+  private entitlementMode(): 'open' | 'enforce' {
+    const raw = (this.config?.get<string>('UC_ENTITLEMENT_MODE') ?? '').trim().toLowerCase();
+    return raw === 'open' ? 'open' : 'enforce';
+  }
+
+  private snapshotMaxAgeHours(): number {
+    const raw = (this.config?.get<string>('PAT_ENTITLEMENT_SNAPSHOT_MAX_AGE_HOURS') ?? '').trim();
+    if (!raw) return DEFAULT_SNAPSHOT_MAX_AGE_HOURS;
+    const n = Number.parseInt(raw, 10);
+    return Number.isFinite(n) && n >= 0 ? n : DEFAULT_SNAPSHOT_MAX_AGE_HOURS;
+  }
+
+  private snapshotMaxAgeMs(): number {
+    return this.snapshotMaxAgeHours() * HOUR_MS;
+  }
+
+  private snapshotStale(token: PersonalAccessToken): boolean {
+    const created = token.createdAt ? new Date(token.createdAt).getTime() : NaN;
+    if (!Number.isFinite(created)) return true;
+    return Date.now() - created > this.snapshotMaxAgeMs();
+  }
+
+  private defaultExpiryDays(): number {
+    const raw = (this.config?.get<string>('PAT_DEFAULT_EXPIRY_DAYS') ?? '').trim();
+    if (!raw) return DEFAULT_PAT_EXPIRY_DAYS;
+    const n = Number.parseInt(raw, 10);
+    return Number.isFinite(n) && n > 0 ? n : DEFAULT_PAT_EXPIRY_DAYS;
+  }
+
   private normalizeExpiry(expiresAt?: Date | string | null): Date | null {
-    if (expiresAt === null || expiresAt === undefined || (expiresAt as unknown) === '') return null;
+    if (expiresAt === null || expiresAt === undefined || (expiresAt as unknown) === '') {
+      return new Date(Date.now() + this.defaultExpiryDays() * DAY_MS);
+    }
     const d = expiresAt instanceof Date ? expiresAt : new Date(expiresAt);
     if (Number.isNaN(d.getTime())) throw new BadRequestException('expiresAt must be a valid date');
     if (d.getTime() <= Date.now()) throw new BadRequestException('expiresAt must be in the future');

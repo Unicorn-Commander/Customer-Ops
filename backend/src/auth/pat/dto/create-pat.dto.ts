@@ -45,7 +45,8 @@ export class CreatePatDto {
   @ApiProperty({
     example: '2026-09-01T00:00:00.000Z',
     required: false,
-    description: 'ISO timestamp at which the token expires. Omit for a non-expiring token.',
+    description:
+      'ISO timestamp at which the token expires. Omit to use PAT_DEFAULT_EXPIRY_DAYS (90).',
   })
   @IsOptional()
   @IsDateString()

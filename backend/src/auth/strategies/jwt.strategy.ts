@@ -6,6 +6,7 @@ import * as jsonwebtoken from 'jsonwebtoken';
 import type { Algorithm, VerifyOptions } from 'jsonwebtoken';
 import jwksClient, { JwksClient } from 'jwks-rsa';
 import { AuthService, JwtPayload } from '../auth.service';
+import { rememberOwnerEntitlementClaim } from '../pat/owner-entitlement-claim';
 import { User } from '@prisma/client';
 import type { Request } from 'express';
 
@@ -444,6 +445,16 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       // subscription.products) and normalized to a string[]; never an HTTP
       // header — this rides only on the cryptographically-verified token.
       augmented.__entitlements = JwtStrategy.readEntitlements(payload);
+      // So a later PAT use can re-read this owner's current claim once the
+      // mint snapshot is past PAT_ENTITLEMENT_SNAPSHOT_MAX_AGE_HOURS. The
+      // store keeps SKU names and the workspace id, never the bearer.
+      if (user?.id) {
+        rememberOwnerEntitlementClaim(
+          user.id,
+          augmented.__entitlements ?? [],
+          typeof augmented.__workspaceClaim === 'string' ? augmented.__workspaceClaim : null,
+        );
+      }
       // Onboarding management accepts only this app's local human SSO session.
       augmented.__humanSession =
         !payload?.iss && !payload?.act && !payload?.client_id && !payload?.clientId;

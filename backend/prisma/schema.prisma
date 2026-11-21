@@ -876,7 +876,7 @@ model PersonalAccessToken {
   // docs/runbooks/entitlement-enforce.md §1f.
   entitlements String[]  @default([])
   lastUsedAt  DateTime?
-  expiresAt   DateTime? // null = no expiry
+  expiresAt   DateTime? // null = legacy no expiry (kept; new mints default to PAT_DEFAULT_EXPIRY_DAYS)
   createdAt   DateTime  @default(now())
   revokedAt   DateTime?
 

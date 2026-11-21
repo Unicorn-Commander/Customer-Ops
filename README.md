@@ -84,7 +84,7 @@ The lead intake surface shows what arrived, which identity path succeeded, and w
 
 ## Built for agents
 
-Customer-Ops exposes a Streamable HTTP MCP server at `/api/v1/mcp`. `JwtAuthGuard` accepts a local HS256 session JWT, a Keycloak realm RS256 JWT, or a Brigade federation RS256 JWT whose audience is `customer-ops`, and it accepts a scoped `co_pat_` Personal Access Token. Create a PAT from **Settings → API tokens** or `POST /api/v1/auth/pats` (session JWT only). PAT calls are checked against the tool's scope and the token's workspace binding. A PAT cannot mint or revoke a PAT. The plaintext is returned once. Omitting `expiresAt` stores a non-expiring token. Revoke it from the same Settings page or `DELETE /api/v1/auth/pats/:id`.
+Customer-Ops exposes a Streamable HTTP MCP server at `/api/v1/mcp`. `JwtAuthGuard` accepts a local HS256 session JWT, a Keycloak realm RS256 JWT, or a Brigade federation RS256 JWT whose audience is `customer-ops`, and it accepts a scoped `co_pat_` Personal Access Token. Create a PAT from **Settings → API tokens** or `POST /api/v1/auth/pats` (session JWT only). PAT calls are checked against the tool's scope and the token's workspace binding. A PAT cannot mint or revoke a PAT. The plaintext is returned once. Omitting `expiresAt` stores a token that expires in 90 days (`PAT_DEFAULT_EXPIRY_DAYS`). A token already stored with no expiry keeps working. Revoke it from the same Settings page or `DELETE /api/v1/auth/pats/:id`.
 
 For the hosted service, connect an OAuth-capable MCP client to
 `https://api.customer-ops.unicorncommander.ai/api/v1/mcp`. Sign in with your
