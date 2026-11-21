@@ -141,7 +141,7 @@ describeDb('home-summary (CONTRACT v1, real DB, fake JWKS)', () => {
     const rows: Array<{
       contactId: string;
       stage: RelationshipStage;
-      ownerUserKey: string;
+      ownerUserKey: string | null;
       nextActionAt: Date | null;
       notes: string | null;
     }> = [
@@ -187,6 +187,31 @@ describeDb('home-summary (CONTRACT v1, real DB, fake JWKS)', () => {
         ownerUserKey: OTHER_SUB,
         nextActionAt: new Date(now - day),
         notes: 'Other owner follow-up',
+      },
+      // UNASSIGNED rows (ownerUserKey null, as on dogfood): they sit in the
+      // workspace pool. OWNER/ADMIN totals MUST count them; MEMBER MUST NOT.
+      // One lead with a due follow-up (also exercises the item window), one
+      // prospect, and a second prospect so the workspace has 2 prospects.
+      {
+        contactId: 'contact-pool-lead',
+        stage: RelationshipStage.LEAD,
+        ownerUserKey: null,
+        nextActionAt: new Date(now - 2 * day),
+        notes: 'Unassigned lead follow-up',
+      },
+      {
+        contactId: 'contact-pool-prospect',
+        stage: RelationshipStage.PROSPECT,
+        ownerUserKey: null,
+        nextActionAt: null,
+        notes: null,
+      },
+      {
+        contactId: 'contact-other-prospect',
+        stage: RelationshipStage.PROSPECT,
+        ownerUserKey: OTHER_SUB,
+        nextActionAt: null,
+        notes: null,
       },
     ];
     for (const r of rows) {
@@ -358,8 +383,16 @@ describeDb('home-summary (CONTRACT v1, real DB, fake JWKS)', () => {
     expect(res.body.state).toBe('ok');
     expect(typeof res.body.updatedAt).toBe('string');
     const byLabel = Object.fromEntries(res.body.metrics.map((m: any) => [m.label, m.value]));
+    // v1.1 order fixed by DESKO-137: Customers, Prospects, Open leads,
+    // Follow-ups due, Quotes out. A member owns no prospect, so it is absent.
+    expect(res.body.metrics.map((m: any) => m.label)).toEqual([
+      'Customers',
+      'Open leads',
+      'Follow-ups due',
+      'Quotes out',
+    ]);
     expect(byLabel).toEqual({
-      'Active customers': 2,
+      Customers: 2,
       'Open leads': 3,
       'Follow-ups due': 1,
       'Quotes out': 2,
@@ -430,7 +463,7 @@ describeDb('home-summary (CONTRACT v1, real DB, fake JWKS)', () => {
     try {
       const res = await call(q, signServiceToken());
       expect(res.status).toBe(404);
-      expect(JSON.stringify(res.body)).not.toContain('Active customers');
+      expect(JSON.stringify(res.body)).not.toContain('Customers');
       const noToken = await call(q);
       expect(noToken.status).toBe(404);
     } finally {
@@ -554,23 +587,34 @@ describeDb('home-summary (CONTRACT v1, real DB, fake JWKS)', () => {
     const res = await asRole(WorkspaceRole.OWNER, () => call(q, signServiceToken()));
     expect(res.status).toBe(200);
     expect(res.body.state).toBe('ok');
+    // All five stages/facts are > 0 workspace-wide, so the cap drops the LAST
+    // (Quotes out): exactly 4 metrics, in the DESKO-137 order. Customers 2,
+    // Prospects 2 (both unassigned/another owner), Open leads 5 (incl. the
+    // unassigned pool lead), Follow-ups due 3 (incl. the unassigned pool).
+    expect(res.body.metrics.map((m: any) => m.label)).toEqual([
+      'Customers',
+      'Prospects',
+      'Open leads',
+      'Follow-ups due',
+    ]);
     const byLabel = Object.fromEntries(res.body.metrics.map((m: any) => [m.label, m.value]));
     expect(byLabel).toEqual({
-      'Active customers': 2,
-      'Open leads': 4,
-      'Follow-ups due': 2,
-      'Quotes out': 3,
+      Customers: 2,
+      Prospects: 2,
+      'Open leads': 5,
+      'Follow-ups due': 3,
     });
     for (const m of res.body.metrics) {
       expect(m.href).not.toMatch(/localhost|127\.0\.0\.1/);
     }
-    // Item window is workspace-wide too: all three dated follow-ups, soonest
-    // first — Aaron's ACME (3d overdue), the other owner's SECRET (tomorrow),
-    // then Aaron's Initech (+2d).
-    expect(res.body.items).toHaveLength(3);
+    // Item window is workspace-wide too: all four dated follow-ups, soonest
+    // first — Aaron's ACME (3d overdue), the unassigned POOL lead (2d overdue),
+    // the other owner's SECRET (tomorrow), then Aaron's Initech (+2d).
+    expect(res.body.items).toHaveLength(4);
     const titles = res.body.items.map((i: any) => i.title);
     expect(titles).toEqual([
       'Name of contact-acme',
+      'Name of contact-pool-lead',
       'Name of contact-secret',
       'Name of contact-initech',
     ]);
@@ -591,10 +635,10 @@ describeDb('home-summary (CONTRACT v1, real DB, fake JWKS)', () => {
     expect(admin.body.items).toEqual(ownerRes.body.items);
     const byLabel = Object.fromEntries(admin.body.metrics.map((m: any) => [m.label, m.value]));
     expect(byLabel).toEqual({
-      'Active customers': 2,
-      'Open leads': 4,
-      'Follow-ups due': 2,
-      'Quotes out': 3,
+      Customers: 2,
+      Prospects: 2,
+      'Open leads': 5,
+      'Follow-ups due': 3,
     });
   });
 
@@ -602,9 +646,17 @@ describeDb('home-summary (CONTRACT v1, real DB, fake JWKS)', () => {
     const usersBefore = await seededUsersRowCount();
     const res = await asRole(WorkspaceRole.MEMBER, () => call(q, signServiceToken()));
     expect(res.status).toBe(200);
+    // Unowned rows (contact-pool-*) and another owner's rows never count for a
+    // MEMBER: own book only, and no Prospects (the member owns no prospect).
+    expect(res.body.metrics.map((m: any) => m.label)).toEqual([
+      'Customers',
+      'Open leads',
+      'Follow-ups due',
+      'Quotes out',
+    ]);
     const byLabel = Object.fromEntries(res.body.metrics.map((m: any) => [m.label, m.value]));
     expect(byLabel).toEqual({
-      'Active customers': 2,
+      Customers: 2,
       'Open leads': 3,
       'Follow-ups due': 1,
       'Quotes out': 2,
@@ -615,7 +667,51 @@ describeDb('home-summary (CONTRACT v1, real DB, fake JWKS)', () => {
     ]);
     expect(JSON.stringify(res.body)).not.toContain('contact-secret');
     expect(JSON.stringify(res.body)).not.toContain('Other owner follow-up');
+    expect(JSON.stringify(res.body)).not.toContain('contact-pool');
     expect(await seededUsersRowCount()).toBe(usersBefore);
+  });
+
+  it('v1.1 OWNER counts UNOWNED rows in Customers/Prospects/Open leads', async () => {
+    const res = await asRole(WorkspaceRole.OWNER, () => call(q, signServiceToken()));
+    expect(res.status).toBe(200);
+    const byLabel = Object.fromEntries(res.body.metrics.map((m: any) => [m.label, m.value]));
+    // The unassigned lead + prospect are in the workspace pool and count for an
+    // OWNER (ownerUserKey null must NOT be filtered out of workspace totals).
+    expect(byLabel.Customers).toBe(2);
+    expect(byLabel.Prospects).toBe(2);
+    expect(byLabel['Open leads']).toBe(5);
+    // MEMBER, by contrast, never sees the pool rows.
+    const member = await asRole(WorkspaceRole.MEMBER, () => call(q, signServiceToken()));
+    const memberByLabel = Object.fromEntries(
+      member.body.metrics.map((m: any) => [m.label, m.value]),
+    );
+    expect(memberByLabel.Prospects).toBeUndefined();
+    expect(memberByLabel['Open leads']).toBe(3);
+    // A VIEWER still gets nothing.
+    const viewer = await asRole(WorkspaceRole.VIEWER, () => call(q, signServiceToken()));
+    expect(viewer.body.metrics).toEqual([]);
+    expect(viewer.body.items).toEqual([]);
+  });
+
+  it('v1.1 metrics: zero stage is ABSENT (never shown as 0) and the cap keeps 4', async () => {
+    // Empty workspace: no metrics at all.
+    const EMPTY_WS = '0190a000-7e57-7000-8000-000000000a02';
+    await owner.workspace.create({
+      data: { id: EMPTY_WS, slug: 'home-summary-empty', displayName: 'Home Summary Empty' },
+    });
+    await owner.membership.create({
+      data: { userKey: KC_SUB, workspaceId: EMPTY_WS, role: 'OWNER', status: 'ACTIVE' },
+    });
+    try {
+      const emptyQ = `?workspace=${EMPTY_WS}&email=${encodeURIComponent(EMAIL)}`;
+      const res = await call(emptyQ, signServiceToken());
+      expect(res.status).toBe(200);
+      expect(res.body.state).toBe('empty');
+      expect(res.body.metrics).toEqual([]);
+    } finally {
+      await owner.membership.deleteMany({ where: { workspaceId: EMPTY_WS } });
+      await owner.workspace.delete({ where: { id: EMPTY_WS } });
+    }
   });
 
   it('v1.1 VIEWER keeps #63 behaviour (nothing), even though the workspace has data', async () => {
@@ -636,7 +732,7 @@ describeDb('home-summary (CONTRACT v1, real DB, fake JWKS)', () => {
     const byLabel = Object.fromEntries(res.body.metrics.map((m: any) => [m.label, m.value]));
     // Aaron's stored role is MEMBER here: still only his own book.
     expect(byLabel).toEqual({
-      'Active customers': 2,
+      Customers: 2,
       'Open leads': 3,
       'Follow-ups due': 1,
       'Quotes out': 2,
