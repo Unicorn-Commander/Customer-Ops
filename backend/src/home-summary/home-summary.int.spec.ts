@@ -49,6 +49,9 @@ const DB_URL = process.env.CUSTOMER_OPS_RLS_TEST_DATABASE_URL;
 const OWNER_URL = process.env.CUSTOMER_OPS_RLS_OWNER_DATABASE_URL || DB_URL;
 const describeDb = DB_URL ? describe : describe.skip;
 
+/** Mutable config the stub reads live, so a test can flip the flag per request. */
+const configHolder: Record<string, string | undefined> = {};
+
 function signServiceToken(claims: Record<string, unknown> = {}) {
   const now = Math.floor(Date.now() / 1000);
   return jwt.sign(
@@ -207,7 +210,8 @@ describeDb('home-summary (CONTRACT v1, real DB, fake JWKS)', () => {
       quoteIds.push(q.id);
     }
 
-    const configValues: Record<string, string | undefined> = {
+    const configValues: Record<string, string | undefined> = configHolder;
+    Object.assign(configValues, {
       JWT_SECRET: 'synthetic-local-secret',
       BRIGADE_TRUSTED_ISSUERS: '',
       KEYCLOAK_URL: 'https://auth.example.com',
@@ -216,7 +220,7 @@ describeDb('home-summary (CONTRACT v1, real DB, fake JWKS)', () => {
       HOME_SUMMARY_ENABLED: 'true',
       HOME_CALLER_CLIENT_ID: CALLER,
       FRONTEND_URL: 'https://customerops.example.com',
-    };
+    });
     const config = {
       get: <T>(key: string, fallback?: T) => (configValues[key] ?? fallback) as T,
     } as unknown as ConfigService;
@@ -367,6 +371,17 @@ describeDb('home-summary (CONTRACT v1, real DB, fake JWKS)', () => {
     // A bad signature is stopped at the app's EXISTING JWT verification (before
     // the caller fence), so the body is the app's standard 401, never data.
     expect(JSON.stringify(res.body)).not.toContain('Active customers');
+  });
+
+  it('HOME_SUMMARY_ENABLED off => 404 as if the route did not exist', async () => {
+    (configHolder as any).HOME_SUMMARY_ENABLED = 'false';
+    try {
+      const res = await call(q, signServiceToken());
+      expect(res.status).toBe(404);
+      expect(JSON.stringify(res.body)).not.toContain('Active customers');
+    } finally {
+      (configHolder as any).HOME_SUMMARY_ENABLED = 'true';
+    }
   });
 
   it('no token is refused', async () => {
