@@ -6,17 +6,30 @@ import {
   Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { PersonalAccessToken, User } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { MembershipService } from '../../common/workspace/membership.service';
 import { WorkspaceEntitlementsResolver } from '../../common/workspace/workspace-entitlements.resolver';
 import {
+  claimWorkspaceOf,
   entitlementsOf,
+  honourClaimWithoutSource,
   intersectEntitlements,
+  primaryWorkspaceIdFrom,
   WithWorkspaceClaim,
 } from '../../common/workspace/workspace.util';
+import {
+  entitlementModeFrom,
+  logEntitlementModeOnce,
+} from '../../common/workspace/entitlement-mode';
 import { PAT_AVAILABLE_SCOPES, PAT_PREFIX, PatScope } from './pat.constants';
 import { generatePat, isPatToken, verifyPat } from './pat.util';
+
+/** Days a new PAT lives when the caller does not pass expiresAt. */
+const DEFAULT_PAT_EXPIRY_DAYS = 90;
+const HOUR_MS = 3_600_000;
+const DAY_MS = 86_400_000;
 
 export interface CreatePatInput {
   name: string;
@@ -80,6 +93,13 @@ export interface PatResolution {
 @Injectable()
 export class PatService {
   private readonly logger = new Logger(PatService.name);
+  /** Legacy null-expiry PAT ids already logged in this process. */
+  private static readonly nullExpiryLogged = new Set<string>();
+  /**
+   * Opt-in age cap in hours, or null when `PAT_ENTITLEMENT_SNAPSHOT_MAX_AGE_HOURS`
+   * is unset (cap off). Parsed once at construction so a bad value refuses boot.
+   */
+  private readonly snapshotMaxAgeHours: number | null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -92,7 +112,35 @@ export class PatService {
      */
     @Optional()
     private readonly workspaceEntitlements?: WorkspaceEntitlementsResolver,
-  ) {}
+    /** Absent in unit constructions that predate config. The age cap stays off. */
+    @Optional()
+    private readonly config?: ConfigService,
+  ) {
+    this.snapshotMaxAgeHours = PatService.parseSnapshotMaxAgeHours(
+      this.config?.get<string>('PAT_ENTITLEMENT_SNAPSHOT_MAX_AGE_HOURS'),
+    );
+    logEntitlementModeOnce(this.logger, this.config?.get<string>('UC_ENTITLEMENT_MODE'));
+  }
+
+  /**
+   * Unset or blank leaves the snapshot age cap off. A set value must be a
+   * whole number of hours greater than 0. `0` would mark every snapshot stale
+   * on the next use; that is refused here (Nest fails to construct the
+   * provider, so the process does not start) rather than applied.
+   */
+  static parseSnapshotMaxAgeHours(raw: string | null | undefined): number | null {
+    if (raw === undefined || raw === null) return null;
+    const text = String(raw).trim();
+    if (!text) return null;
+    if (!/^[1-9]\d*$/.test(text)) {
+      throw new Error(
+        `PAT_ENTITLEMENT_SNAPSHOT_MAX_AGE_HOURS=${text} is invalid — refusing to start. ` +
+          'Set a whole number of hours greater than 0, or unset the variable to leave the cap off. ' +
+          '0 would treat every snapshot as stale.',
+      );
+    }
+    return Number.parseInt(text, 10);
+  }
 
   /**
    * Create a PAT for a user. Returns the plaintext token exactly once; callers
@@ -143,14 +191,17 @@ export class PatService {
     // here is the session token's live claim — but that claim is the user's
     // union across every org they belong to, so snapshotting it raw would let a
     // PAT bound to workspace B carry a SKU only workspace A bought. Intersect it
-    // with `workspaceId`'s server-side entitlements first (null source ⇒ the
-    // claim unchanged, today's shared-SaaS default). The snapshot is a FLOOR, not
-    // the authority: `findByPlaintext` re-intersects it with the workspace's
+    // with `workspaceId`'s server-side entitlements first. A null source (no
+    // pin, no mirror, no service token) honours the claim only for the
+    // workspace the claim names, or otherwise only the caller's primary
+    // workspace — see snapshotForMint. The snapshot is a FLOOR, not the
+    // authority: `findByPlaintext` re-intersects it with the workspace's
     // CURRENT server-side set on every request so revocation still lands.
     //
     // A resolver that cannot answer FAILS THE MINT (503) — see serverSideSkus.
-    const entitlements = intersectEntitlements(
-      entitlementsOf(user),
+    const entitlements = await this.snapshotForMint(
+      user,
+      workspaceId,
       await this.serverSideSkus(workspaceId),
     );
 
@@ -255,6 +306,8 @@ export class PatService {
         return null;
       }
 
+      this.noteLegacyNullExpiry(bareToken);
+
       return {
         user,
         token: bareToken,
@@ -280,9 +333,14 @@ export class PatService {
    *     SKU revoked at the authority stops working within the resolver's TTL
    *     (default 60s) and a snapshot can never grant a SKU the workspace lacks.
    *   * server-side answer null (NO source configured — today's shared-SaaS
-   *     default) -> the snapshot, unchanged. This is the documented fallback; the
-   *     revocation window on that configuration is bounded only by PAT
-   *     revoke/expiry. See docs/runbooks/entitlement-enforce.md §1f.
+   *     default, including dogfood) -> the mint snapshot stands. The age cap
+   *     (`PAT_ENTITLEMENT_SNAPSHOT_MAX_AGE_HOURS`) is opt-in: unset means off.
+   *     When it is set and the snapshot is older, enforce still KEEPS the
+   *     snapshot unless a durable source exists to narrow it. There is no
+   *     durable owner claim in this process (a process-local JWT map is empty
+   *     on a pod that has not seen a human JWT, and reading that as `[]`
+   *     403'd working machine PATs). Open mode keeps the snapshot and logs.
+   *     See docs/runbooks/entitlement-enforce.md §1f.
    *   * a token bound to NO workspace -> `[]` (deny). There is nothing to bind
    *     to, so the claim is unbindable — see the sentinel in findByPlaintext,
    *     which already refuses such a row; this is the second line of that fence.
@@ -305,8 +363,8 @@ export class PatService {
     }
     try {
       const server = await this.workspaceEntitlements.skusFor(token.workspaceId);
-      if (server === null) return snapshot; // no server-side source -> snapshot
-      return intersectEntitlements(snapshot, server);
+      if (server !== null) return intersectEntitlements(snapshot, server);
+      return this.snapshotWithoutServerSource(token, snapshot);
     } catch (err) {
       this.logger.error(
         `PAT ${token.id}: workspace entitlement resolve failed (${(err as Error)?.message ?? 'error'}) — failing closed (no entitlements)`,
@@ -424,8 +482,121 @@ export class PatService {
     return cleaned as PatScope[];
   }
 
+  /**
+   * SKUs to freeze onto a new PAT. A present server-side list is the
+   * intersection. A null source, in enforce mode, keeps the claim only when
+   * it binds to this workspace (the workspace the claim names, else the
+   * caller's primary). Open mode keeps the claim and logs a mismatch.
+   */
+  private async snapshotForMint(
+    user: User & Partial<WithWorkspaceClaim>,
+    workspaceId: string,
+    server: string[] | null,
+  ): Promise<string[]> {
+    const claimed = entitlementsOf(user);
+    if (server !== null) return intersectEntitlements(claimed, server);
+
+    const binding = {
+      actingWorkspaceId: workspaceId,
+      claimWorkspaceId: claimWorkspaceOf(user),
+      primaryWorkspaceId: await this.primaryWorkspaceId(user),
+    };
+    if (this.entitlementMode() === 'open') {
+      if (!honourClaimWithoutSource(binding)) {
+        this.logger.warn(
+          `PAT mint for workspace ${workspaceId}: entitlement claim does not bind ` +
+            `(claimWorkspace=${binding.claimWorkspaceId ?? 'none'}, ` +
+            `primary=${binding.primaryWorkspaceId ?? 'none'}); ` +
+            `UC_ENTITLEMENT_MODE=open keeps the claim (names only: [${claimed.join(',')}]).`,
+        );
+      }
+      return intersectEntitlements(claimed, null);
+    }
+    return intersectEntitlements(claimed, null, binding);
+  }
+
+  /**
+   * No server-side source (choice (a)). The mint snapshot stands.
+   *
+   * The age cap is opt-in. When it is on and the snapshot is past it, there is
+   * still no durable owner claim to narrow against — a process-local map filled
+   * from JwtStrategy is empty on any pod that has not validated a human JWT,
+   * and treating that emptiness as `[]` 403'd working PATs. Keep the snapshot
+   * and log. Open mode is the same outcome with an open-mode log.
+   */
+  private snapshotWithoutServerSource(token: PersonalAccessToken, snapshot: string[]): string[] {
+    const maxHours = this.snapshotMaxAgeHours;
+    if (maxHours === null || !this.snapshotStale(token)) return snapshot;
+
+    const names = snapshot.join(',');
+    if (this.entitlementMode() === 'open') {
+      this.logger.warn(
+        `PAT ${token.id}: entitlement snapshot is older than ${maxHours}h and no server-side ` +
+          `source is configured; UC_ENTITLEMENT_MODE=open keeps the mint snapshot ` +
+          `(names only: [${names}]).`,
+      );
+      return snapshot;
+    }
+
+    this.logger.warn(
+      `PAT ${token.id}: entitlement snapshot is older than ${maxHours}h, no server-side source, ` +
+        `and no durable owner claim — keeping the mint snapshot (names only: [${names}]).`,
+    );
+    return snapshot;
+  }
+
+  private noteLegacyNullExpiry(token: Pick<PersonalAccessToken, 'id' | 'expiresAt'>): void {
+    if (token.expiresAt != null) return;
+    if (PatService.nullExpiryLogged.has(token.id)) return;
+    PatService.nullExpiryLogged.add(token.id);
+    this.logger.warn(
+      `PAT ${token.id} has no expiresAt (legacy null-expiry token). It keeps working; ` +
+        `new tokens default to ${this.defaultExpiryDays()} days.`,
+    );
+  }
+
+  private async primaryWorkspaceId(user: Pick<User, 'id' | 'keycloakId'>): Promise<string | null> {
+    const list = (
+      this.membership as {
+        listActiveMemberships?: (
+          u: Pick<User, 'id' | 'keycloakId'>,
+        ) => Promise<{ workspaceId?: string | null; isDefault?: boolean }[]>;
+      }
+    ).listActiveMemberships;
+    if (typeof list !== 'function') return null;
+    try {
+      return primaryWorkspaceIdFrom(await list.call(this.membership, user));
+    } catch (err) {
+      this.logger.warn(
+        `could not read primary workspace for user ${user.id}: ${(err as Error).message}`,
+      );
+      return null;
+    }
+  }
+
+  private entitlementMode(): 'open' | 'enforce' {
+    return entitlementModeFrom(this.config?.get<string>('UC_ENTITLEMENT_MODE'));
+  }
+
+  private snapshotStale(token: PersonalAccessToken): boolean {
+    const max = this.snapshotMaxAgeHours;
+    if (max === null) return false;
+    const created = token.createdAt ? new Date(token.createdAt).getTime() : NaN;
+    if (!Number.isFinite(created)) return true;
+    return Date.now() - created > max * HOUR_MS;
+  }
+
+  private defaultExpiryDays(): number {
+    const raw = (this.config?.get<string>('PAT_DEFAULT_EXPIRY_DAYS') ?? '').trim();
+    if (!raw) return DEFAULT_PAT_EXPIRY_DAYS;
+    const n = Number.parseInt(raw, 10);
+    return Number.isFinite(n) && n > 0 ? n : DEFAULT_PAT_EXPIRY_DAYS;
+  }
+
   private normalizeExpiry(expiresAt?: Date | string | null): Date | null {
-    if (expiresAt === null || expiresAt === undefined || (expiresAt as unknown) === '') return null;
+    if (expiresAt === null || expiresAt === undefined || (expiresAt as unknown) === '') {
+      return new Date(Date.now() + this.defaultExpiryDays() * DAY_MS);
+    }
     const d = expiresAt instanceof Date ? expiresAt : new Date(expiresAt);
     if (Number.isNaN(d.getTime())) throw new BadRequestException('expiresAt must be a valid date');
     if (d.getTime() <= Date.now()) throw new BadRequestException('expiresAt must be in the future');

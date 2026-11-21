@@ -1,17 +1,22 @@
-import { Injectable, Optional } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { User } from '@prisma/client';
 import { PrismaService, WorkspaceTxClient, WorkspaceTxOptions } from '../../prisma/prisma.service';
 import { MembershipService } from './membership.service';
 import {
+  claimWorkspaceOf,
   defaultWorkspaceId as defaultWorkspaceIdFromEnv,
+  EntitlementClaimBinding,
   entitlementsOf,
+  honourClaimWithoutSource,
   intersectEntitlements,
   parseWorkspaceEntitlements,
+  primaryWorkspaceIdFrom,
   resolveWorkspaceId,
   ucUidOf,
   WithWorkspaceClaim,
 } from './workspace.util';
+import { entitlementModeFrom, logEntitlementModeOnce } from './entitlement-mode';
 import { WorkspaceEntitlementsResolver } from './workspace-entitlements.resolver';
 
 /**
@@ -27,6 +32,8 @@ import { WorkspaceEntitlementsResolver } from './workspace-entitlements.resolver
  */
 @Injectable()
 export class WorkspaceContextService {
+  private readonly logger = new Logger(WorkspaceContextService.name);
+
   constructor(
     private readonly config: ConfigService,
     private readonly prisma: PrismaService,
@@ -47,7 +54,9 @@ export class WorkspaceContextService {
      */
     @Optional()
     private readonly entitlementsResolver?: WorkspaceEntitlementsResolver,
-  ) {}
+  ) {
+    logEntitlementModeOnce(this.logger, this.config.get<string>('UC_ENTITLEMENT_MODE'));
+  }
 
   /**
    * Max staleness this (JWT/session) lane accepts from the resolver's in-process
@@ -156,18 +165,66 @@ export class WorkspaceContextService {
    * intersecting it with the workspace's server-side entitlements. This is the
    * (user, workspace) binding every federation/inference gate consumes — a token
    * carrying `customer-ops` from another org is denied it in a workspace whose
-   * server-side cache lacks it, while a workspace with no cache falls back to the
-   * claim (today's behavior). Callers pass the workspace they have ALREADY
-   * resolved+authorized (resolveAuthorized), so this adds no membership decision.
+   * server-side cache lacks it. A null source honours the claim only for the
+   * workspace the claim names, or otherwise only the caller's primary workspace
+   * (open mode keeps the claim and logs). Callers pass the workspace they have
+   * ALREADY resolved+authorized (resolveAuthorized), so this adds no membership
+   * decision.
    */
   async effectiveEntitlements(
     user: User & Partial<WithWorkspaceClaim>,
     workspaceId: string,
   ): Promise<string[]> {
-    return intersectEntitlements(
-      entitlementsOf(user),
-      await this.workspaceEntitlements(workspaceId),
-    );
+    const claimed = entitlementsOf(user);
+    const server = await this.workspaceEntitlements(workspaceId);
+    if (server != null) return intersectEntitlements(claimed, server);
+
+    const binding = await this.claimBinding(user, workspaceId);
+    if (this.entitlementMode() === 'open') {
+      if (!honourClaimWithoutSource(binding)) {
+        this.logger.warn(
+          `entitlement claim does not bind to workspace ${workspaceId} ` +
+            `(claimWorkspace=${binding.claimWorkspaceId ?? 'none'}, primary=${binding.primaryWorkspaceId ?? 'none'}); ` +
+            `UC_ENTITLEMENT_MODE=open keeps the claim (names only: [${claimed.join(',')}]).`,
+        );
+      }
+      return intersectEntitlements(claimed, null);
+    }
+    return intersectEntitlements(claimed, null, binding);
+  }
+
+  private entitlementMode(): 'open' | 'enforce' {
+    return entitlementModeFrom(this.config.get<string>('UC_ENTITLEMENT_MODE'));
+  }
+
+  private async claimBinding(
+    user: User & Partial<WithWorkspaceClaim>,
+    actingWorkspaceId: string,
+  ): Promise<EntitlementClaimBinding> {
+    return {
+      actingWorkspaceId,
+      claimWorkspaceId: claimWorkspaceOf(user),
+      primaryWorkspaceId: await this.primaryWorkspaceId(user),
+    };
+  }
+
+  private async primaryWorkspaceId(user: User): Promise<string | null> {
+    const list = (
+      this.membership as {
+        listActiveMemberships?: (
+          u: User,
+        ) => Promise<{ workspaceId: string; isDefault?: boolean }[]>;
+      }
+    ).listActiveMemberships;
+    if (typeof list !== 'function') return null;
+    try {
+      return primaryWorkspaceIdFrom(await list.call(this.membership, user));
+    } catch (err) {
+      this.logger.warn(
+        `could not read primary workspace for user ${user.id}: ${(err as Error).message}`,
+      );
+      return null;
+    }
   }
 
   /**

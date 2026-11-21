@@ -17,3 +17,16 @@ describe('production quote PDF runtime', () => {
     expect(read('deploy/.env.prod.example')).toMatch(/^HOME=\/tmp$/m);
   });
 });
+
+describe('production entitlement mode comments', () => {
+  const env = read('deploy/.env.prod.example');
+  const yml = read('deploy/docker-compose.prod.yml');
+
+  it('both files say production runs open today, and neither value is enforce', () => {
+    expect(env).toMatch(/production runs open today/i);
+    expect(yml).toMatch(/production runs open today/i);
+    expect(env).toMatch(/^UC_ENTITLEMENT_MODE=open$/m);
+    expect(yml).not.toMatch(/UC_ENTITLEMENT_MODE\s*=\s*enforce/);
+    expect(env).not.toMatch(/^UC_ENTITLEMENT_MODE=enforce$/m);
+  });
+});

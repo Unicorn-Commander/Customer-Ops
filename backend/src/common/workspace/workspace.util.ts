@@ -41,6 +41,12 @@ export type WithWorkspaceClaim = User & {
   __workspaceClaim?: string | null;
   __ucUid?: string | null;
   __entitlements?: string[] | null;
+  /**
+   * Workspace or org id the entitlement claim itself names
+   * (`workspace_id` / `tenant_id`, else `org_id`). Used only to bind a SKU
+   * claim when the per-workspace source is null. Not the tenancy workspace.
+   */
+  __entitlementClaimWorkspaceId?: string | null;
 };
 
 /**
@@ -164,44 +170,85 @@ export function parseWorkspaceEntitlements(cache: unknown): string[] | null {
 }
 
 /**
+ * Where a SKU claim may be honoured when the per-workspace source is null.
+ * `actingWorkspaceId` is the workspace the caller is acting in.
+ * `claimWorkspaceId` is the workspace/org id the claim itself names, if any.
+ * `primaryWorkspaceId` is the caller's primary membership, used only when the
+ * claim names no workspace.
+ */
+export interface EntitlementClaimBinding {
+  actingWorkspaceId: string;
+  claimWorkspaceId?: string | null;
+  primaryWorkspaceId?: string | null;
+}
+
+/**
+ * True when a null per-workspace source may still honour the claim for
+ * `binding.actingWorkspaceId`.
+ *
+ *   - the claim names a workspace/org id → only that workspace
+ *   - otherwise → only the caller's primary workspace
+ *   - no acting workspace, or neither a named claim workspace nor a primary
+ *     we could read → honour. Refusing here would deny a paying org this
+ *     function cannot place (the single-workspace case with no membership row).
+ */
+export function honourClaimWithoutSource(binding: EntitlementClaimBinding): boolean {
+  const acting = (binding.actingWorkspaceId ?? '').trim();
+  if (!acting) return true;
+  const named = (binding.claimWorkspaceId ?? '').trim();
+  if (named) return named === acting;
+  const primary = (binding.primaryWorkspaceId ?? '').trim();
+  if (!primary) return true;
+  return primary === acting;
+}
+
+/** Workspace/org id the entitlement claim names, if the user carries one. */
+export function claimWorkspaceOf(
+  user: Partial<WithWorkspaceClaim> | null | undefined,
+): string | null {
+  const named = user?.__entitlementClaimWorkspaceId ?? user?.__workspaceClaim;
+  return typeof named === 'string' && named.trim() ? named.trim() : null;
+}
+
+/** Primary workspace from an already-loaded membership list (default, else first). */
+export function primaryWorkspaceIdFrom(
+  memberships: { workspaceId?: string | null; isDefault?: boolean }[] | null | undefined,
+): string | null {
+  if (!memberships?.length) return null;
+  const def = memberships.find((m) => m.isDefault) ?? memberships[0];
+  const id = def?.workspaceId;
+  return typeof id === 'string' && id.trim() ? id.trim() : null;
+}
+
+/**
  * Bind a token/PAT entitlement claim to the ACTING workspace: return the SKUs the
  * caller both CLAIMS and the workspace actually holds server-side.
  *
- *   - `workspace === null` (no server-side source) ⇒ trust the claim unchanged.
- *   - otherwise ⇒ the INTERSECTION (by `entitlementKey`) — a caller whose token
- *     carries `customer-ops` from ANOTHER org is denied it in a workspace whose
- *     server-side cache lacks it. Never grants a SKU the claim did not carry.
+ *   - `workspace === null` and no `binding` → trust the claim unchanged. Callers
+ *     that do not know the acting workspace (the historical two-arg form) stay
+ *     here so a paying org is not refused for lack of context.
+ *   - `workspace === null` with a `binding` → honour the claim only for the
+ *     workspace the claim names, or otherwise only the caller's primary
+ *     workspace. A member of W1 (holds the SKU) and W2 (does not) is refused
+ *     in W2. The single-workspace case (acting === primary, claim names
+ *     nothing) is unchanged.
+ *   - otherwise → the INTERSECTION (by `entitlementKey`). Never grants a SKU
+ *     the claim did not carry.
  *
- * ⚠️ KNOWN LIMIT — shared-SaaS cross-org (task 29817abc / gate finding):
- * On shared SaaS, `Workspace.entitlementCache` is NULL by design (see the
- * `entitlementCache` column comment in schema.prisma: "offline/dedicated only;
- * null on shared SaaS"), so this function takes the `workspace == null` branch
- * and the (user, workspace) bind is a NO-OP there. That is only SAFE if Keycloak
- * mints a token whose `entitlements` claim is already scoped to the token's
- * `workspace_id` — i.e. the token is the per-(user, workspace) authority. If a
- * token can instead carry a user's UNION of SKUs across every org they belong to,
- * a member of workspace W2 could exercise a `customer-ops` SKU that only their
- * OTHER org (W1) actually holds. This repo has NO server-side entitlements source
- * to close that gap: `entitlementCache` is read-only here (nothing writes it), and
- * uc-entitlements lives in ops-center/Keycloak, not as a client we can call. We do
- * NOT fail this branch closed because on shared SaaS the cache is ALWAYS null —
- * denying here would deny every paying user on every gate.
- *
- * TODO(29817abc, product decision for Aaron): to actually ENFORCE cross-org on
- * shared SaaS, pick one — (a) have Keycloak emit a per-workspace-scoped
- * `entitlements` claim (the token already binds user×workspace, and the assertion
- * above becomes an invariant), OR (b) add a uc-entitlements source/client that
- * resolves a workspace's SKUs server-side and populate `entitlementCache` (then
- * this branch stops being null on shared SaaS and the intersection enforces).
- * Until one lands, shared-SaaS cross-org enforcement rests on assumption (a).
- * See docs/runbooks/entitlement-enforce.md §1e.
+ * Open mode does not pass a binding: the caller logs and keeps the claim.
+ * See docs/runbooks/entitlement-enforce.md §1e. The old TODO(29817abc) null
+ * branch is the bound form above; a populated server-side source still wins
+ * via the intersection.
  */
-export function intersectEntitlements(claimed: string[], workspace: string[] | null): string[] {
-  // No server-side source (null). Trust the claim — see the KNOWN LIMIT above:
-  // this is a deliberate no-op on shared SaaS, NOT an oversight. Once a source
-  // exists (populated cache or per-workspace Keycloak claim), this stops being
-  // reached / becomes an enforcing intersection.
-  if (workspace == null) return [...claimed];
+export function intersectEntitlements(
+  claimed: string[],
+  workspace: string[] | null,
+  binding?: EntitlementClaimBinding | null,
+): string[] {
+  if (workspace == null) {
+    if (binding && !honourClaimWithoutSource(binding)) return [];
+    return [...claimed];
+  }
   const allow = new Set(workspace.map(entitlementKey));
   return claimed.filter((sku) => allow.has(entitlementKey(sku)));
 }

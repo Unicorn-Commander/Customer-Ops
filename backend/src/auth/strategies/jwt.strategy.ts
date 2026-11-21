@@ -341,6 +341,15 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
    * (agents, email, accounting, outreach) consumes the list this one method
    * produces, so claim-name tolerance is centralized HERE, not in each gate.
    */
+  /**
+   * Workspace or org the entitlement claim names. Prefer the tenancy ids,
+   * then org_id. Tenancy itself (`__workspaceClaim`) does not read org_id.
+   */
+  static entitlementClaimWorkspaceId(payload: any): string | null {
+    const raw = payload?.workspace_id ?? payload?.tenant_id ?? payload?.org_id ?? null;
+    return typeof raw === 'string' && raw.trim() ? raw.trim() : null;
+  }
+
   static readEntitlements(payload: any): string[] {
     const coerce = (value: unknown): string[] => {
       if (value == null) return [];
@@ -431,18 +440,26 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       // @CurrentWorkspace) can scope rows without trusting an HTTP header.
       const augmented = user as User & {
         __workspaceClaim?: string | null;
+        __entitlementClaimWorkspaceId?: string | null;
         __ucUid?: string | null;
         __entitlements?: string[] | null;
         __verifiedEmail?: string | null;
         __humanSession?: boolean;
       };
+      // Tenancy claim stays workspace_id/tenant_id. org_id is NOT a workspace
+      // for the GUC. It is recorded separately so a SKU claim can name the org
+      // it was bought for when the per-workspace source is null.
       augmented.__workspaceClaim = payload?.workspace_id ?? payload?.tenant_id ?? null;
+      augmented.__entitlementClaimWorkspaceId = JwtStrategy.entitlementClaimWorkspaceId(payload);
       augmented.__ucUid = typeof payload?.sub === 'string' ? payload.sub : null;
       // The verified entitlement SKUs (the suite entitlement gate: agents,
       // email, accounting, outreach). Read from the flat entitlement claim
       // (`entitlements`/`uc_skus`/`products`/`entitlement`, or nested
       // subscription.products) and normalized to a string[]; never an HTTP
       // header — this rides only on the cryptographically-verified token.
+      // Not copied into a process-local map for later PAT use. That map is
+      // empty on a pod that has not validated a human JWT, and reading it as
+      // the PAT's entitlement set 403'd working machine tokens. See PatService.
       augmented.__entitlements = JwtStrategy.readEntitlements(payload);
       // Onboarding management accepts only this app's local human SSO session.
       augmented.__humanSession =

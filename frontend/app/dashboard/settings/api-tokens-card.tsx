@@ -63,13 +63,12 @@ const FALLBACK_SCOPES = [
 /** The scopes a new token starts with — read-only, least-privilege defaults. */
 const DEFAULT_SELECTED_SCOPES = ['read:customers', 'read:overview'];
 
-const EXPIRY_OPTIONS: { label: string; days: number | null }[] = [
+const EXPIRY_OPTIONS: { label: string; days: number }[] = [
   { label: '30 days', days: 30 },
   { label: '60 days', days: 60 },
   { label: '90 days', days: 90 },
   { label: '180 days', days: 180 },
   { label: '1 year', days: 365 },
-  { label: 'Never', days: null },
 ];
 
 /** Pull a human message off an ApiError (which already folds the server detail
@@ -287,7 +286,7 @@ function CreateTokenModal({
 }) {
   const [name, setName] = useState('');
   const [selectedScopes, setSelectedScopes] = useState<string[]>(DEFAULT_SELECTED_SCOPES);
-  const [expiryDays, setExpiryDays] = useState<number | null>(90);
+  const [expiryDays, setExpiryDays] = useState<number>(90);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const headingId = useId();
@@ -313,9 +312,7 @@ function CreateTokenModal({
         name: name.trim(),
         scopes: selectedScopes,
       };
-      if (expiryDays !== null) {
-        body.expiresAt = new Date(Date.now() + expiryDays * 86_400_000).toISOString();
-      }
+      body.expiresAt = new Date(Date.now() + expiryDays * 86_400_000).toISOString();
       const created = await apiPost<CreatePatResult>('/auth/pats', body);
       onCreated(created);
     } catch (err) {
@@ -409,13 +406,6 @@ function CreateTokenModal({
               );
             })}
           </div>
-          {expiryDays === null && (
-            <p className="flex items-center gap-1 text-xs text-warning">
-              <ShieldAlert className="h-3 w-3" />
-              Tokens that never expire are convenient but a long-term audit risk. Prefer a finite
-              lifetime.
-            </p>
-          )}
         </div>
 
         {formError && (
