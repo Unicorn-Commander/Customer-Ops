@@ -3,7 +3,6 @@ import { ConfigService } from '@nestjs/config';
 import { RelationshipStage, User, WorkspaceRole } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ContactOpsPort } from '../contact-ops/contact-ops.port';
-import { AuditService } from '../audit/audit.service';
 import { appPublicUrl } from './home-summary.config';
 import { emailAuditHash, normalizeEmail } from './home-summary.caller';
 
@@ -65,7 +64,6 @@ export class HomeSummaryService {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly contactOps: ContactOpsPort,
-    private readonly audit: AuditService,
   ) {}
 
   /**
@@ -85,7 +83,6 @@ export class HomeSummaryService {
 
     const { user, role } = resolution;
     const summary = await this.computeForMember(user, params.workspace, role);
-    void this.auditCall(params, summary, user, startedAt);
     this.logCall(params, email, summary.state, startedAt);
     return summary;
   }
@@ -304,35 +301,6 @@ export class HomeSummaryService {
       `home-summary caller=${params.azp} workspace=${params.workspace} emailHash=${emailHash} ` +
         `state=${state} ms=${Date.now() - startedAt}`,
     );
-  }
-
-  /**
-   * The one side effect the contract allows: an append-only READ audit row on the
-   * workspace's trail. Fire-and-forget (AuditService never throws) so a slow
-   * audit write cannot push the answer past its 1.5 s budget.
-   */
-  private async auditCall(
-    params: { azp: string; workspace: string; email: string },
-    summary: HomeSummary,
-    user: User,
-    startedAt: number,
-  ): Promise<void> {
-    try {
-      await this.audit.log({
-        workspaceId: params.workspace,
-        userId: user.keycloakId ?? user.id,
-        action: 'READ',
-        resource: 'home_summary',
-        details: {
-          state: summary.state,
-          caller: params.azp,
-          emailHash: emailAuditHash(params.email),
-          ms: Date.now() - startedAt,
-        },
-      });
-    } catch {
-      /* AuditService.log already swallows; belt-and-braces only. */
-    }
   }
 }
 

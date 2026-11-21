@@ -11,8 +11,8 @@ import { AuthService } from '../auth/auth.service';
 import { PatService } from '../auth/pat/pat.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ContactOpsPort } from '../contact-ops/contact-ops.port';
-import { AuditService } from '../audit/audit.service';
 import { HomeSummaryController } from './home-summary.controller';
+import { ServiceCallerGuard } from './home-summary.caller';
 import { HomeSummaryService } from './home-summary.service';
 
 /**
@@ -23,11 +23,18 @@ import { HomeSummaryService } from './home-summary.service';
  * role so the workspace RLS fence is live, exactly as in production; an owner
  * client seeds/cleans the control + scoped tables out of band.
  *
- * The tokens are signed with a per-run RSA key that a mocked `jwks-rsa` serves as
- * the realm JWKS — no real Keycloak, no real secret. AuthService is faked (the
- * caller is a service account, not a person, so there is no User row to resolve);
- * everything below the guard (route, flag, person resolution, the owner-scoped
- * queries, the audit line) is the real implementation.
+ * Tokens are signed with a per-run RSA key that a mocked `jwks-rsa` serves as the
+ * realm JWKS — no real Keycloak, no real secret.
+ *
+ * The controller is mounted WITHOUT JwtAuthGuard in this module (only the
+ * flag guard + ServiceCallerGuard), mirroring production: the home-summary route
+ * must never run the person strategy, which resolves or JIT-provisions a User
+ * from every token. The real-path test below proves a service token with NO User
+ * row is answered for a seeded member and that the users row count is unchanged.
+ *
+ * The JwtStrategy/AuthService/JwtAuthGuard providers are registered but NOT bound
+ * to this controller; they exist only so a regression that re-attaches
+ * JwtAuthGuard to the route could be caught (see the wiring assertion).
  */
 let jwksPublicKey = '';
 
@@ -225,10 +232,11 @@ describeDb('home-summary (CONTRACT v1, real DB, fake JWKS)', () => {
       get: <T>(key: string, fallback?: T) => (configValues[key] ?? fallback) as T,
     } as unknown as ConfigService;
 
+    // Deliberately NOT asserted in these tests: the person strategy must not run
+    // for this route. It is faked so a regression (route re-attached to
+    // JwtAuthGuard) surfaces as a provisioning attempt below rather than a 500.
     const authService = {
-      validateJwtPayload: jest
-        .fn()
-        .mockResolvedValue({ id: userId, email: EMAIL, keycloakId: KC_SUB, isActive: true }),
+      validateJwtPayload: jest.fn().mockRejectedValue(new Error('strategy must not run')),
     } as unknown as AuthService;
     const patService = { findByPlaintext: jest.fn(async () => null) } as unknown as PatService;
     const contactOps = {
@@ -251,6 +259,7 @@ describeDb('home-summary (CONTRACT v1, real DB, fake JWKS)', () => {
       controllers: [HomeSummaryController],
       providers: [
         HomeSummaryService,
+        ServiceCallerGuard,
         JwtStrategy,
         JwtAuthGuard,
         { provide: ConfigService, useValue: config },
@@ -258,7 +267,6 @@ describeDb('home-summary (CONTRACT v1, real DB, fake JWKS)', () => {
         { provide: PatService, useValue: patService },
         { provide: PrismaService, useValue: runtime },
         { provide: ContactOpsPort, useValue: contactOps },
-        { provide: AuditService, useValue: { log: jest.fn(async () => null) } },
       ],
     }).compile();
     app = module.createNestApplication();
@@ -303,6 +311,21 @@ describeDb('home-summary (CONTRACT v1, real DB, fake JWKS)', () => {
   }
 
   const q = `?workspace=${WS}&email=${encodeURIComponent(EMAIL.toUpperCase())}&org=ops-org&sub=kc`;
+
+  it('REAL PATH: a service token with NO User row gets ok and does not provision a user', async () => {
+    // The service account has no User row (it is a client_credentials token).
+    const serviceUsers = await owner.user.count({ where: { keycloakId: 'kc-home-caller' } });
+    expect(serviceUsers).toBe(0);
+    const usersBefore = await owner.user.count();
+
+    const res = await call(q, signServiceToken());
+
+    expect(res.status).toBe(200);
+    expect(res.body.state).toBe('ok');
+    const usersAfter = await owner.user.count();
+    expect(usersAfter).toBe(usersBefore);
+    expect(await owner.user.count({ where: { keycloakId: 'kc-home-caller' } })).toBe(0);
+  });
 
   it('a valid service token for a member gets ok with REAL counts from the seed', async () => {
     const res = await call(q, signServiceToken());
@@ -368,17 +391,23 @@ describeDb('home-summary (CONTRACT v1, real DB, fake JWKS)', () => {
     );
     const res = await call(q, token);
     expect(res.status).toBe(401);
-    // A bad signature is stopped at the app's EXISTING JWT verification (before
-    // the caller fence), so the body is the app's standard 401, never data.
-    expect(JSON.stringify(res.body)).not.toContain('Active customers');
+    expect(res.body).toEqual({ error: 'caller_not_allowed' });
   });
 
-  it('HOME_SUMMARY_ENABLED off => 404 as if the route did not exist', async () => {
+  it('a token from a Brigade federation issuer is refused with 401', async () => {
+    const res = await call(q, signServiceToken({ iss: 'https://brigade.example.com' }));
+    expect(res.status).toBe(401);
+    expect(res.body).toEqual({ error: 'caller_not_allowed' });
+  });
+
+  it('HOME_SUMMARY_ENABLED off => 404 BEFORE auth (even with no token)', async () => {
     (configHolder as any).HOME_SUMMARY_ENABLED = 'false';
     try {
       const res = await call(q, signServiceToken());
       expect(res.status).toBe(404);
       expect(JSON.stringify(res.body)).not.toContain('Active customers');
+      const noToken = await call(q);
+      expect(noToken.status).toBe(404);
     } finally {
       (configHolder as any).HOME_SUMMARY_ENABLED = 'true';
     }
@@ -467,17 +496,19 @@ describeDb('home-summary (CONTRACT v1, real DB, fake JWKS)', () => {
     }
   });
 
-  it('does no write: the scoped row counts are unchanged after a successful call', async () => {
+  it('does no write: the scoped + users row counts are unchanged after a successful call', async () => {
     const before = {
       customers: await owner.customer.count({ where: { workspaceId: WS } }),
       quotes: await owner.quote.count({ where: { workspaceId: WS } }),
       activities: await owner.customerActivity.count({ where: { workspaceId: WS } }),
+      users: await owner.user.count(),
     };
     await call(q, signServiceToken());
     const after = {
       customers: await owner.customer.count({ where: { workspaceId: WS } }),
       quotes: await owner.quote.count({ where: { workspaceId: WS } }),
       activities: await owner.customerActivity.count({ where: { workspaceId: WS } }),
+      users: await owner.user.count(),
     };
     expect(after).toEqual(before);
   });

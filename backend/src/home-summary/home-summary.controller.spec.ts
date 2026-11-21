@@ -1,115 +1,144 @@
-import { HttpException, NotFoundException } from '@nestjs/common';
+import { NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { generateKeyPairSync } from 'crypto';
+import * as jwt from 'jsonwebtoken';
 import {
-  CallerGuard,
   HomeSummaryController,
-  ServiceCallerGuard,
-  serviceCallerGuard,
+  HomeSummaryFlagGuard,
 } from './home-summary.controller';
+import { ServiceCallerGuard, VerifyHomeCallerKey, verifyHomeCaller } from './home-summary.caller';
 import { HomeSummaryService } from './home-summary.service';
 
 /**
  * The HTTP half of HOME-SUMMARY CONTRACT v1: the flag gate (off => 404 as if the
- * route did not exist) and the caller fence (only the Ops-Center Home service
- * account, a client_credentials token with azp == HOME_CALLER_CLIENT_ID). These
- * are never allowed to leak data: every failure is the one 401 shape.
+ * route did not exist, checked BEFORE auth) and the caller fence (only the
+ * Ops-Center Home service account: a client_credentials RS256 token signed by the
+ * realm key, iss == the realm issuer, azp == HOME_CALLER_CLIENT_ID). These are
+ * never allowed to leak data: every failure is the one 401 shape.
  */
 function makeConfig(values: Record<string, string> = {}) {
   return new ConfigService(values);
 }
 
-function makeContext(options: {
-  user?: any;
-  rawToken?: string | null;
-  payload?: any;
-  query?: Record<string, string>;
-}) {
-  const request: any = {
-    user: options.user,
-    query: options.query ?? {},
-    headers: options.rawToken ? { authorization: `Bearer ${options.rawToken}` } : {},
-  };
-  return {
-    switchToHttp: () => ({ getRequest: () => request }),
-  } as any;
+const ISSUER = 'https://auth.example.com/realms/uchub';
+const KID = 'unit-key';
+const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+const pem = publicKey.export({ format: 'pem', type: 'spki' }).toString();
+const resolveKey: VerifyHomeCallerKey = async () => pem;
+
+const baseConfig = {
+  KEYCLOAK_URL: 'https://auth.example.com',
+  KEYCLOAK_REALM: 'uchub',
+  HOME_CALLER_CLIENT_ID: 'ops-center-home',
+};
+
+function sign(claims: Record<string, unknown> = {}, key = privateKey) {
+  const now = Math.floor(Date.now() / 1000);
+  return jwt.sign(
+    {
+      sub: 'kc-home-caller',
+      iss: ISSUER,
+      aud: 'customer-ops',
+      azp: 'ops-center-home',
+      client_id: 'ops-center-home',
+      iat: now - 10,
+      exp: now + 300,
+      ...claims,
+    },
+    key,
+    { algorithm: 'RS256', keyid: KID },
+  );
 }
 
-const decodeFrom = (payload: any) => () => payload;
+function makeContext(rawToken: string | null, request: any = {}) {
+  if (rawToken) request.headers = { authorization: `Bearer ${rawToken}` };
+  return { switchToHttp: () => ({ getRequest: () => request }) } as any;
+}
 
-describe('ServiceCallerGuard', () => {
-  it('lets the Ops-Center Home service account through', async () => {
-    const guard = serviceCallerGuard(
-      makeConfig({ HOME_CALLER_CLIENT_ID: 'ops-center-home' }),
-      decodeFrom({ azp: 'ops-center-home', client_id: 'ops-center-home', exp: 9999999999 }),
-    );
+const is401 = { status: 401, response: { error: 'caller_not_allowed' } } as any;
+
+describe('ServiceCallerGuard (verifies the service token itself)', () => {
+  it('lets the Ops-Center Home service account through and stashes azp', async () => {
+    const guard = new ServiceCallerGuard(makeConfig(baseConfig), resolveKey);
     const request: any = {};
-    const context = {
-      switchToHttp: () => ({ getRequest: () => request }),
-    } as any;
-
-    expect(guard.canActivate(context)).toBe(true);
+    await expect(guard.canActivate(makeContext(sign(), request))).resolves.toBe(true);
+    expect(request.homeCallerAzp).toBe('ops-center-home');
   });
 
-  it('refuses a person token (verified email, no client identity) with 401 caller_not_allowed', async () => {
-    const guard = serviceCallerGuard(
-      makeConfig(),
-      decodeFrom({
-        azp: 'ops-center-home',
-        email: 'person@example.com',
-        email_verified: true,
-        exp: 9999999999,
-      }),
-    );
-    const context = makeContext({ rawToken: 'person-token' });
-
-    expect(() => guard.canActivate(context)).toThrow(
-      expect.objectContaining({ status: 401, response: { error: 'caller_not_allowed' } }) as any,
-    );
+  it('refuses a person token (verified email, no client identity)', async () => {
+    const guard = new ServiceCallerGuard(makeConfig(baseConfig), resolveKey);
+    const token = sign({
+      azp: 'ops-center-home',
+      email: 'person@example.com',
+      email_verified: true,
+      client_id: undefined,
+    });
+    await expect(guard.canActivate(makeContext(token))).rejects.toMatchObject(is401);
   });
 
   it('refuses another client even with the right shape', async () => {
-    const guard = serviceCallerGuard(
-      makeConfig(),
-      decodeFrom({ azp: 'some-other-client', client_id: 'some-other-client', exp: 9999999999 }),
-    );
-    const context = makeContext({ rawToken: 'other-client-token' });
-
-    expect(() => guard.canActivate(context)).toThrow(HttpException);
-    expect(() => guard.canActivate(context)).toThrow(
-      expect.objectContaining({ response: { error: 'caller_not_allowed' } }) as any,
-    );
+    const guard = new ServiceCallerGuard(makeConfig(baseConfig), resolveKey);
+    const token = sign({ azp: 'some-other-client', client_id: 'some-other-client' });
+    await expect(guard.canActivate(makeContext(token))).rejects.toMatchObject(is401);
   });
 
   it('refuses a delegated (act) token and a missing token', async () => {
-    const delegated = serviceCallerGuard(
-      makeConfig(),
-      decodeFrom({
-        azp: 'ops-center-home',
-        client_id: 'ops-center-home',
-        act: { sub: 'someone' },
-        exp: 9999999999,
-      }),
-    );
-    expect(() => delegated.canActivate(makeContext({ rawToken: 'x' }))).toThrow(
-      expect.objectContaining({ response: { error: 'caller_not_allowed' } }) as any,
-    );
+    const guard = new ServiceCallerGuard(makeConfig(baseConfig), resolveKey);
+    const delegated = sign({ act: { sub: 'someone' } });
+    await expect(guard.canActivate(makeContext(delegated))).rejects.toMatchObject(is401);
+    await expect(guard.canActivate(makeContext(null))).rejects.toMatchObject(is401);
+  });
 
-    const noToken = serviceCallerGuard(makeConfig(), decodeFrom(undefined));
-    expect(() => noToken.canActivate(makeContext({ rawToken: null }))).toThrow(
-      expect.objectContaining({ status: 401, response: { error: 'caller_not_allowed' } }) as any,
-    );
+  it('refuses a bad signature', async () => {
+    const guard = new ServiceCallerGuard(makeConfig(baseConfig), resolveKey);
+    const other = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey;
+    await expect(guard.canActivate(makeContext(sign({}, other)))).rejects.toMatchObject(is401);
+  });
+
+  it('refuses an expired token', async () => {
+    const guard = new ServiceCallerGuard(makeConfig(baseConfig), resolveKey);
+    const now = Math.floor(Date.now() / 1000);
+    await expect(
+      guard.canActivate(makeContext(sign({ iat: now - 600, exp: now - 60 }))),
+    ).rejects.toMatchObject(is401);
+  });
+
+  it('refuses a token from a Brigade federation issuer (only the realm issuer is trusted)', async () => {
+    const guard = new ServiceCallerGuard(makeConfig(baseConfig), resolveKey);
+    const token = sign({ iss: 'https://brigade.example.com' });
+    await expect(guard.canActivate(makeContext(token))).rejects.toMatchObject(is401);
   });
 
   it('reads the expected client id from env (HOME_CALLER_CLIENT_ID)', async () => {
-    const guard = serviceCallerGuard(
-      makeConfig({ HOME_CALLER_CLIENT_ID: 'custom-home-caller' }),
-      decodeFrom({ azp: 'custom-home-caller', client_id: 'custom-home-caller', exp: 9999999999 }),
+    const guard = new ServiceCallerGuard(
+      makeConfig({ ...baseConfig, HOME_CALLER_CLIENT_ID: 'custom-home-caller' }),
+      resolveKey,
     );
-    expect(guard.canActivate(makeContext({ rawToken: 'svc' }))).toBe(true);
+    const token = sign({ azp: 'custom-home-caller', client_id: 'custom-home-caller' });
+    await expect(guard.canActivate(makeContext(token))).resolves.toBe(true);
   });
 
-  it('exposes the same guard through the CallerGuard mixin without touching a DB', () => {
-    expect(CallerGuard).toBe(ServiceCallerGuard);
+  it('fails closed when the realm is not configured (no new trust root invented)', async () => {
+    const guard = new ServiceCallerGuard(makeConfig({}), resolveKey);
+    await expect(guard.canActivate(makeContext(sign()))).rejects.toMatchObject(is401);
+    await expect(
+      verifyHomeCaller(sign(), resolveKey, null, 'ops-center-home'),
+    ).rejects.toMatchObject(is401);
+  });
+});
+
+describe('HomeSummaryFlagGuard', () => {
+  it('404s as if the route did not exist when HOME_SUMMARY_ENABLED is off', () => {
+    const guard = new HomeSummaryFlagGuard(new ConfigService({}));
+    expect(() => guard.canActivate({} as any)).toThrow(NotFoundException);
+    expect(
+      () => new HomeSummaryFlagGuard(new ConfigService({ HOME_SUMMARY_ENABLED: 'false' })).canActivate({} as any),
+    ).toThrow(NotFoundException);
+  });
+
+  it('passes when HOME_SUMMARY_ENABLED is on', () => {
+    const guard = new HomeSummaryFlagGuard(new ConfigService({ HOME_SUMMARY_ENABLED: 'true' }));
+    expect(guard.canActivate({} as any)).toBe(true);
   });
 });
 
