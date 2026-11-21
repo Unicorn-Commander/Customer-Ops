@@ -45,6 +45,7 @@ import { EntitlementsModule } from './entitlements/entitlements.module';
 import { FederationWorkspaceMapModule } from './common/federation/federation-workspace-map.module';
 import { EntitlementsInterceptor } from './entitlements/entitlements.interceptor';
 import { ProvisioningModule } from './provisioning/provisioning.module';
+import { HomeSummaryModule } from './home-summary/home-summary.module';
 
 @Module({
   imports: [
@@ -154,6 +155,9 @@ import { ProvisioningModule } from './provisioning/provisioning.module';
     // / graph-repair per workspace on an interval (flag-gated OFF by default via
     // RECONCILE_SCHEDULER_ENABLED). After the feature modules it composes.
     ReconciliationSchedulerModule,
+    // The read-only Ops-Center Home summary surface (HOME-SUMMARY CONTRACT v1).
+    // Route 404s unless HOME_SUMMARY_ENABLED is on; GET only, one audit line.
+    HomeSummaryModule,
     // Control-plane provisioning (contract D). Empty module unless
     // PROVISIONING_ENABLED is on: no route, no provider, today's 404.
     ProvisioningModule.register(),

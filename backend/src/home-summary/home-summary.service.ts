@@ -1,0 +1,343 @@
+import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { RelationshipStage, User, WorkspaceRole } from '@prisma/client';
+import { PrismaService } from '../prisma/prisma.service';
+import { ContactOpsPort } from '../contact-ops/contact-ops.port';
+import { AuditService } from '../audit/audit.service';
+import { appPublicUrl } from './home-summary.config';
+import { emailAuditHash, normalizeEmail } from './home-summary.caller';
+
+/** One metric ring on the Home card (0..4 of these). */
+export interface HomeMetric {
+  label: string;
+  value: number | string;
+  href: string | null;
+}
+
+/** One item row under the rings (0..5 of these, newest/most urgent first). */
+export interface HomeItem {
+  title: string;
+  subtitle: string | null;
+  href: string | null;
+  at: string | null;
+  kind: string;
+}
+
+export interface HomeSummary {
+  state: 'ok' | 'empty' | 'not_member';
+  updatedAt: string;
+  metrics: HomeMetric[];
+  items: HomeItem[];
+}
+
+/** The 4 rings this app contributes (HOME-SUMMARY CONTRACT v1 content). */
+export const HOME_METRIC_LABELS = {
+  activeCustomers: 'Active customers',
+  openLeads: 'Open leads',
+  followUpsDue: 'Follow-ups due',
+  quotesOut: 'Quotes out',
+} as const;
+
+/** The item window: the next 5 follow-ups by due date. */
+export const HOME_FOLLOW_UP_ITEMS = 5;
+/** A follow-up note's first line is capped so the Home row stays one line. */
+export const HOME_FOLLOW_UP_SUBTITLE_MAX = 80;
+
+/**
+ * The read-only HOME-SUMMARY service (HOME-SUMMARY CONTRACT v1).
+ *
+ * Everything here answers ONE question: "what does this named person's own book
+ * look like right now?" It is strictly a read — the only side effect the route
+ * may have is the audit log line the caller writes — and every query runs inside
+ * the app's own RLS transaction (PrismaService.withWorkspaceReadOnly) with the
+ * person's own role, so a viewer never sees a number the app UI hides from them.
+ *
+ * Person resolution mirrors the app's own identity model: `email` ->
+ * EXACTLY ONE active, email-verified User -> an ACTIVE Membership in `workspace`.
+ * Zero/many/deactivated/not-a-member all collapse to `not_member` with nothing in
+ * it (never say why).
+ */
+@Injectable()
+export class HomeSummaryService {
+  private readonly logger = new Logger(HomeSummaryService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly config: ConfigService,
+    private readonly contactOps: ContactOpsPort,
+    private readonly audit: AuditService,
+  ) {}
+
+  /**
+   * Compute the summary for (email, workspace). `org`/`sub` are informational
+   * only — the answer is always for one named person in this app's workspace.
+   */
+  async forPerson(params: { email: string; workspace: string; azp: string }): Promise<HomeSummary> {
+    const startedAt = Date.now();
+    const email = normalizeEmail(params.email);
+
+    const resolution = await this.resolveMember(email, params.workspace);
+    if (!resolution) {
+      const summary = this.notMember();
+      this.logCall(params, email, summary.state, startedAt);
+      return summary;
+    }
+
+    const { user, role } = resolution;
+    const summary = await this.computeForMember(user, params.workspace, role);
+    void this.auditCall(params, summary, user, startedAt);
+    this.logCall(params, email, summary.state, startedAt);
+    return summary;
+  }
+
+  /**
+   * Resolve `email` to exactly one active + verified User that is an ACTIVE
+   * member of `workspace`, and take that member's role. Anything else -> null.
+   */
+  private async resolveMember(
+    email: string,
+    workspaceId: string,
+  ): Promise<{ user: User; role: WorkspaceRole } | null> {
+    if (!email || !workspaceId) return null;
+
+    const matches = await this.prisma.user.findMany({
+      where: { email: { equals: email, mode: 'insensitive' } },
+      take: 2,
+    });
+    if (matches.length !== 1) return null;
+    const user = matches[0];
+    if (!user.isActive) return null;
+
+    // The membership key the rest of the app uses is the uchub sub (keycloakId),
+    // never the local row id. A user with no sub cannot hold a membership.
+    const userKey = user.keycloakId ?? '';
+    if (!userKey) return null;
+
+    const membership = await this.prisma.membership.findUnique({
+      where: { userKey_workspaceId: { userKey, workspaceId } },
+    });
+    if (!membership || membership.status !== 'ACTIVE') return null;
+
+    return { user, role: membership.role };
+  }
+
+  /**
+   * The member's own book, read inside the workspace RLS transaction (READ ONLY
+   * — the transaction refuses any accidental write) as the member themselves.
+   */
+  private async computeForMember(
+    user: User,
+    workspaceId: string,
+    role: WorkspaceRole,
+  ): Promise<HomeSummary> {
+    const base = appPublicUrl(this.config);
+    const customerHref = `${base}/dashboard/customers`;
+    const pipelineHref = `${base}/dashboard/pipeline`;
+    const quotesHref = `${base}/dashboard/invoices`;
+
+    // The person's own owner key is the APP's user id resolved from email — the
+    // `ownerUserKey` the cockpit writes (customers.controller.ts:51-65 writes the
+    // acting ucUid, which is Membership.userKey == keycloakId). Not the Ops-Center
+    // sub. VIEWER gets no owner-scoped numbers or customer names: the UI hides the
+    // owner book from a viewer, so this returns nothing for one.
+    const ownerKey = user.keycloakId ?? null;
+    if (!ownerKey) {
+      return { state: 'empty', updatedAt: new Date().toISOString(), metrics: [], items: [] };
+    }
+    if (role === WorkspaceRole.VIEWER) {
+      return { state: 'empty', updatedAt: new Date().toISOString(), metrics: [], items: [] };
+    }
+
+    const now = new Date();
+    const startOfToday = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0),
+    );
+    const startOfTomorrow = new Date(startOfToday);
+    startOfTomorrow.setUTCDate(startOfTomorrow.getUTCDate() + 1);
+
+    // ONE round: every count + the item window in one read-only transaction.
+    const rows = await this.prisma.withWorkspaceReadOnly(workspaceId, ownerKey, async (tx) => {
+      const [activeCustomers, openLeads, followUpsDue, quotesOut, followUps] = await Promise.all([
+        // Active customers: the person owns a CUSTOMER-stage (ACTIVE) relationship.
+        tx.customer.count({
+          where: {
+            ownerUserKey: ownerKey,
+            stage: RelationshipStage.CUSTOMER,
+            isLost: false,
+          },
+        }),
+        // Open leads: the person owns a still-LEAD relationship.
+        tx.customer.count({
+          where: { ownerUserKey: ownerKey, stage: RelationshipStage.LEAD, isLost: false },
+        }),
+        // Follow-ups due: a next action due today or overdue, on a live lead.
+        tx.customer.count({
+          where: {
+            ownerUserKey: ownerKey,
+            isLost: false,
+            nextActionAt: { lt: startOfTomorrow },
+          },
+        }),
+        // Quotes out: sent (not accepted/declined) on the person's book.
+        tx.quote.count({
+          where: {
+            status: 'sent',
+            customer: { ownerUserKey: ownerKey, isLost: false },
+          },
+        }),
+        // The next 5 follow-ups by due date (soonest first).
+        tx.customer.findMany({
+          where: {
+            ownerUserKey: ownerKey,
+            isLost: false,
+            nextActionAt: { not: null },
+          },
+          orderBy: [{ nextActionAt: 'asc' }, { id: 'asc' }],
+          take: HOME_FOLLOW_UP_ITEMS,
+          select: {
+            id: true,
+            contactId: true,
+            notes: true,
+            nextActionAt: true,
+          },
+        }),
+      ]);
+      return { activeCustomers, openLeads, followUpsDue, quotesOut, followUps };
+    });
+
+    const titles = await this.resolveCustomerNames(user, workspaceId, rows.followUps);
+
+    const items: HomeItem[] = rows.followUps.map((row) => ({
+      title: titles.get(row.id) ?? 'Customer',
+      subtitle: firstLine(row.notes, HOME_FOLLOW_UP_SUBTITLE_MAX),
+      href: `${customerHref}/${row.id}`,
+      at: row.nextActionAt ? row.nextActionAt.toISOString() : null,
+      kind: 'follow_up',
+    }));
+
+    const metrics: HomeMetric[] = [];
+    if (rows.activeCustomers > 0) {
+      metrics.push({
+        label: HOME_METRIC_LABELS.activeCustomers,
+        value: rows.activeCustomers,
+        href: customerHref,
+      });
+    }
+    if (rows.openLeads > 0) {
+      metrics.push({
+        label: HOME_METRIC_LABELS.openLeads,
+        value: rows.openLeads,
+        href: pipelineHref,
+      });
+    }
+    if (rows.followUpsDue > 0) {
+      metrics.push({
+        label: HOME_METRIC_LABELS.followUpsDue,
+        value: rows.followUpsDue,
+        href: customerHref,
+      });
+    }
+    if (rows.quotesOut > 0) {
+      metrics.push({
+        label: HOME_METRIC_LABELS.quotesOut,
+        value: rows.quotesOut,
+        href: quotesHref,
+      });
+    }
+
+    return {
+      state: metrics.length === 0 && items.length === 0 ? 'empty' : 'ok',
+      updatedAt: new Date().toISOString(),
+      metrics,
+      items,
+    };
+  }
+
+  /**
+   * Federated display names for the follow-up customers. Contacts are NEVER
+   * copied locally; this resolves them through the Contact-Ops port exactly as
+   * the cockpit does. Any failure is degrade-clean: the row keeps a neutral
+   * title rather than leaking a contact id or failing the whole summary.
+   */
+  private async resolveCustomerNames(
+    user: User,
+    workspaceId: string,
+    rows: Array<{ id: string; contactId: string }>,
+  ): Promise<Map<string, string>> {
+    const names = new Map<string, string>();
+    if (rows.length === 0) return names;
+    try {
+      const contacts = await this.contactOps.getContactSummaries(
+        { workspaceId, ucUid: user.keycloakId ?? user.id },
+        rows.map((row) => row.contactId),
+      );
+      for (const row of rows) {
+        const contact = contacts.get(row.contactId);
+        if (contact?.displayName) names.set(row.id, contact.displayName);
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Home summary contact resolution failed for workspace ${workspaceId}: ${(error as Error).message}`,
+      );
+    }
+    return names;
+  }
+
+  private notMember(): HomeSummary {
+    return { state: 'not_member', updatedAt: new Date().toISOString(), metrics: [], items: [] };
+  }
+
+  /**
+   * One INFO line per call: caller azp, workspace, sha256(email)[:12], state, ms.
+   * Never the token, never the raw email.
+   */
+  private logCall(
+    params: { azp: string; workspace: string },
+    email: string,
+    state: HomeSummary['state'],
+    startedAt: number,
+  ): void {
+    const emailHash = email ? emailAuditHash(email) : '-';
+    this.logger.log(
+      `home-summary caller=${params.azp} workspace=${params.workspace} emailHash=${emailHash} ` +
+        `state=${state} ms=${Date.now() - startedAt}`,
+    );
+  }
+
+  /**
+   * The one side effect the contract allows: an append-only READ audit row on the
+   * workspace's trail. Fire-and-forget (AuditService never throws) so a slow
+   * audit write cannot push the answer past its 1.5 s budget.
+   */
+  private async auditCall(
+    params: { azp: string; workspace: string; email: string },
+    summary: HomeSummary,
+    user: User,
+    startedAt: number,
+  ): Promise<void> {
+    try {
+      await this.audit.log({
+        workspaceId: params.workspace,
+        userId: user.keycloakId ?? user.id,
+        action: 'READ',
+        resource: 'home_summary',
+        details: {
+          state: summary.state,
+          caller: params.azp,
+          emailHash: emailAuditHash(params.email),
+          ms: Date.now() - startedAt,
+        },
+      });
+    } catch {
+      /* AuditService.log already swallows; belt-and-braces only. */
+    }
+  }
+}
+
+/** The first line of a note, trimmed and capped at `max` characters. */
+export function firstLine(note: string | null | undefined, max: number): string | null {
+  if (typeof note !== 'string') return null;
+  const line = note.split(/\r?\n/, 1)[0].trim();
+  if (!line) return null;
+  return line.length > max ? line.slice(0, max) : line;
+}
