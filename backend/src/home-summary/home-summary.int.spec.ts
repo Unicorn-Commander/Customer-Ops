@@ -564,16 +564,17 @@ describeDb('home-summary (CONTRACT v1, real DB, fake JWKS)', () => {
     for (const m of res.body.metrics) {
       expect(m.href).not.toMatch(/localhost|127\.0\.0\.1/);
     }
-    // Item window is workspace-wide too: the overdue other-owner follow-up now
-    // LEADS the list (soonest first), then Aaron's overdue ACME row.
+    // Item window is workspace-wide too: all three dated follow-ups, soonest
+    // first — Aaron's ACME (3d overdue), the other owner's SECRET (tomorrow),
+    // then Aaron's Initech (+2d).
     expect(res.body.items).toHaveLength(3);
     const titles = res.body.items.map((i: any) => i.title);
     expect(titles).toEqual([
-      'Name of contact-secret',
       'Name of contact-acme',
+      'Name of contact-secret',
       'Name of contact-initech',
     ]);
-    expect(res.body.items[0].subtitle).toBe('Other owner follow-up');
+    expect(res.body.items[1].subtitle).toBe('Other owner follow-up');
     for (const item of res.body.items) {
       expect(item.kind).toBe('follow_up');
       expect(item.href).toMatch(/^https:\/\/customerops\.example\.com\/dashboard\/customers\//);

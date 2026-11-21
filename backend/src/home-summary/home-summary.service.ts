@@ -43,13 +43,43 @@ export const HOME_FOLLOW_UP_ITEMS = 5;
 export const HOME_FOLLOW_UP_SUBTITLE_MAX = 80;
 
 /**
- * The read-only HOME-SUMMARY service (HOME-SUMMARY CONTRACT v1).
+ * The SCOPE of a Home summary, decided by the person's role in the workspace.
+ *   - 'workspace' — OWNER / ADMIN: all live rows in the workspace.
+ *   - 'own'       — MEMBER (and MANAGER): only rows with ownerUserKey = the
+ *                   person's own app user key.
+ *   - 'none'      — VIEWER, or no role: nothing (CONTRACT v1 behaviour for a
+ *                   viewer), matching what the app UI shows a viewer.
+ */
+export type HomeScope = 'workspace' | 'own' | 'none';
+
+/**
+ * The ONE place the role -> scope ladder is defined (CONTRACT v1.1). It reads a
+ * STORED Membership role; a missing role fails closed to 'none'.
+ */
+export function homeScopeForRole(role: WorkspaceRole | null | undefined): HomeScope {
+  switch (role) {
+    case WorkspaceRole.OWNER:
+    case WorkspaceRole.ADMIN:
+      return 'workspace';
+    case WorkspaceRole.MANAGER:
+    case WorkspaceRole.MEMBER:
+      return 'own';
+    default:
+      return 'none';
+  }
+}
+
+/**
+ * The read-only HOME-SUMMARY service (HOME-SUMMARY CONTRACT v1.1).
  *
- * Everything here answers ONE question: "what does this named person's own book
- * look like right now?" It is strictly a read — the only side effect the route
- * may have is the audit log line the caller writes — and every query runs inside
- * the app's own RLS transaction (PrismaService.withWorkspaceReadOnly) with the
- * person's own role, so a viewer never sees a number the app UI hides from them.
+ * CONTRACT v1.1: the person's role in THIS workspace decides the SCOPE of every
+ * metric and item — OWNER/ADMIN see WORKSPACE TOTALS, MEMBER sees only their own
+ * book (ownerUserKey = their app user key), VIEWER sees nothing. The scope comes
+ * from the STORED Membership row (resolveMember), never a claim or a header.
+ * It is strictly a read — the only side effect the route may have is the audit
+ * log line the caller writes — and every query runs inside the app's own RLS
+ * transaction (PrismaService.withWorkspaceReadOnly) with the person's own role,
+ * so a viewer never sees a number the app UI hides from them.
  *
  * Person resolution mirrors the app's own identity model: `email` ->
  * EXACTLY ONE active, email-verified User -> an ACTIVE Membership in `workspace`.
@@ -132,20 +162,29 @@ export class HomeSummaryService {
     const pipelineHref = `${base}/dashboard/pipeline`;
     const quotesHref = `${base}/dashboard/invoices`;
 
+    // CONTRACT v1.1: the STORED membership role decides the scope. OWNER/ADMIN
+    // get workspace totals (no ownerKey filter at all — the RLS fence is already
+    // this workspace); MEMBER gets only their own book; VIEWER gets nothing
+    // (CONTRACT v1 behaviour, matching the app UI).
+    const scope = homeScopeForRole(role);
     // The person's own owner key is the APP's user id resolved from email — the
     // `ownerUserKey` the cockpit writes: the acting caller's ucUid, which is
     // `__ucUid` (the token sub) or, failing that, `keycloakId` / `id`
     // (workspace.util.ts ucUidOf; customers.controller.ts:51-65 passes the acting
-    // user into the list/write paths). Not the Ops-Center sub. VIEWER gets no
-    // owner-scoped numbers or customer names: the UI hides the owner book from a
-    // viewer, so this returns nothing for one.
-    const ownerKey = user.keycloakId ?? null;
-    if (!ownerKey) {
+    // user into the list/write paths). Not the Ops-Center sub.
+    const ownKey = user.keycloakId ?? null;
+    if (scope === 'none') {
       return { state: 'empty', updatedAt: new Date().toISOString(), metrics: [], items: [] };
     }
-    if (role === WorkspaceRole.VIEWER) {
+    if (scope === 'own' && !ownKey) {
       return { state: 'empty', updatedAt: new Date().toISOString(), metrics: [], items: [] };
     }
+    // The owner filter for this scope: undefined => the whole workspace (OWNER/
+    // ADMIN, already fenced to this workspace by RLS); a key => that person only.
+    const ownerUserKey = scope === 'own' ? ownKey! : undefined;
+    const ownerWhere = ownerUserKey ? { ownerUserKey } : {};
+    // The RLS GUC attribution still names the ACTING person, regardless of scope.
+    const ownerKey = ownKey ?? '';
 
     const now = new Date();
     const startOfToday = new Date(
@@ -160,19 +199,19 @@ export class HomeSummaryService {
         // Active customers: the person owns a CUSTOMER-stage (ACTIVE) relationship.
         tx.customer.count({
           where: {
-            ownerUserKey: ownerKey,
+            ...ownerWhere,
             stage: RelationshipStage.CUSTOMER,
             isLost: false,
           },
         }),
         // Open leads: the person owns a still-LEAD relationship.
         tx.customer.count({
-          where: { ownerUserKey: ownerKey, stage: RelationshipStage.LEAD, isLost: false },
+          where: { ...ownerWhere, stage: RelationshipStage.LEAD, isLost: false },
         }),
         // Follow-ups due: a next action due today or overdue, on a live lead.
         tx.customer.count({
           where: {
-            ownerUserKey: ownerKey,
+            ...ownerWhere,
             isLost: false,
             nextActionAt: { lt: startOfTomorrow },
           },
@@ -181,13 +220,13 @@ export class HomeSummaryService {
         tx.quote.count({
           where: {
             status: 'sent',
-            customer: { ownerUserKey: ownerKey, isLost: false },
+            customer: { ...ownerWhere, isLost: false },
           },
         }),
         // The next 5 follow-ups by due date (soonest first).
         tx.customer.findMany({
           where: {
-            ownerUserKey: ownerKey,
+            ...ownerWhere,
             isLost: false,
             nextActionAt: { not: null },
           },
