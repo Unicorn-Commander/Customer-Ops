@@ -43,8 +43,12 @@ suite('Contact connection actual HTTP and isolated PostgreSQL', () => {
   }
   beforeAll(async () => {
     const u = new URL(testUrl!);
-    if (u.hostname !== '127.0.0.1' || u.pathname !== '/customer_onboarding_test')
-      throw new Error('Isolated DB only');
+    // The CI Postgres is a service container reached by hostname (e.g. "postgres");
+    // it is admitted only for the dedicated _test database. Anything else is refused.
+    const ciHost = process.env.CI === 'true' && u.hostname === 'postgres';
+    if (!ciHost && u.hostname !== '127.0.0.1') throw new Error('Isolated DB only');
+    if (u.pathname !== '/customer_onboarding_test')
+      throw new Error('Isolated DB only: the database must be the _test database');
     process.env.DATABASE_URL = testUrl;
     process.env.CUSTOMER_OPS_TENANCY_ENABLED = 'true';
     process.env.CUSTOMER_OPS_SIGNUP_MODE = 'invite';
