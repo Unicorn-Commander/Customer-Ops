@@ -47,7 +47,7 @@ export default function Error({
           Something went sideways
         </h1>
         <p className="mx-auto mt-2.5 max-w-[360px] text-sm leading-relaxed text-tertiary">
-          The cockpit hit an unexpected snag rendering this view. Your data is safe — try again, and
+          The cockpit hit an unexpected snag rendering this view. Your data is safe. Try again, and
           if it keeps happening, head back to the overview.
         </p>
 

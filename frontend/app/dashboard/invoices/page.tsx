@@ -94,7 +94,7 @@ export default function InvoicesPage() {
         gradient="from-emerald-400 to-teal-500"
         eyebrow="Customer-Ops · Across the workspace"
         title="Invoices"
-        description="Every invoice across your workspace — live status from Accounting-Ops."
+        description="Every invoice across your workspace, live status from Accounting-Ops."
         onRefresh={() => void load()}
         refreshing={refreshing}
         refreshDisabled={!workspaceId}
@@ -125,7 +125,7 @@ export default function InvoicesPage() {
           isEmpty={items.length === 0}
           empty={
             <OverviewEmpty icon={Receipt} gradient="from-emerald-400 to-teal-500" title="No invoices yet">
-              No invoices linked yet — they appear as you bill customers.
+              No invoices linked yet; they appear as you bill customers.
             </OverviewEmpty>
           }
           footer={

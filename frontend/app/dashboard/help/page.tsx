@@ -155,7 +155,7 @@ export default function HelpPage() {
           </div>
 
           <p className="px-1 text-center text-[11px] text-muted">
-            Need more? Ask your Relations Officer on the Agents page — it knows your book.
+            Need more? Ask your Relations Officer on the Agents page; it knows your book.
           </p>
         </div>
       </div>

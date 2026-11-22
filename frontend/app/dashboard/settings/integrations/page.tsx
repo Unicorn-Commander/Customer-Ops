@@ -62,7 +62,7 @@ function SeamCard({ seam }: { seam: SeamHealth }) {
           <div className="mt-auto flex items-center gap-2 rounded-token border border-subtle bg-surface-overlay/40 px-3 py-2 text-xs text-tertiary">
             <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-success" strokeWidth={2.25} />
             <span>
-              Working — data flows into each customer&rsquo;s profile as it lands.
+              Working: data flows into each customer&rsquo;s profile as it lands.
               <span className="ml-1 font-mono text-muted tabular-nums">{latencyLabel(seam.latencyMs)}</span>
             </span>
           </div>
@@ -81,7 +81,7 @@ function SeamCard({ seam }: { seam: SeamHealth }) {
                   : 'No target is wired in yet. An operator sets this seam’s URL + token (env + the sibling app), then it connects automatically.'}
               </p>
               <p className="mt-1.5 text-[11px] text-muted">
-                Configured at the infrastructure level — self-serve connect is coming.
+                Configured at the infrastructure level; self-serve connect is coming.
               </p>
             </div>
           </div>
@@ -203,7 +203,7 @@ function IntegrationsPageInner() {
             </Link>
             <h1 className="mt-0.5 text-lg font-semibold tracking-tight text-primary">Integrations</h1>
             <p className="mt-1 max-w-2xl text-[13px] leading-relaxed text-tertiary">
-              Customer-Ops federates your suite — these are the live connections. Data appears in each
+              Customer-Ops federates your suite: these are the live connections. Data appears in each
               customer&rsquo;s profile as it flows in. Nothing is copied; you always see the real source.
             </p>
           </div>
@@ -257,7 +257,7 @@ function IntegrationsPageInner() {
         </div>
       ) : seams ? (
         <div className="rounded-token-lg border border-subtle bg-surface-raised p-8 text-center text-sm text-tertiary">
-          No federation seams are reporting. The cockpit still runs on its own — seams are optional and degrade clean.
+          No federation seams are reporting. The cockpit still runs on its own; seams are optional and degrade clean.
         </div>
       ) : null}
 

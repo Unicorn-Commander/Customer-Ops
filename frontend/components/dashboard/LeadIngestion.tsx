@@ -156,7 +156,7 @@ export function LeadIngestion({
           } to contacts`,
         );
       } else if (res.scanned === 0) {
-        showToast('ok', 'Queue is clear — nothing pending to resolve.');
+        showToast('ok', 'Queue is clear; nothing pending to resolve.');
       } else {
         showToast('warn', `Scanned ${res.scanned}; ${res.stillOpen} still awaiting identity.`);
       }
@@ -186,11 +186,11 @@ export function LeadIngestion({
         : res.via === 'provisional' ? 'a saved lead record'
           : null;
     if (res.resolved && where) {
-      showToast('ok', `Lead ingested — resolved via ${where}.`);
+      showToast('ok', `Lead ingested: resolved via ${where}.`);
     } else if (res.provisional) {
       showToast('warn', 'Lead saved. Contacts are not connected yet, so it will be matched later.');
     } else {
-      showToast('ok', 'Lead ingested — pending identity resolution.');
+      showToast('ok', 'Lead ingested, pending identity resolution.');
     }
     return res;
   };
@@ -443,7 +443,7 @@ function PendingQueue({
                     {' '}awaiting a contact match. Run a sweep to match them.
                   </>
                 ) : (
-                  <>The queue is clear — every ingested lead has been resolved to an identity.</>
+                  <>The queue is clear; every ingested lead has been resolved to an identity.</>
                 )}
               </p>
             </div>
@@ -1048,7 +1048,7 @@ function AddLeadDrawer({
           <Field
             label="Dedup key"
             required
-            hint="Idempotency seam — a re-push of the same source + key updates rather than duplicates."
+            hint="Idempotency seam: a re-push of the same source + key updates rather than duplicates."
           >
             <TextInput
               value={dedupKey}

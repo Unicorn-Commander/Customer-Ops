@@ -254,7 +254,7 @@ export function AgentsPanel(props: {
                     </p>
                   ) : (
                     <p className="mt-2 text-[11px] text-muted">
-                      A draft. Copy it, or use the Email panel’s “Save as draft” to stage it for approval — never auto-sent.
+                      A draft. Copy it, or use the Email panel’s “Save as draft” to stage it for approval. Never auto-sent.
                     </p>
                   )}
                 </>
@@ -282,7 +282,7 @@ export function AgentsPanel(props: {
                     <DraftBody value={nudge.body ?? ''} />
                   </div>
                   <p className="mt-2 text-[11px] text-muted">
-                    Draft only — review, then send it yourself. The agent never charges or sends.
+                    Draft only. Review, then send it yourself. The agent never charges or sends.
                   </p>
                 </>
               ) : (

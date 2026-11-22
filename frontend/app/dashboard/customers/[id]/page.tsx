@@ -162,7 +162,7 @@ function MarkLostModal({
           </span>
           <div>
             <h3 id={headingId} className="text-base font-semibold text-primary">Mark relationship lost?</h3>
-            <p className="mt-0.5 text-xs text-tertiary">It moves out of the active funnel — you can re-open it later.</p>
+            <p className="mt-0.5 text-xs text-tertiary">It moves out of the active funnel; you can re-open it later.</p>
           </div>
         </div>
 

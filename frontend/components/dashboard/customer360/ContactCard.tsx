@@ -171,7 +171,7 @@ export function ContactCard({
               {lifecycle === 'merged' ? (
                 <span>
                   This contact was <strong className="font-medium text-secondary">merged</strong> into another record.
-                  Edits here won’t apply — use the surviving contact.
+                  Edits here won’t apply; use the surviving contact.
                 </span>
               ) : (
                 <span>

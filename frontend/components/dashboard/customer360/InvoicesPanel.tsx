@@ -164,7 +164,7 @@ function InvoiceForm(props: {
     <div className="mt-3 grid gap-2.5 rounded-token border border-subtle bg-surface-overlay/50 p-3">
       <FormError error={props.error} />
       <FieldInput label="Billing entity id" placeholder="entity id" value={entityId} onChange={setEntityId} />
-      <FieldInput label="Line description" placeholder="e.g. Consulting — June" value={description} onChange={setDescription} />
+      <FieldInput label="Line description" placeholder="e.g. Consulting, June" value={description} onChange={setDescription} />
       <div className="grid grid-cols-[1fr_2fr] gap-2">
         <FieldInput label="Qty" placeholder="1" value={quantity} onChange={setQuantity} />
         <FieldInput label="Unit price" placeholder="150.00" value={unitPrice} onChange={setUnitPrice} />

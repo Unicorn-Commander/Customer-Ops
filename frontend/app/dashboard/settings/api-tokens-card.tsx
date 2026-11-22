@@ -378,7 +378,7 @@ function CreateTokenModal({
             ))}
           </div>
           <p className="text-xs text-tertiary">
-            Scopes are enforced on every call this token makes — REST and MCP — and the token is
+            Scopes are enforced on every call this token makes (REST and MCP), and the token is
             bound to one workspace. A write scope also grants the matching read. Your own sign-in
             session is unaffected.
           </p>
@@ -496,7 +496,7 @@ function RevealTokenModal({
 
         {copyFailed && (
           <p className="text-xs text-warning">
-            Couldn&rsquo;t copy automatically — select the token text above and copy it manually.
+            Couldn&rsquo;t copy automatically; select the token text above and copy it manually.
           </p>
         )}
 

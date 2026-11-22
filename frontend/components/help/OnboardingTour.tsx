@@ -75,7 +75,7 @@ const STEPS: TourStep[] = [
     eyebrow: 'Welcome',
     title: 'Welcome to Customer-Ops',
     body:
-      'Your relationship cockpit. Run the whole customer journey — and see everyone connected to a person in one place. Every relationship, connected.',
+      'Your relationship cockpit. Run the whole customer journey, and see everyone connected to a person in one place. Every relationship, connected.',
   },
   {
     icon: Filter,
@@ -93,7 +93,7 @@ const STEPS: TourStep[] = [
     eyebrow: 'The customer-360',
     title: 'Everything connected, in one view',
     body:
-      'Open a contact to see their 360 — deals, projects, invoices, email, and meetings, pulled live from the apps in your suite. Nothing is copied; you always see the real source.',
+      'Open a contact to see their 360: deals, projects, invoices, email, and meetings, pulled live from the apps in your suite. Nothing is copied; you always see the real source.',
   },
   {
     icon: Waypoints,
@@ -111,7 +111,7 @@ const STEPS: TourStep[] = [
     eyebrow: 'Your Relations Officer',
     title: 'It proposes, you decide',
     body:
-      'Your AI colleague drafts follow-ups, triages leads, and suggests the next move — on your own models by default. It never sends or changes anything until you say so.',
+      'Your AI colleague drafts follow-ups, triages leads, and suggests the next move, on your own models by default. It never sends or changes anything until you say so.',
   },
 ];
 

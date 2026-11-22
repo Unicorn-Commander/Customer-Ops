@@ -71,7 +71,7 @@ export default function EmailPage() {
         gradient="from-sky-400 to-indigo-500"
         eyebrow="Customer-Ops · Across the workspace"
         title="Email"
-        description="Every email sent or drafted across your workspace — live status from Email-Ops."
+        description="Every email sent or drafted across your workspace, live status from Email-Ops."
         onRefresh={() => void load()}
         refreshing={refreshing}
         refreshDisabled={!workspaceId}

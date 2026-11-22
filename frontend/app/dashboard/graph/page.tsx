@@ -40,7 +40,7 @@ export default function GraphPage() {
         const workspaceId = await resolveWorkspaceId();
         if (cancelled) return;
         if (!workspaceId) {
-          setErrMsg('No workspace membership yet — an allow-listed user is seeded into the bootstrap workspace on first sign-in.');
+          setErrMsg('No workspace membership yet. An allow-listed user is seeded into the bootstrap workspace on first sign-in.');
           setStatus('error');
           return;
         }
@@ -111,7 +111,7 @@ export default function GraphPage() {
             <h2 className="mt-4 text-lg font-semibold tracking-tight text-primary">Your relationships will appear here as a graph</h2>
             <p className="mt-2 text-sm leading-relaxed text-tertiary">
               As you add leads, work them through outreach, and convert prospects into customers, they
-              cluster into an interactive constellation — orgs, people, and the interactions between them.
+              cluster into an interactive constellation: orgs, people, and the interactions between them.
             </p>
           </div>
         )}

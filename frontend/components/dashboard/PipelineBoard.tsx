@@ -231,7 +231,7 @@ function PipelineCard({
         if (!onOpen) return;
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(); }
       }}
-      aria-label={`${contactLabel(row)} — ${meta.label}, ${prio.label} priority`}
+      aria-label={`${contactLabel(row)}: ${meta.label}, ${prio.label} priority`}
       title={readOnly ? 'Double-click to open the 360' : 'Drag to move stage · double-click to open the 360'}
       className={cn(
         'co-lift group relative overflow-hidden rounded-token-lg border border-subtle bg-surface-raised',

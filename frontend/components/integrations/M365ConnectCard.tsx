@@ -41,7 +41,7 @@ function SyncLine({ status }: { status: M365Status }) {
     return (
       <p className="flex items-start gap-1.5 text-xs text-warning">
         <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" strokeWidth={2.25} />
-        Access was revoked in Microsoft 365 — reconnect to resume syncing.
+        Access was revoked in Microsoft 365; reconnect to resume syncing.
       </p>
     );
   }
@@ -61,7 +61,7 @@ function SyncLine({ status }: { status: M365Status }) {
       </p>
     );
   }
-  return <p className="text-xs text-tertiary">Connected — run a sync to import your contacts.</p>;
+  return <p className="text-xs text-tertiary">Connected; run a sync to import your contacts.</p>;
 }
 
 export function M365ConnectCard() {
@@ -158,7 +158,7 @@ export function M365ConnectCard() {
       {/* Body */}
       <div className="flex flex-1 flex-col gap-3 p-4">
         <p className="text-[13px] leading-relaxed text-secondary">
-          Link your Microsoft 365 account to import your Outlook contacts as leads — each flows through
+          Link your Microsoft 365 account to import your Outlook contacts as leads; each flows through
           the same pipeline as every other source. Nothing is copied twice; each person is matched
           to your contacts.
         </p>
