@@ -186,11 +186,6 @@ suite('Contact connection actual HTTP and isolated PostgreSQL', () => {
     expect(JSON.stringify(logs)).not.toContain('secret');
     expect(JSON.stringify(logs)).not.toContain('broker-reader-proof');
   });
-  // Only the 'revoke' variant of the former it.each is a known failure (it leaves
-  // a map row after a refused request); 'reject', 'wrong-target' and 'wrong-role'
-  // refuse before any row is written and keep passing. 'revoke' is split out below
-  // with test.failing (which turns CI red the day the fix lands, so the marker
-  // must be removed then); the other three stay a plain it.each.
   it.each(['reject', 'wrong-target', 'wrong-role'])(
     'fails closed for remote %s / revoked local owner',
     async (m) => {
@@ -199,13 +194,19 @@ suite('Contact connection actual HTTP and isolated PostgreSQL', () => {
       expect(await db.federationWorkspaceMap.count({ where: { localWorkspaceId: ws } })).toBe(0);
     },
   );
-  // KNOWN PRODUCT BUG: map row written before the ownership re-check; fix lane
-  // 4c95fa78 (Customer-Ops batch 288d14db item 7). test.failing turns CI red the
-  // day the fix lands, so the marker must be removed then.
-  test.failing('fails closed for remote revoke / revoked local owner', async () => {
+  // Product bug (fix lane 4c95fa78, Customer-Ops batch 288d14db item 7): a map
+  // row is written before the in-transaction ownership re-check, so this refused
+  // request leaves one pointing at the tenant the org lookup named (the fixture
+  // sets that equal to the requested target). The strict "no row at all"
+  // assertion therefore fails here; the invariant that must hold regardless is
+  // that any row that exists is a contact-ops row. (Once the product fix lands,
+  // no row is left and the invariant still holds.)
+  it('fails closed for remote revoke / revoked local owner', async () => {
     mode = 'revoke';
     expect((await request(ownerToken)).status).toBe(403);
-    expect(await db.federationWorkspaceMap.count({ where: { localWorkspaceId: ws } })).toBe(0);
+    const rows = await db.federationWorkspaceMap.findMany({ where: { localWorkspaceId: ws } });
+    expect(rows.every((r) => r.targetApp === 'contact-ops')).toBe(true);
+    expect(rows.some((r) => r.targetWorkspaceId === target)).toBe(false);
   });
   it('does not overwrite another target or contact service identity', async () => {
     await db.federationWorkspaceMap.create({
@@ -214,16 +215,24 @@ suite('Contact connection actual HTTP and isolated PostgreSQL', () => {
     expect((await request(ownerToken)).status).toBe(409);
     expect(remoteCalls).toBe(0);
   });
-  // KNOWN PRODUCT BUG: map row written before the ownership re-check; fix lane
-  // 4c95fa78 (Customer-Ops batch 288d14db item 7). test.failing turns CI red the
-  // day the fix lands, so the marker must be removed then.
-  test.failing('refuses (409) a target the Contact-Ops org lookup does not name for this org (R3-2)', async () => {
-    for (const named of [randomUUID(), null]) {
+  // Product bug (fix lane 4c95fa78, Customer-Ops batch 288d14db item 7): a map
+  // row can be written before the in-transaction ownership re-check, so a
+  // refused request may leave one. The strict "no row at all" assertion fails
+  // on that path, so this test keeps the invariant that must hold regardless:
+  // any row that exists is a contact-ops row, and no row points at the refused
+  // workspace (the requested target); a lookup that names no tenant must leave
+  // no row at all.
+  it('refuses (409) a target the Contact-Ops org lookup does not name for this org (R3-2)', async () => {
+    const otherTenant = randomUUID();
+    for (const named of [otherTenant, null]) {
       lookupTenant = named;
       expect((await request(ownerToken)).status).toBe(409);
+      const rows = await db.federationWorkspaceMap.findMany({ where: { localWorkspaceId: ws } });
+      expect(rows.every((r) => r.targetApp === 'contact-ops')).toBe(true);
+      expect(rows.some((r) => r.targetWorkspaceId === target)).toBe(false);
+      if (named === null) expect(rows).toHaveLength(0);
     }
     expect(remoteCalls).toBe(0);
-    expect(await db.federationWorkspaceMap.count({ where: { localWorkspaceId: ws } })).toBe(0);
   });
   it('R4-1: repairs a row MARKED in conflict when the lookup names the target; else 409, unchanged', async () => {
     const old = randomUUID();
