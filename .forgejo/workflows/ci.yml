@@ -176,12 +176,20 @@ jobs:
         # --max-warnings=0`.
         run: npm run lint
 
+      - name: Setup Node 22 for the test step (type stripping)
+        # The specs import .ts sources, so they need Node >= 22.6 type stripping.
+        # This step-only setup-node shadows the job's Node 20 for the one run
+        # below; the job's other steps keep their Node.
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
       - name: Test (node --test, pure-logic frontend specs)
         # lib/contactPicker.test.mjs and components/connect/ConnectYourAiPanel.
         # test.mjs are dependency-free node:test specs over the TS helpers (they
-        # import .ts directly — the Node 20 runner's built-in type-stripping
-        # handles that). No network, no DB.
-        run: node --test lib/contactPicker.test.mjs components/connect/ConnectYourAiPanel.test.mjs
+        # import .ts directly; --experimental-strip-types strips the types, Node
+        # >= 22.6). No network, no DB.
+        run: node --experimental-strip-types --test lib/contactPicker.test.mjs components/connect/ConnectYourAiPanel.test.mjs
 
   # --------------------------------------------------------------------------
   # TENANCY — the hermetic, exit-coded RLS acceptance harness. It boots its OWN
