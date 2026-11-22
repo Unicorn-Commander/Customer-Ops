@@ -150,6 +150,8 @@ export class ContactOpsClient extends ContactOpsPort {
    *  tenant and the addressed tenant never disagree. Canonical (lowercase, R5-3):
    *  a confirmed legacy row stored in another case goes on the wire lowercase. */
   private async route(ctx: FederationContext): Promise<string | null> {
+    // Read only: the link row is written at a PERSON's sign-in (AUD-CR-1), never
+    // here, so a service caller (e.g. the read-only home summary) writes nothing.
     const target = await this.federationMap.routableTarget(ctx.workspaceId, 'contact-ops');
     return target === null ? null : canonicalTenantId(target);
   }

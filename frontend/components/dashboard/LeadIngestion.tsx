@@ -149,7 +149,12 @@ export function LeadIngestion({
       const res = await onResolvePending();
       setResolveResult(res);
       if (res.resolved > 0 || res.provisionalUpgraded > 0) {
-        showToast('ok', `Resolved ${res.resolved} · upgraded ${res.provisionalUpgraded} provisional`);
+        showToast(
+          'ok',
+          `Matched ${res.resolved} · linked ${res.provisionalUpgraded} saved ${
+            res.provisionalUpgraded === 1 ? 'lead' : 'leads'
+          } to contacts`,
+        );
       } else if (res.scanned === 0) {
         showToast('ok', 'Queue is clear; nothing pending to resolve.');
       } else {
@@ -177,13 +182,13 @@ export function LeadIngestion({
     if (!onIngest) return null;
     const res = await onIngest(body);
     const where = res.via === 'explicit' ? 'explicit contact'
-      : res.via === 'contact-ops' ? 'Contact-Ops match'
-        : res.via === 'provisional' ? 'a provisional record'
+      : res.via === 'contact-ops' ? 'a contact match'
+        : res.via === 'provisional' ? 'a saved lead record'
           : null;
     if (res.resolved && where) {
       showToast('ok', `Lead ingested: resolved via ${where}.`);
     } else if (res.provisional) {
-      showToast('warn', 'Lead staged provisionally; Contact-Ops is dormant.');
+      showToast('warn', 'Lead saved. Contacts are not connected yet, so it will be matched later.');
     } else {
       showToast('ok', 'Lead ingested, pending identity resolution.');
     }
@@ -293,9 +298,8 @@ function Header({
             <ConnectionChip reachable={coReachable} />
           </div>
           <p className="mt-1 max-w-2xl text-sm text-tertiary">
-            The intake firehose for the lead pipeline: Northwind, Outreach, LoopNet, multistate and
-            agents push graduated leads in. Resolve them to Contact-Ops identities, then promote to
-            the funnel.
+            The intake for the lead pipeline: Northwind, Outreach, LoopNet, multistate and agents
+            push graduated leads in. Match them to contacts, then promote them to the funnel.
           </p>
         </div>
       </div>
@@ -336,13 +340,13 @@ function ConnectionChip({ reachable }: { reachable: boolean }) {
           : 'bg-warning/12 text-warning',
       )}
       title={reachable
-        ? 'Contact-Ops is reachable; leads resolve to real identities on ingest.'
-        : 'Contact-Ops is dormant; leads are staged provisionally and upgraded on the next resolve sweep.'}
+        ? 'Contacts are connected: new leads are matched to a contact as they arrive.'
+        : 'Contacts are not connected yet: new leads are saved and matched on the next sweep.'}
     >
       {reachable
         ? <PlugZap className="h-3.5 w-3.5" strokeWidth={2.5} />
         : <Plug className="h-3.5 w-3.5" strokeWidth={2.5} />}
-      {reachable ? 'Contact-Ops connected' : 'Contact-Ops dormant · leads staged provisionally'}
+      {reachable ? 'Contacts connected' : 'Contacts not connected · leads saved to match later'}
     </span>
   );
 }
@@ -436,7 +440,7 @@ function PendingQueue({
                   <>
                     <span className="font-semibold text-warning">{fmt(pendingCount)}</span> pending
                     {failedCount > 0 && <> · <span className="font-semibold text-danger">{fmt(failedCount)}</span> failed</>}
-                    {' '}awaiting a Contact-Ops match. Run a sweep to resolve them and upgrade any provisional records.
+                    {' '}awaiting a contact match. Run a sweep to match them.
                   </>
                 ) : (
                   <>The queue is clear; every ingested lead has been resolved to an identity.</>
@@ -447,8 +451,8 @@ function PendingQueue({
 
           <div className="flex shrink-0 items-center gap-3">
             {!coReachable && (
-              <span className="hidden items-center gap-1.5 text-[11px] font-medium text-warning sm:inline-flex" title="Contact-Ops is dormant; a sweep can still upgrade provisional records when it returns.">
-                <AlertTriangle className="h-3.5 w-3.5" strokeWidth={2.4} /> CO dormant
+              <span className="hidden items-center gap-1.5 text-[11px] font-medium text-warning sm:inline-flex" title="Contacts are not connected yet; a sweep matches saved leads once they are.">
+                <AlertTriangle className="h-3.5 w-3.5" strokeWidth={2.4} /> Contacts offline
               </span>
             )}
             <Button
@@ -636,9 +640,9 @@ function IntakeRow({ intake, onDiscard }: { intake: LeadIntake; onDiscard?: (id:
           {intake.provisional && (
             <span
               className="inline-flex items-center gap-1 rounded-full bg-accent/15 px-2 py-0.5 text-[11px] font-semibold text-accent"
-              title="Resolved against a provisional placeholder while Contact-Ops was dormant; will upgrade to a real identity on the next sweep."
+              title="Saved before contacts were connected; it is matched to a contact on the next sweep."
             >
-              <Sparkles className="h-3 w-3" strokeWidth={2.5} /> provisional
+              <Sparkles className="h-3 w-3" strokeWidth={2.5} /> not matched yet
             </span>
           )}
         </div>
@@ -1087,7 +1091,7 @@ function AddLeadDrawer({
         {/* Footer */}
         <div className="flex items-center justify-between gap-3 border-t border-subtle px-5 py-4">
           <p className="text-[11px] text-muted">
-            Resolves to a Contact-Ops identity, or stages provisionally if dormant.
+            Matched to a contact, or saved to match later if contacts are not connected.
           </p>
           <div className="flex shrink-0 items-center gap-2">
             <Button variant="ghost" size="sm" onClick={() => !busy && onClose()} disabled={busy}>Cancel</Button>
@@ -1112,8 +1116,8 @@ function OutcomeBanner({ result }: { result: IngestResult }) {
   const via = result.via;
   const tone = result.resolved && !result.provisional ? 'ok' : result.provisional ? 'accent' : 'warn';
   const label = via === 'explicit' ? 'Resolved via explicit contact'
-    : via === 'contact-ops' ? 'Resolved via Contact-Ops match'
-      : via === 'provisional' ? 'Staged provisionally'
+    : via === 'contact-ops' ? 'Matched to an existing contact'
+      : via === 'provisional' ? 'Saved to match later'
         : 'Pending identity resolution';
   const cls = tone === 'ok' ? 'border-success/30 bg-success-subtle text-success'
     : tone === 'accent' ? 'border-accent/30 bg-accent/10 text-accent'

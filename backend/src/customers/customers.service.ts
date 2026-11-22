@@ -267,6 +267,35 @@ async function assertCustomerOpsEntitled(
 const CONTACT_OPS_NOT_CONNECTED_MESSAGE =
   "Contacts aren't set up for this workspace yet, so a relationship can't be linked to a contact. Ask your workspace owner, or write to support@unicorncommander.ai and we will set it up.";
 
+/**
+ * Shown verbatim in the compose form when no recipient address is known
+ * (AUD-CR-3): plain words, no internal component names.
+ */
+export const NO_RECIPIENT_MESSAGE =
+  "We don't have an email address for this person yet. Type one in the To field and try again.";
+
+/** Prisma "record to update not found" (P2025). */
+function isRecordNotFound(error: unknown): boolean {
+  return (error as { code?: string } | null)?.code === 'P2025';
+}
+
+/** Email is not switched on for this deployment at all (AUD-CR-3 review). */
+export const EMAIL_NOT_CONNECTED_MESSAGE =
+  'Email is not connected here yet, so the message was not sent. Ask your workspace owner, or write to support@unicorncommander.ai and we will set it up.';
+
+/** The mail service refused the message; retrying will not help (AUD-CR-4). */
+export const EMAIL_NOT_ACCEPTED_MESSAGE =
+  "Email isn't set up for this workspace yet, so the message was not sent. Ask your workspace owner, or write to support@unicorncommander.ai and we will set it up.";
+
+/** The workspace's plan does not include email (AUD-CR-3 review); the gate's
+ *  internal reason goes to the log only. */
+export const EMAIL_NOT_INCLUDED_MESSAGE =
+  "Email isn't included in this workspace's plan, so the message was not sent. Ask your workspace owner, or write to support@unicorncommander.ai and we will help.";
+
+/** The mail service could not be reached; a retry is safe and never sends twice. */
+export const EMAIL_UNAVAILABLE_MESSAGE =
+  "Email can't be reached right now, so the message was not sent yet. Try again in a moment; trying again never sends it twice.";
+
 @Injectable()
 export class CustomersService {
   private readonly logger = new Logger(CustomersService.name);
@@ -1529,18 +1558,16 @@ export class CustomersService {
     const mode = dto.mode ?? 'draft';
 
     if (!this.emailOps.isConfigured()) {
-      throw new BadRequestException(
-        'Email-Ops is not connected for this deployment. Set EMAIL_OPS_BASE_URL to ' +
-          'enable email. (Customer-Ops federates mailboxes to the Email-Ops app; it ' +
-          'is not a mail server.)',
-      );
+      // Plain words for the customer; the operator detail goes to the log.
+      this.logger.warn(`Email ${mode} refused: EMAIL_OPS_BASE_URL is not set`);
+      throw new BadRequestException(EMAIL_NOT_CONNECTED_MESSAGE);
     }
     const gate = this.emailOps.checkEntitlement(fedCtx);
     if (!gate.allowed) {
       this.logger.warn(
         `Email ${mode} denied for ${ucUid} (ws=${fedCtx.workspaceId}): ${gate.reason}`,
       );
-      throw new ForbiddenException(gate.reason);
+      throw new ForbiddenException(EMAIL_NOT_INCLUDED_MESSAGE);
     }
 
     // Runtime kill switch (workspace-scoped): halt outbound SENDS at dispatch
@@ -1562,15 +1589,19 @@ export class CustomersService {
         async (tx) => (await this.getInTx(tx, customerId)).contactId,
         requestedWorkspaceId,
       );
-      const contactCtx = await this.federationContext(user, requestedWorkspaceId);
-      const contact = await this.contactOps.getContact(contactCtx, contactId);
-      toAddress = contact?.primaryEmail ?? null;
+      if (isProvisionalContactId(contactId)) {
+        // AUD-CR-3: a provisional lead ('prov:') has no contact record, so skip
+        // the federation call; use the address the lead arrived with (its intake
+        // row, workspace-scoped by RLS).
+        toAddress = await this.provisionalLeadEmail(user, contactId, requestedWorkspaceId);
+      } else {
+        const contactCtx = await this.federationContext(user, requestedWorkspaceId);
+        const contact = await this.contactOps.getContact(contactCtx, contactId);
+        toAddress = contact?.primaryEmail ?? null;
+      }
     }
     if (!toAddress) {
-      throw new BadRequestException(
-        'No recipient address: pass toAddress, or ensure the federated contact has ' +
-          'a primary email (Contact-Ops). Customer-Ops does not store the address.',
-      );
+      throw new BadRequestException(NO_RECIPIENT_MESSAGE);
     }
 
     const idemKey = dto.idempotencyKey?.trim() || randomUUID();
@@ -1606,7 +1637,7 @@ export class CustomersService {
       requestedWorkspaceId,
     );
 
-    const result = await this.emailOps.composeEmail(fedCtx, {
+    const request = {
       contactId: resolvedContactId,
       toAddress,
       fromAddress: dto.fromAddress?.trim() || null,
@@ -1616,26 +1647,71 @@ export class CustomersService {
       mode,
       externalSource,
       externalRef,
-    });
-    if (!result) {
-      throw new ServiceUnavailableException(
-        'Email-Ops did not return a message. The link is recorded; retry to ' +
-          'complete it (idempotent on the same reference).',
-      );
+    };
+    // AUD-CR-4: keep WHY there is no message. Ports without the detailed call
+    // report a null as unavailable (the previous behavior).
+    const outcome = this.emailOps.composeEmailOutcome
+      ? await this.emailOps.composeEmailOutcome(fedCtx, request)
+      : await this.emailOps
+          .composeEmail(fedCtx, request)
+          .then((r) =>
+            r ? { ok: true as const, result: r } : { ok: false as const, failure: 'unavailable' },
+          );
+    if (!outcome.ok) {
+      if (outcome.failure === 'refused') {
+        // Email-Ops answered no (for a new workspace: it does not know it yet).
+        // A retry cannot fix that, so drop the link this call staged (never one
+        // that already carries a message) and say so in plain words.
+        if (!link.messageId) {
+          await this.workspaces.runForUser(
+            user,
+            (tx) => tx.customerEmailLink.deleteMany({ where: { id: link.id, messageId: null } }),
+            requestedWorkspaceId,
+          );
+        }
+        this.logger.warn(
+          `Email ${mode} refused by Email-Ops for ws=${fedCtx.workspaceId} ref=${externalRef}`,
+        );
+        throw new UnprocessableEntityException({
+          statusCode: 422,
+          code: 'email_not_accepted',
+          message: EMAIL_NOT_ACCEPTED_MESSAGE,
+        });
+      }
+      throw new ServiceUnavailableException(EMAIL_UNAVAILABLE_MESSAGE);
     }
+    const result = outcome.result;
 
     const refreshed = await this.workspaces.runForUser(
       user,
       async (tx) => {
-        const updated = await tx.customerEmailLink.update({
-          where: { id: link.id },
-          data: this.emailCacheUpdate(result),
-        });
+        const updated = await tx.customerEmailLink
+          .update({ where: { id: link.id }, data: this.emailCacheUpdate(result) })
+          .catch((error: unknown) => {
+            // A concurrent attempt on the same key that Email-Ops refused may
+            // have removed the staged row (it removes only one with no message).
+            // Re-create it so an accepted message never loses its link.
+            if (!isRecordNotFound(error)) throw error;
+            return tx.customerEmailLink.create({
+              data: {
+                workspaceId: link.workspaceId,
+                customerId,
+                contactId: link.contactId,
+                mode,
+                externalSource,
+                externalRef,
+                threadId: link.threadId ?? null,
+                subject: dto.subject,
+                createdByUcUid: ucUid || null,
+                ...this.emailCacheUpdate(result),
+              } as Prisma.CustomerEmailLinkUncheckedCreateInput,
+            });
+          });
         await this.logActivity(tx, updated.workspaceId, customerId, {
           kind: CustomerActivityKind.EMAIL_SENT,
           body:
             `Email "${dto.subject}" ${mode === 'draft' ? 'drafted for approval' : 'sent'} ` +
-            `via Email-Ops (${result.status}) · ref ${externalRef}`,
+            `(${result.status}) · ref ${externalRef}`,
           actorUcUid: ucUid,
         });
         return updated;
@@ -2002,6 +2078,20 @@ export class CustomersService {
    * affordances mirror the invoice panel. Reads are viewer-level (no dual SKU);
    * only the send/draft action is gated.
    */
+  /**
+   * The email a provisional lead ('prov:') arrived with, from its intake row
+   * (AUD-CR-3). Null for any other contact id, or when there is none.
+   */
+  private async provisionalLeadEmail(
+    user: User & Partial<WithWorkspaceClaim>,
+    contactId: string,
+    requestedWorkspaceId?: string | null,
+  ): Promise<string | null> {
+    if (!this.leadLabels || !isProvisionalContactId(contactId)) return null;
+    const labels = await this.leadLabels.labels(user, requestedWorkspaceId ?? null, [contactId]);
+    return labels.get(contactId)?.primaryEmail?.trim() || null;
+  }
+
   private async buildEmailPanel(
     user: User & Partial<WithWorkspaceClaim>,
     contactId: string,
@@ -2035,6 +2125,12 @@ export class CustomersService {
       threads,
       // The local outbound links THIS app initiated (de-dupe memory + cache).
       sent: links.map((l) => this.serializeEmailLink(l)),
+      // A provisional lead's intake email, so compose can pre-fill To (AUD-CR-3).
+      // Null for a contact-backed relationship: its address comes from the contact.
+      suggestedToAddress:
+        configured && entitled
+          ? await this.provisionalLeadEmail(user, contactId, requestedWorkspaceId)
+          : null,
     };
   }
 

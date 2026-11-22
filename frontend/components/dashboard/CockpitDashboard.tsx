@@ -62,7 +62,7 @@ export function CockpitDashboard({ userName, board, attention, activity, graph }
             </h2>
             <p className="mt-1.5 text-sm leading-relaxed text-tertiary">
               Run the whole lifecycle in one place: source a lead, work it through outreach, qualify,
-              convert, then keep the relationship warm. Contacts federate from Contact-Ops; the funnel lives here.
+              convert, then keep the relationship warm. Contacts come from your contacts app; the funnel lives here.
             </p>
           </div>
           <div className="flex shrink-0 gap-2">

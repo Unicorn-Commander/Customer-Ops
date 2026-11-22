@@ -175,7 +175,7 @@ export function AgentsPanel(props: {
       icon={Bot}
       gradient="from-violet-500 to-cyan-500"
       title="Relationship agents"
-      subtitle="Compose federated signal + inference"
+      subtitle="Drafts and assessments for you to review"
       tag={
         <Badge variant="neutral">
           <ShieldCheck className="h-3 w-3" strokeWidth={2.5} />
@@ -184,7 +184,7 @@ export function AgentsPanel(props: {
       }
     >
       <p className="mb-3 text-xs leading-relaxed text-tertiary">
-        Agents read the federated signal and the 4-lane inference, then return a draft or an assessment for you to review.
+        Agents read this relationship&apos;s history, then return a draft or an assessment for you to review.
         They never send, post, or move a stage on their own.
       </p>
 
@@ -250,7 +250,7 @@ export function AgentsPanel(props: {
                   {followUp.stagedDraft ? (
                     <p className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-warning-subtle px-2.5 py-1 text-[11px] font-medium text-warning">
                       <AlertTriangle className="h-3 w-3" strokeWidth={2.5} />
-                      Staged as an Email-Ops draft, awaiting your approval, not sent
+                      Saved as a draft for your approval, not sent
                     </p>
                   ) : (
                     <p className="mt-2 text-[11px] text-muted">

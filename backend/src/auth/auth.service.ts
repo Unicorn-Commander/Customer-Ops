@@ -5,6 +5,7 @@ import {
   Injectable,
   UnauthorizedException,
   Logger,
+  Optional,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma/prisma.service';
@@ -13,6 +14,7 @@ import { resolveUserAccess, describeAccessList } from './access-list';
 import { signupMode } from '../common/workspace/feature-flags';
 import { WorkspaceProvisioningService } from '../common/workspace/workspace-provisioning.service';
 import { MembershipService } from '../common/workspace/membership.service';
+import { ContactOpsLinkService } from '../contact-ops/contact-ops-link.service';
 import { customerOpsEntitlementsEnabled, resolveOrgEntitlement } from './org-entitlements.client';
 
 export const NO_WORKSPACE_ACCESS_RESPONSE = {
@@ -77,6 +79,8 @@ export class AuthService {
     private readonly provisioning: WorkspaceProvisioningService,
     private readonly membership: MembershipService,
     private readonly invitations: WorkspaceInvitationsService,
+    // AUD-CR-1: links a signed-in person's workspaces to their Contact-Ops tenant.
+    @Optional() private readonly contactLinks?: ContactOpsLinkService,
   ) {
     const meta = describeAccessList();
     this.logger.log(
@@ -252,6 +256,11 @@ export class AuthService {
     // self-serve users (who already hold a membership) and when tenancy is off.
     await this.membership.ensureSeededMembership(user);
 
+    // AUD-CR-1: a PERSON's sign-in links each of their workspaces to its
+    // Contact-Ops tenant (first sign-in, and again on a later sign-in if the
+    // tenant appeared after). Never for a service, delegated or federation token.
+    if (AuthService.isPersonProfile(profile)) this.linkContactOps(user);
+
     // Carry the verified entitlement SKUs onto the resolved user so the OIDC
     // callback can bake them into the minted HS256 session token (the browser
     // path). The KeycloakStrategy reads them off the verified KC access token and
@@ -318,6 +327,36 @@ export class AuthService {
       }
       throw err;
     }
+  }
+
+  /**
+   * Ask the Contact-Ops org lookup for the link row of every workspace the
+   * person holds an ACTIVE membership in (AUD-CR-1), keyed by the stored
+   * membership rows, never a claim. Not awaited: sign-in never waits on, or
+   * fails because of, Contact-Ops. Linked is a no-op; no tenant yet is retried
+   * at a later sign-in after the back-off (ContactOpsLinkService).
+   * Throttled per person there, so a per-request sign-in stays cheap.
+   */
+  private linkContactOps(user: User): void {
+    const links = this.contactLinks;
+    if (!links) return;
+    void links.linkForPerson(MembershipService.membershipKey(user), async () =>
+      (await this.membership.listActiveMemberships(user)).map((m) => m.workspaceId),
+    );
+  }
+
+  /** A person's own sign-in: a verified email and no client, delegation or
+   *  federation identity. Service callers never trigger the link write. */
+  private static isPersonProfile(profile: any): boolean {
+    return (
+      typeof profile?.email === 'string' &&
+      profile.email.trim() !== '' &&
+      profile?.email_verified === true &&
+      !profile?.act &&
+      !profile?.client_id &&
+      !profile?.clientId &&
+      !profile?.__federationActor
+    );
   }
 
   /** Mint a local HS256 session token for a resolved user (post OIDC callback). */
@@ -398,6 +437,15 @@ export class AuthService {
     const user = await this.prisma.user.findUnique({ where: { id: payload.sub } });
     if (!user || !user.isActive) {
       throw new UnauthorizedException('User not found or inactive');
+    }
+    // AUD-CR-1: the browser runs on this minted session token, so a tenant that
+    // appears after first sign-in is linked here (per-person back-off applies).
+    // Only a person's session: verified email, no client/delegation identity.
+    if (
+      AuthService.isPersonProfile(payload) &&
+      !(typeof forwardedAccessToken === 'string' && forwardedAccessToken.startsWith('co_pat_'))
+    ) {
+      this.linkContactOps(user);
     }
     return user;
   }

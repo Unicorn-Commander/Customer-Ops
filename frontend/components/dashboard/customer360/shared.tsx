@@ -80,7 +80,7 @@ export function PanelSection({
   gradient: string;
   title: string;
   subtitle?: ReactNode;
-  /** Right-aligned status / source tag (e.g. "federated · accounting-ops"). */
+  /** Right-aligned status / source tag (e.g. "invoices · connected"). */
   tag?: ReactNode;
   children: ReactNode;
   className?: string;
@@ -107,7 +107,7 @@ export function PanelSection({
   );
 }
 
-/** A muted "federated · X" / "X · not connected" source tag for panel headers. */
+/** A muted "X · connected" / "X · offline" source tag for panel headers. */
 export function SourceTag({ configured, source }: { configured: boolean; source: string }) {
   return (
     <span
@@ -117,7 +117,7 @@ export function SourceTag({ configured, source }: { configured: boolean; source:
       )}
     >
       <span aria-hidden className={cn('h-1.5 w-1.5 rounded-full', configured ? 'bg-success' : 'bg-warning')} />
-      {configured ? `federated · ${source}` : `${source} · offline`}
+      {configured ? `${source} · connected` : `${source} · offline`}
     </span>
   );
 }

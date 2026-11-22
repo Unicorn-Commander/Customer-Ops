@@ -213,7 +213,7 @@ function FollowUpCard({ result }: { result: FollowUpResult }) {
           {result.stagedDraft ? (
             <p className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-warning-subtle px-2.5 py-1 text-[11px] font-medium text-warning">
               <AlertTriangle className="h-3 w-3" strokeWidth={2.5} />
-              Staged as an Email-Ops draft, awaiting your approval, not sent
+              Saved as a draft for your approval, not sent
             </p>
           ) : (
             <p className="mt-2 text-[11px] text-muted">A draft. Copy it, or stage it from the Email panel. Never auto-sent.</p>

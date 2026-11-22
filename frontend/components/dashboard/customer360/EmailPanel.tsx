@@ -39,7 +39,7 @@ export function EmailPanel(props: {
     ? empty
       ? 'No threads yet'
       : `${panel.threads.length} thread${panel.threads.length === 1 ? '' : 's'}${unread ? ` · ${unread} unread` : ''}`
-    : 'Email-Ops · Stalwart';
+    : 'Not connected';
 
   return (
     <PanelSection
@@ -47,11 +47,11 @@ export function EmailPanel(props: {
       gradient="from-sky-400 to-blue-500"
       title="Email"
       subtitle={subtitle}
-      tag={<SourceTag configured={panel.configured} source="email-ops" />}
+      tag={<SourceTag configured={panel.configured} source="email" />}
     >
       {!panel.configured ? (
-        <ConnectNotice app="Email-Ops">
-          Mailboxes are federated to Email-Ops (the Stalwart mail surface); Customer-Ops never stores message content.
+        <ConnectNotice app="email">
+          Email isn&apos;t set up for this workspace yet. Your messages stay in your mailbox; this page never stores them.
         </ConnectNotice>
       ) : (
         <>
@@ -111,7 +111,7 @@ export function EmailPanel(props: {
               </Button>
             ) : (
               <EmailForm
-                defaultToAddress={defaultToAddress}
+                defaultToAddress={defaultToAddress ?? panel.suggestedToAddress ?? undefined}
                 busy={busy}
                 error={err}
                 onCancel={() => {
@@ -136,7 +136,7 @@ export function EmailPanel(props: {
             )
           ) : (
             <EntitlementNotice>
-              Sending requires the Customer-Ops + Email-Ops entitlements. Threads are read-only.
+              Sending email needs email on your plan. Threads are read-only.
             </EntitlementNotice>
           )}
         </>
@@ -192,7 +192,7 @@ function EmailForm(props: {
           variant="secondary"
           disabled={!canSubmit}
           leading={<FileText className="h-4 w-4" strokeWidth={2.4} />}
-          title="Stage in the Email-Ops agent-inbox approval surface"
+          title="Save it for review before it is sent"
           onClick={() => props.onSubmit(compose('draft'))}
         >
           Save as draft

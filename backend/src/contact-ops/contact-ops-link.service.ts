@@ -1,0 +1,136 @@
+/**
+ * Writes a workspace's Contact-Ops link row without an operator (AUD-CR-1).
+ *
+ * Before this, the contact-ops row in federation_workspace_map was written only
+ * when Ops-Center POSTed /provisioning (and Contact-Ops already had a tenant),
+ * or by the manual backfill. A workspace created at first sign-in, or whose
+ * Contact-Ops tenant appeared after the POST, stayed unlinked.
+ *
+ * Now the same writer (ContactOpsMapProvisioner.ensureForOrg: the lookup's
+ * tenant for exactly this org id, never overwriting an existing row) runs at a
+ * PERSON's sign-in, for every workspace the person holds an ACTIVE membership
+ * in (the stored membership rows), without holding the sign-in up. A tenant
+ * that appears later is picked up at a later sign-in, after the back-off.
+ * Service, delegated and federation callers never reach it (AuthService), and
+ * Contact-Ops calls only read the row: a read-only caller writes nothing.
+ *
+ * CONTRACT LIMIT (self-serve): the lookup is Contact-Ops' Ops-Center org
+ * lookup (GET /api/service/ops-center-orgs/{org_id}/tenant, Contact-Ops #42).
+ * It answers a tenant only for an Ops-Center org id; a self-serve workspace id
+ * (a uuidv7 minted here) is not an org id, so it answers 404 and nothing is
+ * written. A self-serve workspace is therefore linked only if Contact-Ops ever
+ * keys a tenant by that workspace id. Nothing here creates a Contact-Ops tenant;
+ * that needs a Contact-Ops change (owner decision). The self-serve retry is cheap:
+ * at most one lookup per person per back-off window, only at their sign-in.
+ *
+ * Idempotent and bounded: the stored row is re-read on every attempt (nothing is
+ * cached as linked, so a row removed later is never assumed); one lookup per workspace is in flight at a time; a lookup that finds
+ * no tenant is retried after RETRY_MS, not on every request. An existing row
+ * (including one marked in conflict) is left to the provisioner's rules and the
+ * backfill; this service never writes over it.
+ */
+
+import { Injectable, Logger } from '@nestjs/common';
+import { PrismaService } from '../prisma/prisma.service';
+import { ContactOpsOrgLookupClient } from './contact-ops-org-lookup.client';
+import { CONTACT_OPS_TARGET_APP, ContactOpsMapProvisioner } from './contact-ops-map.provisioner';
+
+/** How long to wait before asking the lookup again for a workspace with no tenant. */
+export const CONTACT_LINK_RETRY_MS = 60_000;
+
+/** Back-off entries kept in memory; past this, entries older than the window go. */
+export const CONTACT_LINK_MAX_TRACKED = 10_000;
+
+/** Record `key` at `now`, first dropping entries the back-off no longer needs
+ *  (older than the window) once the map is full, so memory stays bounded. */
+function remember(map: Map<string, number>, key: string, now: number): void {
+  if (map.size >= CONTACT_LINK_MAX_TRACKED && !map.has(key)) {
+    for (const [k, at] of map) if (now - at >= CONTACT_LINK_RETRY_MS) map.delete(k);
+    // Still full (all recent): drop the oldest insertion so the map never grows.
+    if (map.size >= CONTACT_LINK_MAX_TRACKED) map.delete(map.keys().next().value as string);
+  }
+  map.set(key, now);
+}
+
+@Injectable()
+export class ContactOpsLinkService {
+  private readonly logger = new Logger(ContactOpsLinkService.name);
+  private readonly inFlight = new Map<string, Promise<boolean>>();
+  private readonly lastMiss = new Map<string, number>();
+  private readonly lastPerson = new Map<string, number>();
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly lookup: ContactOpsOrgLookupClient,
+    private readonly provisioner: ContactOpsMapProvisioner,
+  ) {}
+
+  /**
+   * A person's sign-in (AUD-CR-1): link each of their workspaces. Asked at most
+   * once per CONTACT_LINK_RETRY_MS per person, so a per-request sign-in does not
+   * re-read memberships every time. Never throws.
+   */
+  async linkForPerson(
+    userKey: string,
+    workspaceIds: () => Promise<string[]>,
+    now: number = Date.now(),
+  ): Promise<void> {
+    if (!userKey || !this.lookup.isConfigured()) return;
+    const last = this.lastPerson.get(userKey);
+    if (last !== undefined && now - last < CONTACT_LINK_RETRY_MS) return;
+    remember(this.lastPerson, userKey, now);
+    try {
+      for (const id of await workspaceIds()) await this.ensureLinked(id, now);
+    } catch (error) {
+      this.logger.warn(`contact-ops link at sign-in skipped: ${(error as Error).name}`);
+    }
+  }
+
+  /**
+   * True when the workspace has a contact-ops row (now or after this call).
+   * Never throws.
+   */
+  async ensureLinked(workspaceId: string, now: number = Date.now()): Promise<boolean> {
+    if (!workspaceId || !this.lookup.isConfigured()) return false;
+    const pending = this.inFlight.get(workspaceId);
+    if (pending) return pending;
+    const missedAt = this.lastMiss.get(workspaceId);
+    if (missedAt !== undefined && now - missedAt < CONTACT_LINK_RETRY_MS) return false;
+
+    const attempt = this.attempt(workspaceId, now).finally(() => this.inFlight.delete(workspaceId));
+    this.inFlight.set(workspaceId, attempt);
+    return attempt;
+  }
+
+  private async attempt(workspaceId: string, now: number): Promise<boolean> {
+    try {
+      const existing = await this.prisma.federationWorkspaceMap.findUnique({
+        where: {
+          localWorkspaceId_targetApp: {
+            localWorkspaceId: workspaceId,
+            targetApp: CONTACT_OPS_TARGET_APP,
+          },
+        },
+        select: { targetWorkspaceId: true },
+      });
+      // Read the stored row every time (cheap, and only at a person's sign-in):
+      // a row removed later (conflict repair, manual fix) is never assumed.
+      if (existing) {
+        this.lastMiss.delete(workspaceId);
+        return true;
+      }
+      const outcome = await this.provisioner.ensureForOrg(workspaceId);
+      if (outcome.kind === 'written' || outcome.kind === 'already') {
+        this.lastMiss.delete(workspaceId);
+        return true;
+      }
+      // conflict: a row exists but is not routable; skipped: no tenant yet.
+      remember(this.lastMiss, workspaceId, now);
+      return false;
+    } catch (error) {
+      remember(this.lastMiss, workspaceId, now);
+      this.logger.warn(`contact-ops link for ${workspaceId} not written: ${(error as Error).name}`);
+      return false;
+    }
+  }
+}

@@ -49,7 +49,7 @@ export function InvoicesPanel(props: {
       : `${panel.items.length} invoice${panel.items.length === 1 ? '' : 's'}${
           outstanding > 0 ? ` · ${money(String(outstanding), currency)} outstanding` : ''
         }`
-    : 'Accounting-Ops';
+    : 'Invoices';
 
   return (
     <PanelSection
@@ -57,11 +57,11 @@ export function InvoicesPanel(props: {
       gradient="from-emerald-400 to-teal-500"
       title="Invoices & AR"
       subtitle={subtitle}
-      tag={<SourceTag configured={panel.configured} source="accounting-ops" />}
+      tag={<SourceTag configured={panel.configured} source="invoices" />}
     >
       {!panel.configured ? (
-        <ConnectNotice app="Accounting-Ops">
-          Invoicing is federated to Accounting-Ops, the AR engine; Customer-Ops never holds the ledger.
+        <ConnectNotice app="invoicing">
+          Invoices live in your accounting app. This page never holds the ledger.
         </ConnectNotice>
       ) : (
         <>
@@ -129,7 +129,7 @@ export function InvoicesPanel(props: {
             )
           ) : (
             <EntitlementNotice>
-              Invoicing requires the Customer-Ops + Accounting-Ops entitlements. History is read-only.
+              Invoicing needs Customer-Ops and Accounting-Ops on your plan. History is read-only.
             </EntitlementNotice>
           )}
         </>
@@ -163,7 +163,7 @@ function InvoiceForm(props: {
   return (
     <div className="mt-3 grid gap-2.5 rounded-token border border-subtle bg-surface-overlay/50 p-3">
       <FormError error={props.error} />
-      <FieldInput label="Accounting-Ops entity id" placeholder="entity UUID" value={entityId} onChange={setEntityId} />
+      <FieldInput label="Billing entity id" placeholder="entity id" value={entityId} onChange={setEntityId} />
       <FieldInput label="Line description" placeholder="e.g. Consulting, June" value={description} onChange={setDescription} />
       <div className="grid grid-cols-[1fr_2fr] gap-2">
         <FieldInput label="Qty" placeholder="1" value={quantity} onChange={setQuantity} />
@@ -188,7 +188,7 @@ function InvoiceForm(props: {
             })
           }
         >
-          {props.busy ? 'Creating…' : 'Send to Accounting-Ops'}
+          {props.busy ? 'Creating…' : 'Create invoice'}
         </Button>
         <Button size="sm" variant="ghost" disabled={props.busy} onClick={props.onCancel}>
           Cancel

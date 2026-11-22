@@ -127,8 +127,8 @@ export default function CustomersPage() {
           <div>
             <h1 className="text-xl font-semibold tracking-tight text-primary">Relationships</h1>
             <p className="mt-0.5 max-w-xl text-sm text-tertiary">
-              The whole customer lifecycle: lead → prospect → customer. Contacts federate from
-              Contact-Ops; the relationship and stage live here.
+              The whole customer lifecycle, from lead to prospect to customer. Your contacts are
+              brought in for you; the relationship and stage live here.
             </p>
           </div>
         </div>
@@ -186,7 +186,7 @@ export default function CustomersPage() {
                     if (e.key === 'Enter') void submitCreate();
                     if (e.key === 'Escape') setCreating(false);
                   }}
-                  placeholder="Search your Contact-Ops contacts by name or email"
+                  placeholder="Search your contacts by name or email"
                   className={cn(
                     'h-10 w-full rounded-token border border-subtle bg-surface-overlay/60 px-3 text-sm text-primary',
                     'placeholder:text-muted',
@@ -222,7 +222,7 @@ export default function CustomersPage() {
                 )}
                 {!picked && !searching && query.trim().length >= 2 && options.length === 0 && (
                   <p className="mt-1.5 text-xs text-tertiary">
-                    No matching contact in Contact-Ops. Create the person there first, then come back.
+                    No matching contact yet. Add the person to your contacts first, then come back.
                   </p>
                 )}
               </div>
@@ -233,7 +233,7 @@ export default function CustomersPage() {
           )}
           <p className="mt-2 text-xs text-tertiary">
             The new relationship enters the funnel as a <span className="font-medium text-stage-lead">Lead</span>.
-            The contact stays in Contact-Ops; only the relationship is created here.
+            The person stays in your contacts; only the relationship is created here.
           </p>
         </div>
       )}

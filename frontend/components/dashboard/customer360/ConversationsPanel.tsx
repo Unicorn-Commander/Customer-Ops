@@ -41,7 +41,7 @@ export function ConversationsPanel(props: {
   const subtitle = panel.configured
     ? empty
       ? 'No conversations yet'
-      : `${panel.threads.length} conversation${panel.threads.length === 1 ? '' : 's'}${dryRun ? ' · dry-run send' : ''}`
+      : `${panel.threads.length} conversation${panel.threads.length === 1 ? '' : 's'}${dryRun ? ' · test sends only' : ''}`
     : `Device · ${channels}`;
 
   async function toggleThread(chatId: string) {
@@ -69,11 +69,11 @@ export function ConversationsPanel(props: {
       gradient="from-teal-400 to-emerald-500"
       title="Messages"
       subtitle={subtitle}
-      tag={<SourceTag configured={panel.configured} source="conversations-ops" />}
+      tag={<SourceTag configured={panel.configured} source="messages" />}
     >
       {!panel.configured ? (
-        <ConnectNotice app="the device bridge">
-          iMessage & SMS are federated from the worker&apos;s device (the UUDC messages bridge); Customer-Ops never stores message content.
+        <ConnectNotice app="your phone">
+          iMessage and SMS come from your own device. This page never stores message content.
         </ConnectNotice>
       ) : (
         <>
@@ -152,7 +152,7 @@ export function ConversationsPanel(props: {
                 leading={<Send className="h-4 w-4" strokeWidth={2.4} />}
                 onClick={() => setOpen(true)}
               >
-                {dryRun ? 'Compose message (dry-run)' : 'Compose message'}
+                {dryRun ? 'Compose message (test)' : 'Compose message'}
               </Button>
             ) : (
               <MessageForm
@@ -182,7 +182,7 @@ export function ConversationsPanel(props: {
             )
           ) : (
             <EntitlementNotice>
-              Sending from the device requires the Customer-Ops entitlement and an enabled channel. Conversations are read-only.
+              Sending from your device needs Customer-Ops on your plan and a channel switched on. Conversations are read-only.
             </EntitlementNotice>
           )}
         </>
@@ -209,7 +209,7 @@ function MessageForm(props: {
       <FormError error={props.error} />
       {props.dryRun ? (
         <p className="text-xs text-amber-600 dark:text-amber-400">
-          Dry-run mode: the bridge will rehearse the send but will not deliver until an Aaron-attended checkpoint sets CONVERSATIONS_OPS_LIVE_SEND_ENABLED=true.
+          Test mode: this message is checked but not delivered yet. Live sending is switched on by your workspace owner.
         </p>
       ) : null}
       <FieldInput
@@ -250,7 +250,7 @@ function MessageForm(props: {
             })
           }
         >
-          {props.dryRun ? 'Dry-run send' : 'Send'}
+          {props.dryRun ? 'Test send' : 'Send'}
         </Button>
       </div>
     </div>

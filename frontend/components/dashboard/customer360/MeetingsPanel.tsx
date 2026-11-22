@@ -39,7 +39,7 @@ export function MeetingsPanel({ panel }: { panel: MeetingPanelData }) {
       : `${panel.meetings.length} meeting${panel.meetings.length === 1 ? '' : 's'}${
           panel.actionItems.length ? ` · ${openItems} open action item${openItems === 1 ? '' : 's'}` : ''
         }`
-    : 'Meeting-Ops';
+    : 'Meetings';
   const latest = panel.summaries[0];
 
   return (
@@ -48,11 +48,11 @@ export function MeetingsPanel({ panel }: { panel: MeetingPanelData }) {
       gradient="from-teal-400 to-cyan-500"
       title="Meetings & action items"
       subtitle={subtitle}
-      tag={<SourceTag configured={panel.configured} source="meeting-ops" />}
+      tag={<SourceTag configured={panel.configured} source="meetings" />}
     >
       {!panel.configured ? (
-        <ConnectNotice app="Meeting-Ops">
-          Conversation signal is federated from Meeting-Ops; Customer-Ops never stores a transcript or summary.
+        <ConnectNotice app="meetings">
+          Meeting notes come from your meetings app. This page never stores a transcript or summary.
         </ConnectNotice>
       ) : empty ? (
         <EmptyRow>No meetings with this contact yet.</EmptyRow>
@@ -137,7 +137,7 @@ export function MeetingsPanel({ panel }: { panel: MeetingPanelData }) {
                         )}
                       </div>
                       {a.projectOpsTaskId && (
-                        <Badge variant="success" className="shrink-0" title="Meeting-Ops linked this to a Project-Ops task">
+                        <Badge variant="success" className="shrink-0" title="Linked to a project task">
                           <CornerDownRight className="h-3 w-3" strokeWidth={2.5} />
                           task
                         </Badge>

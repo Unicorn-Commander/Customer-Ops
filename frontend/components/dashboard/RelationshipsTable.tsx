@@ -424,7 +424,7 @@ function EmptyRow({
               ? query
                 ? <>Nothing matches “<span className="text-secondary">{query}</span>”. Try a different search or stage.</>
                 : 'No relationships in this stage. Switch filters to see the rest.'
-              : 'Start the lifecycle by adding a contact from Contact-Ops as a lead.'}
+              : 'Start the lifecycle by adding a contact as a lead.'}
           </p>
           <div className="mt-5">
             {noMatches
