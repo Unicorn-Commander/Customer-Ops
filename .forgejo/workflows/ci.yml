@@ -154,7 +154,7 @@ jobs:
         # DATABASE_URL is set for any code path that reads it; the RLS spec uses
         # CUSTOMER_OPS_RLS_TEST_DATABASE_URL (app role) + the owner URL above; the
         # contact-link + workspace-onboarding specs use
-        # CUSTOMER_ONBOARDING_TEST_DB_URL (the isolated _test database above —
+        # CUSTOMER_ONBOARDING_TEST_DB_URL (the isolated _test database above,
         # their guard now admits the `postgres` service host in CI, so all 30
         # tests run instead of skipping).
         # Bounded workers: jest defaults to one worker per visible core (40 on the
