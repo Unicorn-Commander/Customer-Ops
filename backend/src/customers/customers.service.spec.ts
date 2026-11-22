@@ -1333,7 +1333,7 @@ describe('CustomersService — Email-Ops federation (Phase 4; Email-Ops app mock
 
       await expect(
         svc.sendEmailForUser(aaron, 'cust-1', { subject: 'Hi', body: 'b' }, WS),
-      ).rejects.toThrow(/no recipient address/i);
+      ).rejects.toThrow(/don't have an email address for this person/i);
       expect(email.composeEmail).not.toHaveBeenCalled();
     });
 

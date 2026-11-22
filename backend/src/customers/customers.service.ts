@@ -267,6 +267,13 @@ async function assertCustomerOpsEntitled(
 const CONTACT_OPS_NOT_CONNECTED_MESSAGE =
   "Contacts aren't set up for this workspace yet, so a relationship can't be linked to a contact. Ask your workspace owner, or write to support@unicorncommander.ai and we will set it up.";
 
+/**
+ * Shown verbatim in the compose form when no recipient address is known
+ * (AUD-CR-3): plain words, no internal component names.
+ */
+export const NO_RECIPIENT_MESSAGE =
+  "We don't have an email address for this person yet. Type one in the To field and try again.";
+
 @Injectable()
 export class CustomersService {
   private readonly logger = new Logger(CustomersService.name);
@@ -1565,12 +1572,12 @@ export class CustomersService {
       const contactCtx = await this.federationContext(user, requestedWorkspaceId);
       const contact = await this.contactOps.getContact(contactCtx, contactId);
       toAddress = contact?.primaryEmail ?? null;
+      // AUD-CR-3: a provisional lead ('prov:') has no contact record yet; use the
+      // address the lead arrived with (its intake row, workspace-scoped).
+      toAddress ??= await this.provisionalLeadEmail(user, contactId, requestedWorkspaceId);
     }
     if (!toAddress) {
-      throw new BadRequestException(
-        'No recipient address: pass toAddress, or ensure the federated contact has ' +
-          'a primary email (Contact-Ops). Customer-Ops does not store the address.',
-      );
+      throw new BadRequestException(NO_RECIPIENT_MESSAGE);
     }
 
     const idemKey = dto.idempotencyKey?.trim() || randomUUID();
@@ -2002,6 +2009,20 @@ export class CustomersService {
    * affordances mirror the invoice panel. Reads are viewer-level (no dual SKU);
    * only the send/draft action is gated.
    */
+  /**
+   * The email a provisional lead ('prov:') arrived with, from its intake row
+   * (AUD-CR-3). Null for any other contact id, or when there is none.
+   */
+  private async provisionalLeadEmail(
+    user: User & Partial<WithWorkspaceClaim>,
+    contactId: string,
+    requestedWorkspaceId?: string | null,
+  ): Promise<string | null> {
+    if (!this.leadLabels || !isProvisionalContactId(contactId)) return null;
+    const labels = await this.leadLabels.labels(user, requestedWorkspaceId ?? null, [contactId]);
+    return labels.get(contactId)?.primaryEmail?.trim() || null;
+  }
+
   private async buildEmailPanel(
     user: User & Partial<WithWorkspaceClaim>,
     contactId: string,
@@ -2035,6 +2056,12 @@ export class CustomersService {
       threads,
       // The local outbound links THIS app initiated (de-dupe memory + cache).
       sent: links.map((l) => this.serializeEmailLink(l)),
+      // A provisional lead's intake email, so compose can pre-fill To (AUD-CR-3).
+      // Null for a contact-backed relationship: its address comes from the contact.
+      suggestedToAddress:
+        configured && entitled
+          ? await this.provisionalLeadEmail(user, contactId, requestedWorkspaceId)
+          : null,
     };
   }
 

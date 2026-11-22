@@ -111,7 +111,7 @@ export function EmailPanel(props: {
               </Button>
             ) : (
               <EmailForm
-                defaultToAddress={defaultToAddress}
+                defaultToAddress={defaultToAddress ?? panel.suggestedToAddress ?? undefined}
                 busy={busy}
                 error={err}
                 onCancel={() => {

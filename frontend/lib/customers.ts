@@ -211,6 +211,8 @@ export interface EmailPanel {
   canSend: boolean;
   threads: EmailThread[];
   sent: EmailLink[];
+  /** A new lead's intake email, used to pre-fill To when there is no contact email yet. */
+  suggestedToAddress?: string | null;
 }
 
 /** A federated device conversation (iMessage/SMS) with a contact handle. */
