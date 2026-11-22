@@ -30,11 +30,20 @@ const FILES = [
   'components/dashboard/LeadIngestion.tsx',
   'components/dashboard/CockpitDashboard.tsx',
   'app/dashboard/agents/page.tsx',
+  'app/dashboard/customers/page.tsx',
+  'app/dashboard/pipeline/page.tsx',
+  'app/dashboard/help/page.tsx',
+  'components/help/HelpPanel.tsx',
+  'components/integrations/M365ConnectCard.tsx',
+  'lib/help-content.ts',
 ];
 
 /** Internal component names, engines and states a customer must not see. */
 const INTERNAL =
   /\b(Contact-Ops|Email-Ops|Meeting-Ops|Project-Ops|Conversations-Ops|Accounting-Ops|Stalwart|Listmonk|Postiz|UUDC|federat\w*|dormant|AR engine)\b/i;
+
+/** Token prefixes, env switches and rehearsal jargon are internal too. */
+const INTERNAL_DETAIL = /co_pat_|\b[A-Z][A-Z0-9]*_[A-Z0-9_]+=|\bdry-run\b|\bAaron\b/i;
 
 /** Allowed: plan/entitlement notices naming the products a customer buys. */
 const PLAN_NOTICE = /on your plan/;
@@ -70,7 +79,9 @@ const present = existsSync(FRONTEND);
   () => {
     it.each(FILES)('%s', (rel) => {
       const src = readFileSync(join(FRONTEND, rel), 'utf8');
-      const hits = visibleStrings(src).filter((s) => INTERNAL.test(s) && !PLAN_NOTICE.test(s));
+      const hits = visibleStrings(src).filter(
+        (s) => (INTERNAL.test(s) || INTERNAL_DETAIL.test(s)) && !PLAN_NOTICE.test(s),
+      );
       expect(hits).toEqual([]);
     });
 

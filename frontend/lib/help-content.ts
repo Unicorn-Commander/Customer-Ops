@@ -92,7 +92,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     gradient: 'from-violet-500 to-fuchsia-500',
     body: [
       { kind: 'p', text: 'Click any contact to open their 360 — one screen that pulls together the relationship and everything linked to it: contact details, the deal, projects, invoices, email, meetings, and outreach.' },
-      { kind: 'p', text: 'The panels are federated: they show live data from the other apps in your suite, fetched the moment you open the view. Customer-Ops never copies that data — it always shows the real, current source.' },
+      { kind: 'p', text: 'The panels are live: they bring in data from the other apps in your suite the moment you open the view. Customer-Ops never copies that data; it always shows the real, current source.' },
       { kind: 'p', text: 'If a panel says “connect ‹App›,” that sibling app isn’t wired into your deployment yet — the cockpit keeps working, that panel just stays quiet. If a panel is connected but empty, there simply isn’t data for that contact yet. See the User Guide for more.' },
     ],
   },
@@ -138,7 +138,7 @@ export const HELP_TOPICS: HelpTopic[] = [
     gradient: 'from-lime-400 to-emerald-500',
     body: [
       { kind: 'p', text: 'New relationships enter Customer-Ops as leads — either manually (create a contact from the cockpit) or by ingestion (leads flow in from your sources — a sent-mail sweep, an import, a form — through the lead intake).' },
-      { kind: 'p', text: 'Either way, the underlying contact lives in Contact-Ops — the one phonebook for the whole suite. Customer-Ops adds the relationship (the stage, the pipeline position, the provenance) on top. A “lead” is just a contact at an early stage; promoting it never moves or duplicates the person. See the User Guide for more.' },
+      { kind: 'p', text: 'Either way, the person lives in your contacts, the one phonebook for the whole suite. Customer-Ops adds the relationship (the stage, the pipeline position, the provenance) on top. A “lead” is just a contact at an early stage; promoting it never moves or duplicates the person. See the User Guide for more.' },
     ],
   },
   {
@@ -154,9 +154,9 @@ export const HELP_TOPICS: HelpTopic[] = [
           'A panel says “connect ‹App›.” That sibling app isn’t wired in yet. Nothing’s broken — an admin connects it and the panel fills in automatically.',
           'A connected panel is empty. There’s no data for this contact in that app yet (no invoices, meetings, threads…). It’ll populate as the relationship deepens.',
           '“Could not load / please sign in.” Your session timed out — sign in again. Customer-Ops never stores a password of its own.',
-          'A contact shows a placeholder name. It was imported name-only and is still resolving; the real name fills in once it lands in Contact-Ops.',
+          'A contact shows a placeholder name. It was imported name-only and is still resolving; the real name fills in once it reaches your contacts.',
           'Is my data shared with a vendor? No. Customer-Ops runs on infrastructure you own, and the AI runs on your models by default.',
-          'Customer-Ops and Contact-Ops both use the co_pat_ prefix. Check the MCP URL before pasting a token: a Customer-Ops token belongs at the Customer-Ops endpoint only.',
+          'Each app in your suite issues its own access tokens. Check the MCP URL before pasting a token: a Customer-Ops token belongs at the Customer-Ops endpoint only.',
         ],
       },
       { kind: 'p', text: 'For more details, see the User Guide.' },

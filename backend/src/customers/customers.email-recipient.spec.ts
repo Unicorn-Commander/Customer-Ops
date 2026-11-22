@@ -104,7 +104,7 @@ function makeService(opts: { intakeEmail?: string | null; withResolver?: boolean
     undefined,
     leadLabels,
   );
-  return { svc, email, labels, contact };
+  return { svc, email, labels, contact, tx };
 }
 
 describe('provisional lead email recipient (AUD-CR-3)', () => {
@@ -183,5 +183,15 @@ describe('provisional lead email recipient (AUD-CR-3)', () => {
     expect(err.message).toBe(EMAIL_NOT_INCLUDED_MESSAGE);
     expect(err.message).not.toMatch(/-Ops|entitled|bearer|SKU|\u2014/i);
     expect(email.composeEmail).not.toHaveBeenCalled();
+  });
+
+  it('the email activity line names no internal component', async () => {
+    const { svc, tx } = makeService({ intakeEmail: 'rosa@lead.example.com' });
+    await svc.sendEmailForUser(user, 'cust-1', { subject: 'Hello', body: 'Following up' }, WS);
+    const bodies = (tx.customerActivity.create as jest.Mock).mock.calls.map(
+      ([arg]: any) => arg.data.body as string,
+    );
+    expect(bodies.some((b) => b.startsWith('Email "Hello"'))).toBe(true);
+    for (const b of bodies) expect(b).not.toMatch(/-Ops|Stalwart|federat/i);
   });
 });

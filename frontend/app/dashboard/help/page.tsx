@@ -92,7 +92,7 @@ export default function HelpPage() {
               <ShieldCheck className="h-[17px] w-[17px]" strokeWidth={2.25} />
             </span>
             <p className="text-[13px] leading-relaxed text-tertiary">
-              Customer-Ops is a surface, not an engine — it federates your suite into one living relationship graph. Your
+              Customer-Ops brings your whole suite together into one living relationship graph. Your
               Relations Officer proposes; you decide.
             </p>
           </div>

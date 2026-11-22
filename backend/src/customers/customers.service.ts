@@ -1711,7 +1711,7 @@ export class CustomersService {
           kind: CustomerActivityKind.EMAIL_SENT,
           body:
             `Email "${dto.subject}" ${mode === 'draft' ? 'drafted for approval' : 'sent'} ` +
-            `via Email-Ops (${result.status}) · ref ${externalRef}`,
+            `(${result.status}) · ref ${externalRef}`,
           actorUcUid: ucUid,
         });
         return updated;

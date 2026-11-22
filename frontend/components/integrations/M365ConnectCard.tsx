@@ -159,8 +159,8 @@ export function M365ConnectCard() {
       <div className="flex flex-1 flex-col gap-3 p-4">
         <p className="text-[13px] leading-relaxed text-secondary">
           Link your Microsoft 365 account to import your Outlook contacts as leads — each flows through
-          the same pipeline as every other source. Nothing is copied twice; identity resolves in
-          Contact-Ops.
+          the same pipeline as every other source. Nothing is copied twice; each person is matched
+          to your contacts.
         </p>
 
         {/* ── Dormant: not configured on this deployment ── */}
