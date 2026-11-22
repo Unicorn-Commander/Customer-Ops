@@ -13,8 +13,9 @@
 #              and the two onboarding integration specs
 #              (contact-link + workspace-onboarding) RUN against an isolated
 #              `customer_onboarding_test` scratch database on the same service
-#              (0 skipped; see the "Create the isolated onboarding test database"
-#              step).
+#              (0 skipped; `prisma migrate deploy` creates that missing
+#              database, see the "Apply migrations to the isolated onboarding
+#              test DB" step).
 #   frontend — install, typecheck, production build, lint, and run the node --test
 #              specs (contact picker + Connect-your-AI panel).
 #   tenancy  — the exit-coded, hermetic scripts/verify-tenancy.sh (boots its own
@@ -118,22 +119,6 @@ jobs:
         # + executed by ts-jest instead.
         run: npx eslint "src/**/*.ts"
 
-      - name: Create the isolated onboarding test database
-        # Batch 288d14db item 5: the two onboarding integration specs need their
-        # own scratch database on the service host (their guard refuses every
-        # other host and every non-_test database name). The connect URL drops
-        # the `?schema=public` tail (psql rejects it; Prisma adds it itself), and
-        # the EXISTS check runs as the owner in that database so it never scans
-        # a foreign catalog. Idempotent so re-runs on a recycled service
-        # container stay green.
-        run: |
-          CONNECT_URL="$(printf '%s' "$CUSTOMER_ONBOARDING_TEST_DB_URL" | sed 's/[?&]schema=public//')"
-          psql "$CONNECT_URL" -tAc "SELECT 1" >/dev/null 2>&1 \
-            || psql "postgresql://localhost:5432/customer_ops" \
-                 -c "CREATE DATABASE customer_onboarding_test"
-        env:
-          CUSTOMER_ONBOARDING_TEST_DB_URL: ${{ env.CUSTOMER_ONBOARDING_TEST_DB_URL }}
-
       - name: Apply migrations to the service DB (schema + RLS + roles)
         # As the owner/admin — the same command the backend entrypoint runs. This
         # creates the customer_ops_app runtime role (NOBYPASSRLS, password
@@ -145,7 +130,9 @@ jobs:
       - name: Apply migrations to the isolated onboarding test DB
         # Same migration history, applied to the scratch database the two
         # onboarding integration specs run against (their guard requires the
-        # _test database name on the service host in CI).
+        # _test database name on the service host in CI). No CREATE DATABASE
+        # step: `prisma migrate deploy` creates the missing database for
+        # PostgreSQL, so no psql client is needed on the runner.
         run: npx prisma migrate deploy
         env:
           DATABASE_URL: ${{ env.CUSTOMER_ONBOARDING_TEST_DB_URL }}
