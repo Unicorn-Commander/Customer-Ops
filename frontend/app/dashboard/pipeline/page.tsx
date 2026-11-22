@@ -216,7 +216,7 @@ function EmptyState({ onAddRelationship }: { onAddRelationship: () => void }) {
         </div>
         <h2 className="mt-4 text-lg font-semibold text-primary">Your funnel is empty</h2>
         <p className="mt-1.5 text-sm leading-relaxed text-tertiary">
-          Add a relationship to start working it through the funnel — source a lead, qualify it to a
+          Add a relationship to start working it through the funnel: source a lead, qualify it to a
           prospect, then convert. Contacts federate in from Contact-Ops.
         </p>
         <div className="mt-5 flex justify-center">
