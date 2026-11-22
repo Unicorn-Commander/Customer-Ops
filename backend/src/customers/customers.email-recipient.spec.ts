@@ -1,6 +1,10 @@
 import { BadRequestException } from '@nestjs/common';
 import { RelationshipStage, User } from '@prisma/client';
-import { CustomersService, NO_RECIPIENT_MESSAGE } from './customers.service';
+import {
+  CustomersService,
+  EMAIL_NOT_CONNECTED_MESSAGE,
+  NO_RECIPIENT_MESSAGE,
+} from './customers.service';
 import { WorkspaceContextService } from '../common/workspace/workspace-context.service';
 import { entitlementsOf, WithWorkspaceClaim } from '../common/workspace/workspace.util';
 import { ContactOpsPort } from '../contact-ops/contact-ops.port';
@@ -148,6 +152,18 @@ describe('provisional lead email recipient (AUD-CR-3)', () => {
     expect(err).toBeInstanceOf(BadRequestException);
     expect(err.message).toBe(NO_RECIPIENT_MESSAGE);
     expect(err.message).not.toMatch(/Customer-Ops|Contact-Ops|does not store/);
+    expect(email.composeEmail).not.toHaveBeenCalled();
+  });
+
+  it('email not connected for the deployment: plain-words 400 naming no component or env', async () => {
+    const { svc, email } = makeService({ intakeEmail: 'rosa@lead.example.com' });
+    (email.isConfigured as jest.Mock).mockReturnValue(false);
+    const err = await svc
+      .sendEmailForUser(user, 'cust-1', { subject: 'Hi', body: 'b' }, WS)
+      .catch((e) => e);
+    expect(err).toBeInstanceOf(BadRequestException);
+    expect(err.message).toBe(EMAIL_NOT_CONNECTED_MESSAGE);
+    expect(err.message).not.toMatch(/-Ops|EMAIL_OPS|BASE_URL|federat|mail server/i);
     expect(email.composeEmail).not.toHaveBeenCalled();
   });
 });

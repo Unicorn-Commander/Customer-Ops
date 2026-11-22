@@ -274,6 +274,10 @@ const CONTACT_OPS_NOT_CONNECTED_MESSAGE =
 export const NO_RECIPIENT_MESSAGE =
   "We don't have an email address for this person yet. Type one in the To field and try again.";
 
+/** Email is not switched on for this deployment at all (AUD-CR-3 review). */
+export const EMAIL_NOT_CONNECTED_MESSAGE =
+  'Email is not connected here yet, so the message was not sent. Ask your workspace owner, or write to support@unicorncommander.ai and we will set it up.';
+
 /** The mail service refused the message; retrying will not help (AUD-CR-4). */
 export const EMAIL_NOT_ACCEPTED_MESSAGE =
   "Email isn't set up for this workspace yet, so the message was not sent. Ask your workspace owner, or write to support@unicorncommander.ai and we will set it up.";
@@ -1544,11 +1548,9 @@ export class CustomersService {
     const mode = dto.mode ?? 'draft';
 
     if (!this.emailOps.isConfigured()) {
-      throw new BadRequestException(
-        'Email-Ops is not connected for this deployment. Set EMAIL_OPS_BASE_URL to ' +
-          'enable email. (Customer-Ops federates mailboxes to the Email-Ops app; it ' +
-          'is not a mail server.)',
-      );
+      // Plain words for the customer; the operator detail goes to the log.
+      this.logger.warn(`Email ${mode} refused: EMAIL_OPS_BASE_URL is not set`);
+      throw new BadRequestException(EMAIL_NOT_CONNECTED_MESSAGE);
     }
     const gate = this.emailOps.checkEntitlement(fedCtx);
     if (!gate.allowed) {
