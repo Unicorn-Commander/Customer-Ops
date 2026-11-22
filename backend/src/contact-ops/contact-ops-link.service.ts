@@ -14,8 +14,8 @@
  * Service, delegated and federation callers never reach it (AuthService), and
  * Contact-Ops calls only read the row: a read-only caller writes nothing.
  *
- * Idempotent and bounded: a workspace is remembered as linked only after the row
- * exists; one lookup per workspace is in flight at a time; a lookup that finds
+ * Idempotent and bounded: the stored row is re-read on every attempt (nothing is
+ * cached as linked, so a row removed later is never assumed); one lookup per workspace is in flight at a time; a lookup that finds
  * no tenant is retried after RETRY_MS, not on every request. An existing row
  * (including one marked in conflict) is left to the provisioner's rules and the
  * backfill; this service never writes over it.
@@ -32,7 +32,6 @@ export const CONTACT_LINK_RETRY_MS = 60_000;
 @Injectable()
 export class ContactOpsLinkService {
   private readonly logger = new Logger(ContactOpsLinkService.name);
-  private readonly linked = new Set<string>();
   private readonly inFlight = new Map<string, Promise<boolean>>();
   private readonly lastMiss = new Map<string, number>();
   private readonly lastPerson = new Map<string, number>();
@@ -70,7 +69,6 @@ export class ContactOpsLinkService {
    */
   async ensureLinked(workspaceId: string, now: number = Date.now()): Promise<boolean> {
     if (!workspaceId || !this.lookup.isConfigured()) return false;
-    if (this.linked.has(workspaceId)) return true;
     const pending = this.inFlight.get(workspaceId);
     if (pending) return pending;
     const missedAt = this.lastMiss.get(workspaceId);
@@ -92,13 +90,15 @@ export class ContactOpsLinkService {
         },
         select: { targetWorkspaceId: true },
       });
+      // Read the stored row every time (cheap, and only at a person's sign-in):
+      // a row removed later (conflict repair, manual fix) is never assumed.
       if (existing) {
-        this.markLinked(workspaceId);
+        this.lastMiss.delete(workspaceId);
         return true;
       }
       const outcome = await this.provisioner.ensureForOrg(workspaceId);
       if (outcome.kind === 'written' || outcome.kind === 'already') {
-        this.markLinked(workspaceId);
+        this.lastMiss.delete(workspaceId);
         return true;
       }
       // conflict: a row exists but is not routable; skipped: no tenant yet.
@@ -109,10 +109,5 @@ export class ContactOpsLinkService {
       this.logger.warn(`contact-ops link for ${workspaceId} not written: ${(error as Error).name}`);
       return false;
     }
-  }
-
-  private markLinked(workspaceId: string): void {
-    this.linked.add(workspaceId);
-    this.lastMiss.delete(workspaceId);
   }
 }

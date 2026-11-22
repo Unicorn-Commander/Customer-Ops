@@ -246,7 +246,7 @@ describe('Contact-Ops link at first sign-in (AUD-CR-1)', () => {
     expect(lookups).toEqual([ORG, ORG]);
     expect(prisma.rows).toHaveLength(1);
 
-    // Idempotent: linked workspaces are never asked again.
+    // Idempotent: a linked workspace reads its row and never asks the lookup.
     expect(await links.ensureLinked(ORG, t0 + 10 * CONTACT_LINK_RETRY_MS)).toBe(true);
     expect(lookups).toEqual([ORG, ORG]);
     expect(prisma.rows).toHaveLength(1);
@@ -335,6 +335,24 @@ describe('Contact-Ops link at first sign-in (AUD-CR-1)', () => {
     expect(await client.isWorkspaceConnected({ workspaceId: ORG, ucUid: null })).toBe(false);
     expect(lookups).toEqual([]);
     expect(prisma.rows).toEqual([]);
+  });
+
+  it('a link row removed later is noticed: nothing is remembered as linked in memory', async () => {
+    tenants[ORG] = TENANT;
+    const t0 = 1_000_000;
+    expect(await links.ensureLinked(ORG, t0)).toBe(true);
+    expect(prisma.rows).toHaveLength(1);
+
+    // Conflict repair / manual fix deletes the row; Contact-Ops no longer has it.
+    prisma.rows.length = 0;
+    delete tenants[ORG];
+    expect(await links.ensureLinked(ORG, t0 + 1)).toBe(false);
+    expect(lookups).toEqual([ORG, ORG]);
+
+    // The tenant comes back: linked again after the back-off, one row.
+    tenants[ORG] = TENANT;
+    expect(await links.ensureLinked(ORG, t0 + 1 + CONTACT_LINK_RETRY_MS)).toBe(true);
+    expect(prisma.rows).toHaveLength(1);
   });
 
   it('never writes over an existing row', async () => {
