@@ -51,7 +51,7 @@ export function EmailPanel(props: {
     >
       {!panel.configured ? (
         <ConnectNotice app="Email-Ops">
-          Mailboxes are federated to Email-Ops (the Stalwart mail surface) — Customer-Ops never stores message content.
+          Mailboxes are federated to Email-Ops (the Stalwart mail surface); Customer-Ops never stores message content.
         </ConnectNotice>
       ) : (
         <>
