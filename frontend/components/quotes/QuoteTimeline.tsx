@@ -100,7 +100,7 @@ function detail(event: QuoteEvent): string | null {
   const num = (k: string): number | null => (typeof d[k] === 'number' ? (d[k] as number) : null);
   switch (event.kind) {
     case 'created':
-      return str('via') ? `via ${str('via')}${str('assumed') ? ` — assumed ${str('assumed')}` : ''}` : null;
+      return str('via') ? `via ${str('via')}${str('assumed') ? `; assumed ${str('assumed')}` : ''}` : null;
     case 'updated':
       return Array.isArray(d.fields) ? `fields: ${(d.fields as string[]).join(', ')}` : null;
     case 'sent':
