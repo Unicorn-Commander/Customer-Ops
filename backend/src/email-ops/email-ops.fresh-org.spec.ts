@@ -26,7 +26,9 @@ import { ContactOpsPort } from '../contact-ops/contact-ops.port';
  * it goes on the wire unchanged and a compose Email-Ops accepts succeeds.
  * Whether the deployed Email-Ops knows a brand-new id is NOT provable here
  * (Email-Ops is another repo); if it refuses, the customer gets a plain reason,
- * no "retry" that cannot work, and no orphan link row.
+ * no "retry" that cannot work, and no orphan link row. Contract note and the
+ * open owner decision: docs/ops/email-ops-fresh-org-contract.md (the test
+ * below keeps that note's table honest).
  *
  * Fictional people and hosts (example.com) only.
  */
@@ -200,4 +202,16 @@ describe('compose_email for a freshly provisioned org (AUD-CR-4)', () => {
       expect(emailLinks).toHaveLength(1);
     },
   );
+
+  it('the contract note exists and matches the classes this client uses', () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { readFileSync } = require('fs');
+    const note: string = readFileSync(
+      require('path').join(__dirname, '../../../docs/ops/email-ops-fresh-org-contract.md'),
+      'utf8',
+    );
+    expect(note).toMatch(/HTTP 400\/404\/409\/422 \| refused/);
+    expect(note).toMatch(/HTTP 401\/403 \(our credential rejected\) \| unavailable/);
+    expect(note).toMatch(/unverified/i);
+  });
 });
