@@ -102,7 +102,7 @@ export default function GlobalError({
             Customer-Ops couldn&rsquo;t start
           </h1>
           <p style={{ margin: '10px auto 0', maxWidth: 340, fontSize: 14, lineHeight: 1.55, color: C.tertiary }}>
-            Something failed before the app could load. This is almost always temporary — reloading
+            Something failed before the app could load. This is almost always temporary; reloading
             usually clears it.
           </p>
           <button
