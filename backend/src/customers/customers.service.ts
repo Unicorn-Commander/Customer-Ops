@@ -274,6 +274,11 @@ const CONTACT_OPS_NOT_CONNECTED_MESSAGE =
 export const NO_RECIPIENT_MESSAGE =
   "We don't have an email address for this person yet. Type one in the To field and try again.";
 
+/** Prisma "record to update not found" (P2025). */
+function isRecordNotFound(error: unknown): boolean {
+  return (error as { code?: string } | null)?.code === 'P2025';
+}
+
 /** Email is not switched on for this deployment at all (AUD-CR-3 review). */
 export const EMAIL_NOT_CONNECTED_MESSAGE =
   'Email is not connected here yet, so the message was not sent. Ask your workspace owner, or write to support@unicorncommander.ai and we will set it up.';
@@ -1675,10 +1680,28 @@ export class CustomersService {
     const refreshed = await this.workspaces.runForUser(
       user,
       async (tx) => {
-        const updated = await tx.customerEmailLink.update({
-          where: { id: link.id },
-          data: this.emailCacheUpdate(result),
-        });
+        const updated = await tx.customerEmailLink
+          .update({ where: { id: link.id }, data: this.emailCacheUpdate(result) })
+          .catch((error: unknown) => {
+            // A concurrent attempt on the same key that Email-Ops refused may
+            // have removed the staged row (it removes only one with no message).
+            // Re-create it so an accepted message never loses its link.
+            if (!isRecordNotFound(error)) throw error;
+            return tx.customerEmailLink.create({
+              data: {
+                workspaceId: link.workspaceId,
+                customerId,
+                contactId: link.contactId,
+                mode,
+                externalSource,
+                externalRef,
+                threadId: link.threadId ?? null,
+                subject: dto.subject,
+                createdByUcUid: ucUid || null,
+                ...this.emailCacheUpdate(result),
+              } as Prisma.CustomerEmailLinkUncheckedCreateInput,
+            });
+          });
         await this.logActivity(tx, updated.workspaceId, customerId, {
           kind: CustomerActivityKind.EMAIL_SENT,
           body:

@@ -86,7 +86,11 @@ function setup(answer: () => Response | Promise<Response>) {
         emailLinks.push(r);
         return r;
       }),
-      update: jest.fn(async ({ data }: any) => Object.assign(emailLinks[0], data)),
+      update: jest.fn(async ({ where, data }: any) => {
+        const r = emailLinks.find((l) => l.id === where.id);
+        if (!r) throw Object.assign(new Error('Record to update not found.'), { code: 'P2025' });
+        return Object.assign(r, data);
+      }),
       deleteMany: jest.fn(async ({ where }: any) => {
         const i = emailLinks.findIndex((l) => l.id === where.id && l.messageId === null);
         if (i >= 0) emailLinks.splice(i, 1);
@@ -213,5 +217,34 @@ describe('compose_email for a freshly provisioned org (AUD-CR-4)', () => {
     expect(note).toMatch(/HTTP 400\/404\/409\/422 \| refused/);
     expect(note).toMatch(/HTTP 401\/403 \(our credential rejected\) \| unavailable/);
     expect(note).toMatch(/unverified/i);
+  });
+
+  it('a concurrent refused attempt removed the staged row: the accepted message still gets its link', async () => {
+    let removeStaged = () => undefined as void;
+    const { svc, emailLinks } = setup(() => {
+      // Between staging and the answer, a parallel attempt on the same key was
+      // refused and removed the (message-less) staged row.
+      removeStaged();
+      return rpc({
+        structuredContent: {
+          id: 'msg-1',
+          thread_id: 't-1',
+          status: 'pending_approval',
+          mode: 'draft',
+          external_source: 'customer-ops',
+          external_ref: 'x',
+          created_at: '2026-11-21T00:00:00Z',
+        },
+      });
+    });
+    removeStaged = () => void emailLinks.splice(0, emailLinks.length);
+    const out = await svc.sendEmailForUser(user, 'cust-1', DTO, FRESH_ORG);
+    expect(out.message.id).toBe('msg-1');
+    expect(emailLinks).toHaveLength(1);
+    expect(emailLinks[0]).toMatchObject({
+      messageId: 'msg-1',
+      workspaceId: FRESH_ORG,
+      externalRef: 'cust:cust-1:email:k-1',
+    });
   });
 });
