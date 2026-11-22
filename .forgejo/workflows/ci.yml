@@ -56,6 +56,8 @@ jobs:
     # all RLS policies + grants, exactly as the backend entrypoint does at boot.
     # POSTGRES_MULTIPLE_DATABASES also creates the isolated
     # customer_onboarding_test DB the two workspace integration specs need.
+    # Jobs reach the service by hostname (postgres:5432) — no host port mapping,
+    # which would collide when the runner runs several jobs at once.
     services:
       postgres:
         image: postgres:17
@@ -64,12 +66,6 @@ jobs:
           POSTGRES_PASSWORD: verify_admin
           POSTGRES_DB: customerops
           POSTGRES_MULTIPLE_DATABASES: customer_onboarding_test
-        # The RLS spec + DATABASE_URL reach the service by hostname
-        # (postgres:5432). The workspace integration specs additionally need
-        # 127.0.0.1 reachability (their URL guard rejects any other hostname)
-        # — their dedicated DB is published on a pinned job-side port.
-        ports:
-          - 54332:5432
         options: >-
           --health-cmd="pg_isready -U customer_ops_admin -d customerops"
           --health-interval=5s
@@ -89,14 +85,12 @@ jobs:
       # The two workspace integration specs (contact-link + workspace-onboarding,
       # 30 tests) require an ISOLATED database so they never see customerops'
       # bootstrap workspace (seeded by the role migration) or its test rows.
-      # Their guard pins the URL hostname to `127.0.0.1` and the path to
-      # `/customer_onboarding_test` — the service's internal name `postgres`
-      # would fail it — so the service's port is published job-side (54332) and
-      # this URL reaches the same Postgres over localhost.
-      # The role is `customer_ops_admin` (BYPASSRLS owner, the migration runner):
-      # the specs create their own rows/tables there and the schema's RLS
-      # policies never fence the owner; the customer_ops_app NOBYPASSRLS role is
-      # not what these specs exercise.
+      # Same service, host and port as the RLS URLs above (postgres:5432 — the
+      # only host:port this job actually serves; the published-port variant
+      # failed CI) and the same `customer_ops_admin` owner role: the specs create
+      # their own rows/tables there and the schema's RLS policies never fence
+      # the owner, so the customer_ops_app NOBYPASSRLS role is not what these
+      # specs exercise.
       CUSTOMER_ONBOARDING_TEST_DB_URL: postgresql://localhost:5432/customer_ops
 
     steps:
@@ -125,28 +119,23 @@ jobs:
         # + executed by ts-jest instead.
         run: npx eslint "src/**/*.ts"
 
-      - name: Apply migrations to the service DBs (schema + RLS + roles)
+      - name: Apply migrations to the service DB (schema + RLS + roles)
         # As the owner/admin — the same command the backend entrypoint runs. This
         # creates the customer_ops_app runtime role (NOBYPASSRLS, password
-        # verify_app) so the RLS spec below can connect as it. Runs against BOTH
-        # databases: customerops (the main suite) and customer_onboarding_test
-        # (the isolated workspace integration specs, which read the URL guard
-        # and would otherwise find no tables).
-        run: |
-          npx prisma migrate deploy
-          DATABASE_URL=postgresql://localhost:5432/customer_ops npx prisma migrate deploy
+        # verify_app) so the RLS spec below can connect as it.
+        run: npx prisma migrate deploy
         env:
           DATABASE_URL: ${{ env.ADMIN_DATABASE_URL }}
 
       - name: Test (jest --ci, incl. the RLS integration proof)
         # DATABASE_URL is set for any code path that reads it; the RLS spec uses
         # CUSTOMER_OPS_RLS_TEST_DATABASE_URL (app role) + the owner URL above.
-        # Bounded workers: jest defaults to one worker per visible core (40 on the
-        # legacy1 runner), and ts-jest workers that many SIGKILL inside the job's
-        # 8 GB memory cap ("worker terminated by another process").
+        # The two workspace integration specs use
+        # CUSTOMER_ONBOARDING_TEST_DB_URL (job env above). Bounded workers: jest
+        # defaults to one worker per visible core (40 on the legacy1 runner), and
+        # ts-jest workers that many SIGKILL inside the job's 8 GB memory cap
+        # ("worker terminated by another process").
         run: npx jest --ci --maxWorkers=3
-        env:
-          DATABASE_URL: ${{ env.ADMIN_DATABASE_URL }}
 
   # --------------------------------------------------------------------------
   # FRONTEND — typecheck + production build + lint + node --test specs.
