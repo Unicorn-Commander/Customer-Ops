@@ -3,7 +3,7 @@ import './globals.css';
 import './theme.css';
 
 export const metadata: Metadata = {
-  title: 'Customer-Ops — relationship cockpit',
+  title: 'Customer-Ops: relationship cockpit',
   description: 'The relationship / funnel cockpit of the Unicorn Commander suite.',
 };
 
