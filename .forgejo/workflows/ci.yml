@@ -54,10 +54,6 @@ jobs:
     # the full suite tenancy role split — including the NOBYPASSRLS runtime role
     # `customer_ops_app` with the deterministic dev password `verify_app` — and
     # all RLS policies + grants, exactly as the backend entrypoint does at boot.
-    # POSTGRES_MULTIPLE_DATABASES also creates the isolated
-    # customer_onboarding_test DB the two workspace integration specs need.
-    # Jobs reach the service by hostname (postgres:5432) — no host port mapping,
-    # which would collide when the runner runs several jobs at once.
     services:
       postgres:
         image: postgres:17
@@ -65,7 +61,9 @@ jobs:
           POSTGRES_USER: customer_ops_admin
           POSTGRES_PASSWORD: verify_admin
           POSTGRES_DB: customerops
-          POSTGRES_MULTIPLE_DATABASES: customer_onboarding_test
+        # No host `ports:` mapping: jobs reach the service by hostname
+        # (postgres:5432), and a pinned host port collides when the runner
+        # runs several jobs at once.
         options: >-
           --health-cmd="pg_isready -U customer_ops_admin -d customerops"
           --health-interval=5s
@@ -82,16 +80,6 @@ jobs:
       # The spec's out-of-band owner client (seeds/cleans the non-RLS control
       # table). Falls back to the app URL if unset; we point it at the owner.
       CUSTOMER_OPS_RLS_OWNER_DATABASE_URL: postgresql://localhost:5432/customer_ops
-      # The two workspace integration specs (contact-link + workspace-onboarding,
-      # 30 tests) require an ISOLATED database so they never see customerops'
-      # bootstrap workspace (seeded by the role migration) or its test rows.
-      # Same service, host and port as the RLS URLs above (postgres:5432 — the
-      # only host:port this job actually serves; the published-port variant
-      # failed CI) and the same `customer_ops_admin` owner role: the specs create
-      # their own rows/tables there and the schema's RLS policies never fence
-      # the owner, so the customer_ops_app NOBYPASSRLS role is not what these
-      # specs exercise.
-      CUSTOMER_ONBOARDING_TEST_DB_URL: postgresql://localhost:5432/customer_ops
 
     steps:
       - name: Checkout
@@ -130,12 +118,14 @@ jobs:
       - name: Test (jest --ci, incl. the RLS integration proof)
         # DATABASE_URL is set for any code path that reads it; the RLS spec uses
         # CUSTOMER_OPS_RLS_TEST_DATABASE_URL (app role) + the owner URL above.
-        # The two workspace integration specs use
-        # CUSTOMER_ONBOARDING_TEST_DB_URL (job env above). Bounded workers: jest
-        # defaults to one worker per visible core (40 on the legacy1 runner), and
-        # ts-jest workers that many SIGKILL inside the job's 8 GB memory cap
-        # ("worker terminated by another process").
+        # contact-link + workspace-onboarding integration specs not run here: they
+        # require the DB at 127.0.0.1 (spec guard); Customer-Ops batch item
+        # Bounded workers: jest defaults to one worker per visible core (40 on the
+        # legacy1 runner), and ts-jest workers that many SIGKILL inside the job's
+        # 8 GB memory cap ("worker terminated by another process").
         run: npx jest --ci --maxWorkers=3
+        env:
+          DATABASE_URL: ${{ env.ADMIN_DATABASE_URL }}
 
   # --------------------------------------------------------------------------
   # FRONTEND — typecheck + production build + lint + node --test specs.
