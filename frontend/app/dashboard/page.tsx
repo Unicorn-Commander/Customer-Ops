@@ -46,7 +46,7 @@ export default function DashboardHome() {
       try {
         const ws = await resolveWorkspaceId();
         if (!ws) {
-          setError('No workspace membership yet — an allow-listed user is seeded into the bootstrap workspace on first sign-in.');
+          setError('No workspace membership yet. An allow-listed user is seeded into the bootstrap workspace on first sign-in.');
           return;
         }
         const [b, c] = await Promise.all([getPipeline(ws), listCustomers(ws)]);
