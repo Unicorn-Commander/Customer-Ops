@@ -220,11 +220,6 @@ suite('Contact connection actual HTTP and isolated PostgreSQL', () => {
       // provisioner, which writes the tenant the org lookup names for this org:
       // never the refused target. (The sign-in write races the assertion, so
       // there is no strict zero-count invariant.)
-      // beforeEach sets lookupTenant = target, so a legitimate sign-in
-      // provisioner row for ws targets target and is expected. The real
-      // invariant: every row for ws is contact-ops and targets the tenant the
-      // org lookup names (lookupTenant). No strict count (the sign-in write
-      // races the assertion).
       const rows = await settledRows(ws);
       expect(rows.every((r) => r.targetApp === 'contact-ops' && sameTenant(r.targetWorkspaceId, lookupTenant))).toBe(true);
     },
@@ -250,26 +245,38 @@ suite('Contact connection actual HTTP and isolated PostgreSQL', () => {
   });
   it('refuses (409) a target the Contact-Ops org lookup does not name for this org (R3-2)', async () => {
     const otherTenant = randomUUID();
+    const loopWs: string[] = [];
     for (const named of [otherTenant, null]) {
-      // A fresh workspace per iteration: the sign-in provisioner's non-awaited
-      // write for a prior iteration (or a prior test) would otherwise land on
-      // this workspace and accumulate rows. The refused request itself makes no
-      // remote call and writes nothing.
-      ws = randomUUID();
-      await db.workspace.create({ data: { id: ws, slug: ws, displayName: 'Synthetic link test' } });
+      // A fresh workspace per iteration (a LOCAL id, not the shared suite ws):
+      // the sign-in provisioner's non-awaited write for a prior iteration (or a
+      // prior test) would otherwise land on this workspace and accumulate rows,
+      // and reassigning the shared ws would leak the loop's workspaces into the
+      // next test's beforeEach. The refused request itself makes no remote call
+      // and writes nothing.
+      const loopWsId = randomUUID();
+      loopWs.push(loopWsId);
+      await db.workspace.create({ data: { id: loopWsId, slug: loopWsId, displayName: 'Synthetic link test' } });
       await db.membership.createMany({
         data: [
-          { userKey: owner.keycloakId!, workspaceId: ws, role: 'OWNER' },
-          { userKey: viewer.keycloakId!, workspaceId: ws, role: 'VIEWER' },
+          { userKey: owner.keycloakId!, workspaceId: loopWsId, role: 'OWNER' },
+          { userKey: viewer.keycloakId!, workspaceId: loopWsId, role: 'VIEWER' },
         ],
       });
       lookupTenant = named;
-      expect((await request(ownerToken)).status).toBe(409);
-      const rows = await settledRows(ws);
+      expect((await request(ownerToken, loopWsId)).status).toBe(409);
+      const rows = await settledRows(loopWsId);
       expect(rows.some((r) => r.targetWorkspaceId === target)).toBe(false);
       expect(rows.every((r) => r.targetApp === 'contact-ops' && sameTenant(r.targetWorkspaceId, named))).toBe(true);
     }
     expect(remoteCalls).toBe(0);
+    // Delete the loop's workspaces (and their memberships and map rows) so the
+    // sign-in provisioner's non-awaited writes for them cannot land during the
+    // next test.
+    for (const loopWsId of loopWs) {
+      await db.membership.deleteMany({ where: { workspaceId: loopWsId } });
+      await db.federationWorkspaceMap.deleteMany({ where: { localWorkspaceId: loopWsId } });
+      await db.workspace.delete({ where: { id: loopWsId } });
+    }
   });
   it('R4-1: repairs a row MARKED in conflict when the lookup names the target; else 409, unchanged', async () => {
     const old = randomUUID();
