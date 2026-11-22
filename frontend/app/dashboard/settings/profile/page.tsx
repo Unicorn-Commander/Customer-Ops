@@ -111,7 +111,7 @@ export default function ProfilePage() {
             </Link>
             <h1 className="mt-0.5 text-lg font-semibold tracking-tight text-primary">Profile</h1>
             <p className="mt-1 max-w-2xl text-[13px] leading-relaxed text-tertiary">
-              Who you are across the suite. Your identity is managed through Unicorn Commander SSO —
+              Who you are across the suite. Your identity is managed through Unicorn Commander SSO;
               this cockpit reads it, it never owns it.
             </p>
           </div>
@@ -177,7 +177,7 @@ export default function ProfilePage() {
             <div className="min-w-0">
               <p className="text-[13px] font-medium text-secondary">Identity is managed through suite SSO</p>
               <p className="mt-0.5 text-xs leading-relaxed text-tertiary">
-                Your name, email, and sign-in are set in Unicorn Commander&rsquo;s single sign-on, not here —
+                Your name, email, and sign-in are set in Unicorn Commander&rsquo;s single sign-on, not here;
                 so they stay consistent across every app in the suite. Change them there and they update
                 automatically. Customer-Ops only reflects what SSO reports.
               </p>
