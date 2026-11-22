@@ -127,7 +127,7 @@ export default function CustomersPage() {
           <div>
             <h1 className="text-xl font-semibold tracking-tight text-primary">Relationships</h1>
             <p className="mt-0.5 max-w-xl text-sm text-tertiary">
-              The whole customer lifecycle: lead to prospect to customer. Contacts federate from
+              The whole customer lifecycle: lead → prospect → customer. Contacts federate from
               Contact-Ops; the relationship and stage live here.
             </p>
           </div>
