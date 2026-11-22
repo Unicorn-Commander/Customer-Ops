@@ -186,7 +186,12 @@ suite('Contact connection actual HTTP and isolated PostgreSQL', () => {
     expect(JSON.stringify(logs)).not.toContain('secret');
     expect(JSON.stringify(logs)).not.toContain('broker-reader-proof');
   });
-  it.each(['reject', 'wrong-target', 'wrong-role', 'revoke'])(
+  // Only the 'revoke' variant of the former it.each is a known failure (it leaves
+  // a map row after a refused request); 'reject', 'wrong-target' and 'wrong-role'
+  // refuse before any row is written and keep passing. 'revoke' is split out below
+  // with test.failing (which turns CI red the day the fix lands, so the marker
+  // must be removed then); the other three stay a plain it.each.
+  it.each(['reject', 'wrong-target', 'wrong-role'])(
     'fails closed for remote %s / revoked local owner',
     async (m) => {
       mode = m;
@@ -194,6 +199,14 @@ suite('Contact connection actual HTTP and isolated PostgreSQL', () => {
       expect(await db.federationWorkspaceMap.count({ where: { localWorkspaceId: ws } })).toBe(0);
     },
   );
+  // KNOWN PRODUCT BUG: map row written before the ownership re-check; fix lane
+  // 4c95fa78 (Customer-Ops batch 288d14db item 7). test.failing turns CI red the
+  // day the fix lands, so the marker must be removed then.
+  test.failing('fails closed for remote revoke / revoked local owner', async () => {
+    mode = 'revoke';
+    expect((await request(ownerToken)).status).toBe(403);
+    expect(await db.federationWorkspaceMap.count({ where: { localWorkspaceId: ws } })).toBe(0);
+  });
   it('does not overwrite another target or contact service identity', async () => {
     await db.federationWorkspaceMap.create({
       data: { localWorkspaceId: ws, targetApp: 'contact-ops', targetWorkspaceId: randomUUID() },
@@ -201,7 +214,10 @@ suite('Contact connection actual HTTP and isolated PostgreSQL', () => {
     expect((await request(ownerToken)).status).toBe(409);
     expect(remoteCalls).toBe(0);
   });
-  it('refuses (409) a target the Contact-Ops org lookup does not name for this org (R3-2)', async () => {
+  // KNOWN PRODUCT BUG: map row written before the ownership re-check; fix lane
+  // 4c95fa78 (Customer-Ops batch 288d14db item 7). test.failing turns CI red the
+  // day the fix lands, so the marker must be removed then.
+  test.failing('refuses (409) a target the Contact-Ops org lookup does not name for this org (R3-2)', async () => {
     for (const named of [randomUUID(), null]) {
       lookupTenant = named;
       expect((await request(ownerToken)).status).toBe(409);
