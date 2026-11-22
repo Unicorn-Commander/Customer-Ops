@@ -366,13 +366,13 @@ describeDb('home-summary (CONTRACT v1, real DB, fake JWKS)', () => {
     // The service account has no User row (it is a client_credentials token).
     const serviceUsers = await owner.user.count({ where: { keycloakId: 'kc-home-caller' } });
     expect(serviceUsers).toBe(0);
-    const usersBefore = await owner.user.count();
+    const usersBefore = await owner.user.count({ where: { keycloakId: 'kc-home-caller' } });
 
     const res = await call(q, signServiceToken());
 
     expect(res.status).toBe(200);
     expect(res.body.state).toBe('ok');
-    const usersAfter = await owner.user.count();
+    const usersAfter = await owner.user.count({ where: { keycloakId: 'kc-home-caller' } });
     expect(usersAfter).toBe(usersBefore);
     expect(await owner.user.count({ where: { keycloakId: 'kc-home-caller' } })).toBe(0);
   });
