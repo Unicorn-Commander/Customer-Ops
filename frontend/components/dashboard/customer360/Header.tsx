@@ -104,7 +104,7 @@ export function Customer360Header({
                   </a>
                 )}
                 {!contact && (
-                  <span className="text-[13px] text-tertiary">Contact details federate from Contact-Ops (currently unavailable)</span>
+                  <span className="text-[13px] text-tertiary">Contact details aren’t available right now</span>
                 )}
               </div>
               {/* tags */}

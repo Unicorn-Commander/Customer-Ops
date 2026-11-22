@@ -39,7 +39,7 @@ function ProjectPriorityTag({ priority }: { priority: ProjectPriority }) {
  */
 export function ProjectsPanel({ panel }: { panel: ProjectPanelData }) {
   const n = panel.projects.length;
-  const subtitle = panel.configured ? (n === 0 ? 'No projects yet' : `${n} project${n === 1 ? '' : 's'}`) : 'Project-Ops';
+  const subtitle = panel.configured ? (n === 0 ? 'No projects yet' : `${n} project${n === 1 ? '' : 's'}`) : 'Projects';
 
   return (
     <PanelSection
@@ -47,14 +47,14 @@ export function ProjectsPanel({ panel }: { panel: ProjectPanelData }) {
       gradient="from-amber-400 to-orange-500"
       title="Projects"
       subtitle={subtitle}
-      tag={<SourceTag configured={panel.configured} source="project-ops" />}
+      tag={<SourceTag configured={panel.configured} source="projects" />}
     >
       {!panel.configured ? (
-        <ConnectNotice app="Project-Ops">
-          Delivery &amp; project status is federated from Project-Ops — Customer-Ops never stores a project or task.
+        <ConnectNotice app="projects">
+          Delivery and project status come from your projects app. This page never stores a project or task.
         </ConnectNotice>
       ) : n === 0 ? (
-        <EmptyRow>No projects for this account in Project-Ops yet.</EmptyRow>
+        <EmptyRow>No projects for this account yet.</EmptyRow>
       ) : (
         <ul className="-mx-1 space-y-0.5">
           {panel.projects.map((p) => {

@@ -154,14 +154,14 @@ export function ContactCard({
       icon={Users}
       gradient="from-violet-500 to-fuchsia-500"
       title="Contact"
-      subtitle={contact ? (contact.kind ? `${contact.kind}${contact.status ? ` · ${contact.status}` : ''}${lifecycle ? ` · ${lifecycle}` : ''}` : 'Contact-Ops') : 'Contact-Ops'}
-      tag={<SourceTag configured={federation.resolved} source="contact-ops" />}
+      subtitle={contact ? (contact.kind ? `${contact.kind}${contact.status ? ` · ${contact.status}` : ''}${lifecycle ? ` · ${lifecycle}` : ''}` : 'Contact details') : 'Contact details'}
+      tag={<SourceTag configured={federation.resolved} source="contacts" />}
     >
       {!contact ? (
-        <ConnectNotice app="Contact-Ops">
-          Contact details federate from Contact-Ops and aren’t available right now. The relationship references
-          contactId <code className="rounded bg-surface-overlay px-1 py-0.5 font-mono text-[11px] text-tertiary">{contactId.slice(0, 12)}…</code>{' '}
-          — Customer-Ops holds the reference, never a copy.
+        <ConnectNotice app="contacts">
+          Contact details aren’t available right now. This relationship points to contact{' '}
+          <code className="rounded bg-surface-overlay px-1 py-0.5 font-mono text-[11px] text-tertiary">{contactId.slice(0, 12)}…</code>{' '}
+          and keeps only that reference, never a copy.
         </ConnectNotice>
       ) : (
         <div className="-my-1.5 divide-y divide-[rgb(var(--co-edge-subtle))]">

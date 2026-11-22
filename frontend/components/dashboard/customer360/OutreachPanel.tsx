@@ -39,7 +39,7 @@ export function OutreachPanel(props: {
       : `${panel.touches.length + panel.enrollments.length} touch${
           panel.touches.length + panel.enrollments.length === 1 ? '' : 'es'
         } · ${panel.campaigns.length} campaign${panel.campaigns.length === 1 ? '' : 's'}`
-    : 'Outreach · Listmonk + Postiz';
+    : 'Outreach';
 
   const channelIcon = (channel: string) =>
     channel === 'social' ? (
@@ -58,7 +58,7 @@ export function OutreachPanel(props: {
     >
       {!panel.configured ? (
         <ConnectNotice app="Outreach">
-          Campaigns are federated to Outreach (Listmonk + Postiz) — Customer-Ops never holds a recipient list.
+          Campaigns run in the Outreach app. This page never holds a recipient list.
         </ConnectNotice>
       ) : (
         <>
@@ -145,7 +145,7 @@ export function OutreachPanel(props: {
             )
           ) : (
             <EntitlementNotice>
-              Starting a campaign requires the Customer-Ops + Outreach entitlements. History is read-only.
+              Starting a campaign needs Customer-Ops and Outreach on your plan. History is read-only.
             </EntitlementNotice>
           )}
         </>

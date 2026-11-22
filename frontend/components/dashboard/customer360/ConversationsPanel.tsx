@@ -69,11 +69,11 @@ export function ConversationsPanel(props: {
       gradient="from-teal-400 to-emerald-500"
       title="Messages"
       subtitle={subtitle}
-      tag={<SourceTag configured={panel.configured} source="conversations-ops" />}
+      tag={<SourceTag configured={panel.configured} source="messages" />}
     >
       {!panel.configured ? (
-        <ConnectNotice app="the device bridge">
-          iMessage & SMS are federated from the worker&apos;s device (the UUDC messages bridge) — Customer-Ops never stores message content.
+        <ConnectNotice app="your phone">
+          iMessage and SMS come from your own device. This page never stores message content.
         </ConnectNotice>
       ) : (
         <>
@@ -182,7 +182,7 @@ export function ConversationsPanel(props: {
             )
           ) : (
             <EntitlementNotice>
-              Sending from the device requires the Customer-Ops entitlement and an enabled channel. Conversations are read-only.
+              Sending from your device needs Customer-Ops on your plan and a channel switched on. Conversations are read-only.
             </EntitlementNotice>
           )}
         </>
