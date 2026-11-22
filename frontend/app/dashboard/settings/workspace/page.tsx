@@ -312,7 +312,7 @@ export default function WorkspacePage() {
                 <h2 className="text-sm font-semibold text-primary">Members</h2>
                 <p className="mt-0.5 text-[13px] text-tertiary">
                   {canManage
-                    ? 'You’re an owner — you can change roles and remove members. The suite enforces the rules.'
+                    ? 'You’re an owner; you can change roles and remove members. The suite enforces the rules.'
                     : 'Everyone with access to this workspace. Roles are managed by an owner.'}
                 </p>
               </div>
@@ -393,7 +393,7 @@ function Header({
           </Link>
           <h1 className="mt-0.5 text-lg font-semibold tracking-tight text-primary">Workspace</h1>
           <p className="mt-1 max-w-2xl text-[13px] leading-relaxed text-tertiary">
-            Your workspace&rsquo;s identity and members. Each workspace stays fully separated — its own
+            Your workspace&rsquo;s identity and members. Each workspace stays fully separated; its own
             people, roles, and data.
           </p>
         </div>
@@ -457,7 +457,7 @@ function RemoveMemberModal({
           <h3 id={headingId} className="text-base font-semibold text-primary">Remove member?</h3>
           <p className="mt-1 text-sm text-tertiary">
             <span className="font-medium text-secondary">{name}</span> will lose access to this workspace
-            immediately. This doesn&rsquo;t delete their suite account — an owner can re-add them later.
+            immediately. This doesn&rsquo;t delete their suite account; an owner can re-add them later.
           </p>
         </div>
         {error && (
