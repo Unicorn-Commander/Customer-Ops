@@ -14,6 +14,15 @@
  * Service, delegated and federation callers never reach it (AuthService), and
  * Contact-Ops calls only read the row: a read-only caller writes nothing.
  *
+ * CONTRACT LIMIT (self-serve): the lookup is Contact-Ops' Ops-Center org
+ * lookup (GET /api/service/ops-center-orgs/{org_id}/tenant, Contact-Ops #42).
+ * It answers a tenant only for an Ops-Center org id; a self-serve workspace id
+ * (a uuidv7 minted here) is not an org id, so it answers 404 and nothing is
+ * written. A self-serve workspace is therefore linked only if Contact-Ops ever
+ * keys a tenant by that workspace id. Nothing here creates a Contact-Ops tenant;
+ * that needs a Contact-Ops change (owner decision). The self-serve retry is cheap:
+ * at most one lookup per person per back-off window, only at their sign-in.
+ *
  * Idempotent and bounded: the stored row is re-read on every attempt (nothing is
  * cached as linked, so a row removed later is never assumed); one lookup per workspace is in flight at a time; a lookup that finds
  * no tenant is retried after RETRY_MS, not on every request. An existing row

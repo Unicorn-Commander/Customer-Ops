@@ -206,7 +206,23 @@ describe('Contact-Ops link at first sign-in (AUD-CR-1)', () => {
     ]);
   });
 
-  it('self-serve workspace: first sign-in asks the lookup for the stored workspace id', async () => {
+  it('self-serve contract limit: the org lookup has no tenant for a minted workspace id, so nothing is written', async () => {
+    // Contact-Ops' lookup is keyed by Ops-Center org id; a self-serve uuidv7 is
+    // not one, so it answers 404 (the fake's default). Sign-in still succeeds.
+    process.env.CUSTOMER_OPS_SIGNUP_MODE = 'open';
+    const { svc } = authService();
+    await expect(
+      svc.validateKeycloakUser('kc-stranger', {
+        email: 'stranger@example.com',
+        email_verified: true,
+      }),
+    ).resolves.toMatchObject({ keycloakId: 'kc-stranger' });
+    await settle();
+    expect(lookups).toEqual([SELF_SERVE_WS]);
+    expect(prisma.rows).toEqual([]);
+  });
+
+  it('self-serve workspace: linked only if Contact-Ops keys a tenant by that workspace id', async () => {
     tenants[SELF_SERVE_WS] = TENANT_SELF;
     process.env.CUSTOMER_OPS_SIGNUP_MODE = 'open';
     const { svc, provisioning } = authService();
@@ -370,7 +386,10 @@ describe('Contact-Ops link at first sign-in (AUD-CR-1)', () => {
     expect((links as any).lastMiss.size).toBeLessThanOrEqual(CONTACT_LINK_MAX_TRACKED);
     expect((links as any).lastPerson.size).toBeLessThanOrEqual(CONTACT_LINK_MAX_TRACKED);
     // Entries past the window are what goes first.
-    await links.ensureLinked('0190c000-7e57-7000-8000-ffffffffffff', t0 + n + CONTACT_LINK_RETRY_MS);
+    await links.ensureLinked(
+      '0190c000-7e57-7000-8000-ffffffffffff',
+      t0 + n + CONTACT_LINK_RETRY_MS,
+    );
     expect((links as any).lastMiss.size).toBeLessThan(CONTACT_LINK_MAX_TRACKED);
   });
 
