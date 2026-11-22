@@ -151,7 +151,7 @@ export function LeadIngestion({
       if (res.resolved > 0 || res.provisionalUpgraded > 0) {
         showToast('ok', `Resolved ${res.resolved} · upgraded ${res.provisionalUpgraded} provisional`);
       } else if (res.scanned === 0) {
-        showToast('ok', 'Queue is clear — nothing pending to resolve.');
+        showToast('ok', 'Queue is clear; nothing pending to resolve.');
       } else {
         showToast('warn', `Scanned ${res.scanned}; ${res.stillOpen} still awaiting identity.`);
       }
@@ -181,11 +181,11 @@ export function LeadIngestion({
         : res.via === 'provisional' ? 'a provisional record'
           : null;
     if (res.resolved && where) {
-      showToast('ok', `Lead ingested — resolved via ${where}.`);
+      showToast('ok', `Lead ingested: resolved via ${where}.`);
     } else if (res.provisional) {
-      showToast('warn', 'Lead staged provisionally — Contact-Ops is dormant.');
+      showToast('warn', 'Lead staged provisionally; Contact-Ops is dormant.');
     } else {
-      showToast('ok', 'Lead ingested — pending identity resolution.');
+      showToast('ok', 'Lead ingested; pending identity resolution.');
     }
     return res;
   };
@@ -293,7 +293,7 @@ function Header({
             <ConnectionChip reachable={coReachable} />
           </div>
           <p className="mt-1 max-w-2xl text-sm text-tertiary">
-            The intake firehose for the lead pipeline — Northwind, Outreach, LoopNet, multistate and
+            The intake firehose for the lead pipeline: Northwind, Outreach, LoopNet, multistate and
             agents push graduated leads in. Resolve them to Contact-Ops identities, then promote to
             the funnel.
           </p>
@@ -336,8 +336,8 @@ function ConnectionChip({ reachable }: { reachable: boolean }) {
           : 'bg-warning/12 text-warning',
       )}
       title={reachable
-        ? 'Contact-Ops is reachable — leads resolve to real identities on ingest.'
-        : 'Contact-Ops is dormant — leads are staged provisionally and upgraded on the next resolve sweep.'}
+        ? 'Contact-Ops is reachable; leads resolve to real identities on ingest.'
+        : 'Contact-Ops is dormant; leads are staged provisionally and upgraded on the next resolve sweep.'}
     >
       {reachable
         ? <PlugZap className="h-3.5 w-3.5" strokeWidth={2.5} />
@@ -439,7 +439,7 @@ function PendingQueue({
                     {' '}awaiting a Contact-Ops match. Run a sweep to resolve them and upgrade any provisional records.
                   </>
                 ) : (
-                  <>The queue is clear — every ingested lead has been resolved to an identity.</>
+                  <>The queue is clear; every ingested lead has been resolved to an identity.</>
                 )}
               </p>
             </div>
@@ -636,7 +636,7 @@ function IntakeRow({ intake, onDiscard }: { intake: LeadIntake; onDiscard?: (id:
           {intake.provisional && (
             <span
               className="inline-flex items-center gap-1 rounded-full bg-accent/15 px-2 py-0.5 text-[11px] font-semibold text-accent"
-              title="Resolved against a provisional placeholder while Contact-Ops was dormant — will upgrade to a real identity on the next sweep."
+              title="Resolved against a provisional placeholder while Contact-Ops was dormant; will upgrade to a real identity on the next sweep."
             >
               <Sparkles className="h-3 w-3" strokeWidth={2.5} /> provisional
             </span>
@@ -1044,7 +1044,7 @@ function AddLeadDrawer({
           <Field
             label="Dedup key"
             required
-            hint="Idempotency seam — a re-push of the same source + key updates rather than duplicates."
+            hint="Idempotency seam: a re-push of the same source + key updates rather than duplicates."
           >
             <TextInput
               value={dedupKey}
