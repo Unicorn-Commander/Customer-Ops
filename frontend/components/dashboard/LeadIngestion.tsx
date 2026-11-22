@@ -185,7 +185,7 @@ export function LeadIngestion({
     } else if (res.provisional) {
       showToast('warn', 'Lead staged provisionally; Contact-Ops is dormant.');
     } else {
-      showToast('ok', 'Lead ingested; pending identity resolution.');
+      showToast('ok', 'Lead ingested, pending identity resolution.');
     }
     return res;
   };

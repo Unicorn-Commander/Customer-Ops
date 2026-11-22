@@ -393,7 +393,7 @@ function Header({
           </Link>
           <h1 className="mt-0.5 text-lg font-semibold tracking-tight text-primary">Workspace</h1>
           <p className="mt-1 max-w-2xl text-[13px] leading-relaxed text-tertiary">
-            Your workspace&rsquo;s identity and members. Each workspace stays fully separated; its own
+            Your workspace&rsquo;s identity and members. Each workspace stays fully separated: its own
             people, roles, and data.
           </p>
         </div>

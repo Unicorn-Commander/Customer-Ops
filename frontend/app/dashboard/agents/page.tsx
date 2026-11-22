@@ -216,7 +216,7 @@ function FollowUpCard({ result }: { result: FollowUpResult }) {
               Staged as an Email-Ops draft, awaiting your approval, not sent
             </p>
           ) : (
-            <p className="mt-2 text-[11px] text-muted">A draft. Copy it, or stage it from the Email panel; never auto-sent.</p>
+            <p className="mt-2 text-[11px] text-muted">A draft. Copy it, or stage it from the Email panel. Never auto-sent.</p>
           )}
         </>
       ) : (

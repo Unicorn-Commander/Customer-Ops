@@ -141,7 +141,7 @@ export function QuotePreview({
             {mode === 'studio' ? 'Internal notes visible' : 'Exactly what the client sees'}
           </Badge>
           {record.quote.brand_slug ? (
-            <Badge variant={live ? 'success' : 'neutral'} title={live ? 'Brand-Ops tokens applied' : 'Brand-Ops not reached; considered default'}>
+            <Badge variant={live ? 'success' : 'neutral'} title={live ? 'Brand-Ops tokens applied' : 'Brand-Ops not reached: considered default'}>
               {live ? `brand · ${record.quote.brand_slug}` : 'default palette'}
             </Badge>
           ) : null}

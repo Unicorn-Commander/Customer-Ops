@@ -111,7 +111,7 @@ const STEPS: TourStep[] = [
     eyebrow: 'Your Relations Officer',
     title: 'It proposes, you decide',
     body:
-      'Your AI colleague drafts follow-ups, triages leads, and suggests the next move; on your own models by default. It never sends or changes anything until you say so.',
+      'Your AI colleague drafts follow-ups, triages leads, and suggests the next move, on your own models by default. It never sends or changes anything until you say so.',
   },
 ];
 

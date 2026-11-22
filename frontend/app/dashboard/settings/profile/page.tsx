@@ -177,7 +177,7 @@ export default function ProfilePage() {
             <div className="min-w-0">
               <p className="text-[13px] font-medium text-secondary">Identity is managed through suite SSO</p>
               <p className="mt-0.5 text-xs leading-relaxed text-tertiary">
-                Your name, email, and sign-in are set in Unicorn Commander&rsquo;s single sign-on, not here;
+                Your name, email, and sign-in are set in Unicorn Commander&rsquo;s single sign-on, not here,
                 so they stay consistent across every app in the suite. Change them there and they update
                 automatically. Customer-Ops only reflects what SSO reports.
               </p>
