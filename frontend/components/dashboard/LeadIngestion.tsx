@@ -149,7 +149,12 @@ export function LeadIngestion({
       const res = await onResolvePending();
       setResolveResult(res);
       if (res.resolved > 0 || res.provisionalUpgraded > 0) {
-        showToast('ok', `Matched ${res.resolved} · linked ${res.provisionalUpgraded} saved leads to contacts`);
+        showToast(
+          'ok',
+          `Matched ${res.resolved} · linked ${res.provisionalUpgraded} saved ${
+            res.provisionalUpgraded === 1 ? 'lead' : 'leads'
+          } to contacts`,
+        );
       } else if (res.scanned === 0) {
         showToast('ok', 'Queue is clear — nothing pending to resolve.');
       } else {

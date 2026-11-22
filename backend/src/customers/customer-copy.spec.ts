@@ -69,5 +69,11 @@ const present = existsSync(FRONTEND);
       const hits = visibleStrings(src).filter((s) => INTERNAL.test(s) && !PLAN_NOTICE.test(s));
       expect(hits).toEqual([]);
     });
+
+    it('the lead-linking toast is singular for one lead', () => {
+      const src = readFileSync(join(FRONTEND, 'components/dashboard/LeadIngestion.tsx'), 'utf8');
+      expect(src).not.toMatch(/linked \$\{res\.provisionalUpgraded\} saved leads to contacts/);
+      expect(src).toMatch(/res\.provisionalUpgraded === 1 \? 'lead' : 'leads'/);
+    });
   },
 );
