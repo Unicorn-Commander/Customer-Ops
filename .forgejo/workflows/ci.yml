@@ -10,7 +10,8 @@
 #              (backend/src/customers/customers.rls.int.spec.ts) actually RUN as
 #              the NOBYPASSRLS `customer_ops_app` role instead of skipping via
 #              its `describeIfDb` guard — the tenant fence is proven on every PR.
-#   frontend — install, typecheck, production build, and lint.
+#   frontend — install, typecheck, production build, lint, and run the node --test
+#              specs (contact picker + Connect-your-AI panel).
 #   tenancy  — the exit-coded, hermetic scripts/verify-tenancy.sh (boots its own
 #              throwaway Postgres via docker and proves the RLS contract on every
 #              scoped table). Requires a docker-enabled runner.
@@ -117,6 +118,8 @@ jobs:
       - name: Test (jest --ci, incl. the RLS integration proof)
         # DATABASE_URL is set for any code path that reads it; the RLS spec uses
         # CUSTOMER_OPS_RLS_TEST_DATABASE_URL (app role) + the owner URL above.
+        # contact-link + workspace-onboarding integration specs not run here: they
+        # require the DB at 127.0.0.1 (spec guard); Customer-Ops batch item
         # Bounded workers: jest defaults to one worker per visible core (40 on the
         # legacy1 runner), and ts-jest workers that many SIGKILL inside the job's
         # 8 GB memory cap ("worker terminated by another process").
@@ -125,10 +128,10 @@ jobs:
           DATABASE_URL: ${{ env.ADMIN_DATABASE_URL }}
 
   # --------------------------------------------------------------------------
-  # FRONTEND — typecheck + production build + lint.
+  # FRONTEND — typecheck + production build + lint + node --test specs.
   # --------------------------------------------------------------------------
   frontend:
-    name: frontend (typecheck · build · lint)
+    name: frontend (typecheck · build · lint · test)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -162,6 +165,21 @@ jobs:
         # lint warning or error FAIL the job. `npm run lint` is `next lint
         # --max-warnings=0`.
         run: npm run lint
+
+      - name: Setup Node 22 for the test step (type stripping)
+        # The specs import .ts sources, so they need Node >= 22.6 type stripping.
+        # This step-only setup-node shadows the job's Node 20 for the one run
+        # below; the job's other steps keep their Node.
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Test (node --test, pure-logic frontend specs)
+        # lib/contactPicker.test.mjs and components/connect/ConnectYourAiPanel.
+        # test.mjs are dependency-free node:test specs over the TS helpers (they
+        # import .ts directly; --experimental-strip-types strips the types, Node
+        # >= 22.6). No network, no DB.
+        run: node --experimental-strip-types --test lib/contactPicker.test.mjs components/connect/ConnectYourAiPanel.test.mjs
 
   # --------------------------------------------------------------------------
   # TENANCY — the hermetic, exit-coded RLS acceptance harness. It boots its OWN
