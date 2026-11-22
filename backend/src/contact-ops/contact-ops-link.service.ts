@@ -29,6 +29,20 @@ import { CONTACT_OPS_TARGET_APP, ContactOpsMapProvisioner } from './contact-ops-
 /** How long to wait before asking the lookup again for a workspace with no tenant. */
 export const CONTACT_LINK_RETRY_MS = 60_000;
 
+/** Back-off entries kept in memory; past this, entries older than the window go. */
+export const CONTACT_LINK_MAX_TRACKED = 10_000;
+
+/** Record `key` at `now`, first dropping entries the back-off no longer needs
+ *  (older than the window) once the map is full, so memory stays bounded. */
+function remember(map: Map<string, number>, key: string, now: number): void {
+  if (map.size >= CONTACT_LINK_MAX_TRACKED && !map.has(key)) {
+    for (const [k, at] of map) if (now - at >= CONTACT_LINK_RETRY_MS) map.delete(k);
+    // Still full (all recent): drop the oldest insertion so the map never grows.
+    if (map.size >= CONTACT_LINK_MAX_TRACKED) map.delete(map.keys().next().value as string);
+  }
+  map.set(key, now);
+}
+
 @Injectable()
 export class ContactOpsLinkService {
   private readonly logger = new Logger(ContactOpsLinkService.name);
@@ -55,7 +69,7 @@ export class ContactOpsLinkService {
     if (!userKey || !this.lookup.isConfigured()) return;
     const last = this.lastPerson.get(userKey);
     if (last !== undefined && now - last < CONTACT_LINK_RETRY_MS) return;
-    this.lastPerson.set(userKey, now);
+    remember(this.lastPerson, userKey, now);
     try {
       for (const id of await workspaceIds()) await this.ensureLinked(id, now);
     } catch (error) {
@@ -102,10 +116,10 @@ export class ContactOpsLinkService {
         return true;
       }
       // conflict: a row exists but is not routable; skipped: no tenant yet.
-      this.lastMiss.set(workspaceId, now);
+      remember(this.lastMiss, workspaceId, now);
       return false;
     } catch (error) {
-      this.lastMiss.set(workspaceId, now);
+      remember(this.lastMiss, workspaceId, now);
       this.logger.warn(`contact-ops link for ${workspaceId} not written: ${(error as Error).name}`);
       return false;
     }

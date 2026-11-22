@@ -8,7 +8,11 @@ import { BrigadeTokenSource } from '../common/federation/brigade-token-source';
 import { ContactOpsClient } from './contact-ops.client';
 import { ContactOpsOrgLookupClient } from './contact-ops-org-lookup.client';
 import { ContactOpsMapProvisioner } from './contact-ops-map.provisioner';
-import { CONTACT_LINK_RETRY_MS, ContactOpsLinkService } from './contact-ops-link.service';
+import {
+  CONTACT_LINK_MAX_TRACKED,
+  CONTACT_LINK_RETRY_MS,
+  ContactOpsLinkService,
+} from './contact-ops-link.service';
 
 /**
  * AUD-CR-1: a brand-new org gets its Contact-Ops link row at first sign-in with
@@ -353,6 +357,21 @@ describe('Contact-Ops link at first sign-in (AUD-CR-1)', () => {
     tenants[ORG] = TENANT;
     expect(await links.ensureLinked(ORG, t0 + 1 + CONTACT_LINK_RETRY_MS)).toBe(true);
     expect(prisma.rows).toHaveLength(1);
+  });
+
+  it('back-off memory stays bounded however many workspaces and people miss', async () => {
+    const t0 = 1_000_000;
+    const n = CONTACT_LINK_MAX_TRACKED + 50;
+    for (let i = 0; i < n; i++) {
+      const ws = `0190c000-7e57-7000-8000-${i.toString(16).padStart(12, '0')}`;
+      await links.ensureLinked(ws, t0 + i);
+      await links.linkForPerson(`kc-${i}`, async () => [], t0 + i);
+    }
+    expect((links as any).lastMiss.size).toBeLessThanOrEqual(CONTACT_LINK_MAX_TRACKED);
+    expect((links as any).lastPerson.size).toBeLessThanOrEqual(CONTACT_LINK_MAX_TRACKED);
+    // Entries past the window are what goes first.
+    await links.ensureLinked('0190c000-7e57-7000-8000-ffffffffffff', t0 + n + CONTACT_LINK_RETRY_MS);
+    expect((links as any).lastMiss.size).toBeLessThan(CONTACT_LINK_MAX_TRACKED);
   });
 
   it('never writes over an existing row', async () => {
