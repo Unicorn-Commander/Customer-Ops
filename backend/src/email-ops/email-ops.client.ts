@@ -55,7 +55,13 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { BrigadeTokenSource } from '../common/federation/brigade-token-source';
 import { FederationWorkspaceMapService } from '../common/federation/federation-workspace-map.service';
-import { EmailOpsPort, FederationContext, AgentInboxObservation } from './email-ops.port';
+import {
+  EmailComposeFailure,
+  EmailComposeOutcome,
+  EmailOpsPort,
+  FederationContext,
+  AgentInboxObservation,
+} from './email-ops.port';
 import {
   EmailComposeRequest,
   EmailComposeResult,
@@ -79,6 +85,9 @@ interface JsonRpcResponse {
   result?: JsonRpcResult;
   error?: { code: number; message: string };
 }
+
+/** HTTP answers from Email-Ops that a retry will not change (AUD-CR-4). */
+const REFUSED_HTTP = new Set([400, 401, 403, 404, 409, 422]);
 
 /** Canonical suite SKU strings (must match Lago/Keycloak). */
 export const SKU_CUSTOMER_OPS = 'customer-ops';
@@ -281,8 +290,26 @@ export class EmailOpsClient extends EmailOpsPort {
     name: string,
     args: Record<string, unknown>,
   ): Promise<Record<string, unknown> | null> {
+    const r = await this.callToolDetailed(ctx, name, args);
+    return r.ok ? r.data : null;
+  }
+
+  /**
+   * callTool with the failure kind kept (AUD-CR-4): `refused` is an answer from
+   * Email-Ops itself (a tool error, a JSON-RPC error, or HTTP 400/401/403/404/
+   * 409/422) that a retry will not change; `unavailable` is transport, timeout,
+   * 408/429/5xx or an unreadable answer, which a retry may fix. Never throws.
+   */
+  private async callToolDetailed(
+    ctx: FederationContext,
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<
+    { ok: true; data: Record<string, unknown> } | { ok: false; failure: EmailComposeFailure }
+  > {
+    const fail = (failure: EmailComposeFailure) => ({ ok: false as const, failure });
     const base = this.baseUrl;
-    if (!base) return null;
+    if (!base) return fail('unavailable');
 
     const body = {
       jsonrpc: '2.0',
@@ -300,42 +327,42 @@ export class EmailOpsClient extends EmailOpsPort {
       });
     } catch (err) {
       this.logger.warn(`Email-Ops MCP ${name} transport error: ${(err as Error).message}`);
-      return null;
+      return fail('unavailable');
     }
 
     if (!res.ok) {
       this.logger.warn(`Email-Ops MCP ${name} HTTP ${res.status}`);
-      return null;
+      return fail(REFUSED_HTTP.has(res.status) ? 'refused' : 'unavailable');
     }
 
     const payload = this.parseRpc(await res.text());
     if (!payload) {
       this.logger.warn(`Email-Ops MCP ${name} unparseable response`);
-      return null;
+      return fail('unavailable');
     }
 
     if (payload.error) {
       this.logger.warn(`Email-Ops MCP ${name} JSON-RPC error: ${payload.error.message}`);
-      return null;
+      return fail('refused');
     }
 
     const result = payload.result;
     if (!result || result.isError) {
       const text = result?.content?.[0]?.text;
       this.logger.warn(`Email-Ops MCP ${name} tool error: ${text ?? 'unknown'}`);
-      return null;
+      return fail(result ? 'refused' : 'unavailable');
     }
 
-    if (result.structuredContent) return result.structuredContent;
+    if (result.structuredContent) return { ok: true, data: result.structuredContent };
     const text = result.content?.find((c) => c.type === 'text')?.text;
     if (text) {
       try {
-        return JSON.parse(text) as Record<string, unknown>;
+        return { ok: true, data: JSON.parse(text) as Record<string, unknown> };
       } catch {
-        return null;
+        return fail('unavailable');
       }
     }
-    return null;
+    return fail('unavailable');
   }
 
   /** Parse a JSON-RPC response that may arrive as plain JSON OR an SSE frame
@@ -600,7 +627,15 @@ export class EmailOpsClient extends EmailOpsPort {
     ctx: FederationContext,
     request: EmailComposeRequest,
   ): Promise<EmailComposeResult | null> {
-    if (!this.baseUrl) return null;
+    const outcome = await this.composeEmailOutcome(ctx, request);
+    return outcome.ok ? outcome.result : null;
+  }
+
+  async composeEmailOutcome(
+    ctx: FederationContext,
+    request: EmailComposeRequest,
+  ): Promise<EmailComposeOutcome> {
+    if (!this.baseUrl) return { ok: false, failure: 'unavailable' };
     // Defense-in-depth: the service pre-checks, but never make the call without
     // the dual-SKU gate (or the open bootstrap) passing.
     // NOTE: the outbound kill switch is now workspace-scoped + runtime-mutable
@@ -611,7 +646,7 @@ export class EmailOpsClient extends EmailOpsPort {
       this.logger.warn(
         `Email-Ops composeEmail DENIED for workspace=${ctx.workspaceId}: ${gate.reason}`,
       );
-      return null;
+      return { ok: false, failure: 'refused' };
     }
     const args: Record<string, unknown> = {
       workspace_id: this.effectiveWorkspaceId(ctx),
@@ -630,8 +665,9 @@ export class EmailOpsClient extends EmailOpsPort {
       args['from_address'] = request.fromAddress;
     }
 
-    const raw = await this.callTool(ctx, 'compose_email', args);
-    if (!raw) return null;
-    return this.toComposeResult(raw);
+    const raw = await this.callToolDetailed(ctx, 'compose_email', args);
+    if (!raw.ok) return raw;
+    const result = this.toComposeResult(raw.data);
+    return result ? { ok: true, result } : { ok: false, failure: 'unavailable' };
   }
 }

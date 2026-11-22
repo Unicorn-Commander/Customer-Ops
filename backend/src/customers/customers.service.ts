@@ -274,6 +274,14 @@ const CONTACT_OPS_NOT_CONNECTED_MESSAGE =
 export const NO_RECIPIENT_MESSAGE =
   "We don't have an email address for this person yet. Type one in the To field and try again.";
 
+/** The mail service refused the message; retrying will not help (AUD-CR-4). */
+export const EMAIL_NOT_ACCEPTED_MESSAGE =
+  "Email isn't set up for this workspace yet, so the message was not sent. Ask your workspace owner, or write to support@unicorncommander.ai and we will set it up.";
+
+/** The mail service could not be reached; a retry is safe and never sends twice. */
+export const EMAIL_UNAVAILABLE_MESSAGE =
+  "Email can't be reached right now, so the message was not sent yet. Try again in a moment; trying again never sends it twice.";
+
 @Injectable()
 export class CustomersService {
   private readonly logger = new Logger(CustomersService.name);
@@ -1613,7 +1621,7 @@ export class CustomersService {
       requestedWorkspaceId,
     );
 
-    const result = await this.emailOps.composeEmail(fedCtx, {
+    const request = {
       contactId: resolvedContactId,
       toAddress,
       fromAddress: dto.fromAddress?.trim() || null,
@@ -1623,13 +1631,40 @@ export class CustomersService {
       mode,
       externalSource,
       externalRef,
-    });
-    if (!result) {
-      throw new ServiceUnavailableException(
-        'Email-Ops did not return a message. The link is recorded; retry to ' +
-          'complete it (idempotent on the same reference).',
-      );
+    };
+    // AUD-CR-4: keep WHY there is no message. Ports without the detailed call
+    // report a null as unavailable (the previous behavior).
+    const outcome = this.emailOps.composeEmailOutcome
+      ? await this.emailOps.composeEmailOutcome(fedCtx, request)
+      : await this.emailOps
+          .composeEmail(fedCtx, request)
+          .then((r) =>
+            r ? { ok: true as const, result: r } : { ok: false as const, failure: 'unavailable' },
+          );
+    if (!outcome.ok) {
+      if (outcome.failure === 'refused') {
+        // Email-Ops answered no (for a new workspace: it does not know it yet).
+        // A retry cannot fix that, so drop the link this call staged (never one
+        // that already carries a message) and say so in plain words.
+        if (!link.messageId) {
+          await this.workspaces.runForUser(
+            user,
+            (tx) => tx.customerEmailLink.deleteMany({ where: { id: link.id, messageId: null } }),
+            requestedWorkspaceId,
+          );
+        }
+        this.logger.warn(
+          `Email ${mode} refused by Email-Ops for ws=${fedCtx.workspaceId} ref=${externalRef}`,
+        );
+        throw new UnprocessableEntityException({
+          statusCode: 422,
+          code: 'email_not_accepted',
+          message: EMAIL_NOT_ACCEPTED_MESSAGE,
+        });
+      }
+      throw new ServiceUnavailableException(EMAIL_UNAVAILABLE_MESSAGE);
     }
+    const result = outcome.result;
 
     const refreshed = await this.workspaces.runForUser(
       user,

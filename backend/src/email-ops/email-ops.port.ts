@@ -132,4 +132,21 @@ export abstract class EmailOpsPort {
     ctx: FederationContext,
     request: EmailComposeRequest,
   ): Promise<EmailComposeResult | null>;
+
+  /**
+   * composeEmail with the failure kind (AUD-CR-4): `refused` when Email-Ops
+   * answered no (a retry will not change it, e.g. it does not know this
+   * workspace), `unavailable` when it could not be reached. Optional so fakes
+   * that only implement composeEmail keep working (their null is `unavailable`).
+   */
+  composeEmailOutcome?(
+    ctx: FederationContext,
+    request: EmailComposeRequest,
+  ): Promise<EmailComposeOutcome>;
 }
+
+export type EmailComposeFailure = 'refused' | 'unavailable';
+
+export type EmailComposeOutcome =
+  | { ok: true; result: EmailComposeResult }
+  | { ok: false; failure: EmailComposeFailure };
