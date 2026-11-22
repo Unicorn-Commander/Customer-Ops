@@ -67,8 +67,13 @@ suite('scoped onboarding real PostgreSQL and HTTP guards', () => {
 
   beforeAll(async () => {
     const parsed = new URL(testUrl!);
-    if (parsed.hostname !== '127.0.0.1' || parsed.pathname !== '/customer_onboarding_test')
+    // The CI Postgres is a service container reached by hostname (e.g. "postgres");
+    // it is admitted only for the dedicated _test database. Anything else is refused.
+    const ciHost = process.env.CI === 'true' && parsed.hostname === 'postgres';
+    if (!ciHost && parsed.hostname !== '127.0.0.1')
       throw new Error('Dedicated isolated test database required');
+    if (parsed.pathname !== '/customer_onboarding_test')
+      throw new Error('Dedicated isolated test database required: the database must be the _test database');
     process.env.DATABASE_URL = testUrl;
     process.env.CUSTOMER_OPS_TENANCY_ENABLED = 'true';
     process.env.CUSTOMER_OPS_SIGNUP_MODE = 'invite';

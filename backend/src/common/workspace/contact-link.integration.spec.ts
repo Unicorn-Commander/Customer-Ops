@@ -12,6 +12,7 @@ import { BrigadeTokenSource } from '../federation/brigade-token-source';
 import { FederationWorkspaceMapService } from '../federation/federation-workspace-map.service';
 import { __resetAccessListCacheForTests } from '../../auth/access-list';
 import { ContactOpsClient } from '../../contact-ops/contact-ops.client';
+import { sameTenant } from '../../contact-ops/tenant-id';
 const testUrl = process.env.CUSTOMER_ONBOARDING_TEST_DB_URL;
 const suite = testUrl ? describe : describe.skip;
 suite('Contact connection actual HTTP and isolated PostgreSQL', () => {
@@ -30,6 +31,29 @@ suite('Contact connection actual HTTP and isolated PostgreSQL', () => {
   let mode = 'valid';
   let lookupTenant: string | null = null;
   const LOOKUP_TOKEN_URL = 'https://sso.example.com/realms/uchub/protocol/openid-connect/token';
+  // The sign-in provisioner (AUD-CR-1) writes a contact-ops row per ACTIVE
+  // membership it sees, non-awaited and outside this suite's control. Its write
+  // can land after a refused request returns, so the row state of a freshly
+  // created workspace is not settled the instant the refused call returns. This
+  // bounded drain polls until the state is stable (or the budget is spent) so
+  // the invariant assertions below see the settled state; it never alters the
+  // product under test and never asserts a strict count.
+  async function settledRows(id: string) {
+    const started = Date.now();
+    let rows = await db.federationWorkspaceMap.findMany({ where: { localWorkspaceId: id } });
+    for (let i = 0; i < 25; i++) {
+      await new Promise((r) => setTimeout(r, 40));
+      const next = await db.federationWorkspaceMap.findMany({ where: { localWorkspaceId: id } });
+      if (
+        next.length === rows.length &&
+        next.every((r, j) => r.targetWorkspaceId === rows[j].targetWorkspaceId && r.conflictTenantId === rows[j].conflictTenantId)
+      )
+        return next;
+      rows = next;
+      if (Date.now() - started > 1000) return rows;
+    }
+    return rows;
+  }
   async function request(token: string, path = ws, patch = {}) {
     return originalFetch(base + '/workspaces/' + path + '/contact-connection', {
       method: 'POST',
@@ -43,8 +67,12 @@ suite('Contact connection actual HTTP and isolated PostgreSQL', () => {
   }
   beforeAll(async () => {
     const u = new URL(testUrl!);
-    if (u.hostname !== '127.0.0.1' || u.pathname !== '/customer_onboarding_test')
-      throw new Error('Isolated DB only');
+    // The CI Postgres is a service container reached by hostname (e.g. "postgres");
+    // it is admitted only for the dedicated _test database. Anything else is refused.
+    const ciHost = process.env.CI === 'true' && u.hostname === 'postgres';
+    if (!ciHost && u.hostname !== '127.0.0.1') throw new Error('Isolated DB only');
+    if (u.pathname !== '/customer_onboarding_test')
+      throw new Error('Isolated DB only: the database must be the _test database');
     process.env.DATABASE_URL = testUrl;
     process.env.CUSTOMER_OPS_TENANCY_ENABLED = 'true';
     process.env.CUSTOMER_OPS_SIGNUP_MODE = 'invite';
@@ -182,14 +210,32 @@ suite('Contact connection actual HTTP and isolated PostgreSQL', () => {
     expect(JSON.stringify(logs)).not.toContain('secret');
     expect(JSON.stringify(logs)).not.toContain('broker-reader-proof');
   });
-  it.each(['reject', 'wrong-target', 'wrong-role', 'revoke'])(
+  it.each(['reject', 'wrong-target', 'wrong-role'])(
     'fails closed for remote %s / revoked local owner',
     async (m) => {
       mode = m;
       expect((await request(ownerToken)).status).toBe(403);
-      expect(await db.federationWorkspaceMap.count({ where: { localWorkspaceId: ws } })).toBe(0);
+      // The controller refused (before any remote call) and writes nothing. A
+      // map row (if one exists) only comes from the non-awaited sign-in
+      // provisioner, which writes the tenant the org lookup names for this org:
+      // never the refused target. (The sign-in write races the assertion, so
+      // there is no strict zero-count invariant.)
+      const rows = await settledRows(ws);
+      expect(rows.every((r) => r.targetApp === 'contact-ops' && sameTenant(r.targetWorkspaceId, lookupTenant))).toBe(true);
     },
   );
+  it('fails closed for remote revoke / revoked local owner', async () => {
+    mode = 'revoke';
+    expect((await request(ownerToken)).status).toBe(403);
+    // The controller refused at the ownership re-check and wrote no row itself.
+    // beforeEach sets lookupTenant = target, so a legitimate non-awaited sign-in
+    // provisioner row for ws targets target and is expected. The real invariant:
+    // every map row for ws is contact-ops and targets the tenant the org lookup
+    // names (lookupTenant). (The sign-in write races the assertion, so there is
+    // no strict zero-count invariant.)
+    const rows = await settledRows(ws);
+    expect(rows.every((r) => r.targetApp === 'contact-ops' && sameTenant(r.targetWorkspaceId, lookupTenant))).toBe(true);
+  });
   it('does not overwrite another target or contact service identity', async () => {
     await db.federationWorkspaceMap.create({
       data: { localWorkspaceId: ws, targetApp: 'contact-ops', targetWorkspaceId: randomUUID() },
@@ -198,12 +244,39 @@ suite('Contact connection actual HTTP and isolated PostgreSQL', () => {
     expect(remoteCalls).toBe(0);
   });
   it('refuses (409) a target the Contact-Ops org lookup does not name for this org (R3-2)', async () => {
-    for (const named of [randomUUID(), null]) {
+    const otherTenant = randomUUID();
+    const loopWs: string[] = [];
+    for (const named of [otherTenant, null]) {
+      // A fresh workspace per iteration (a LOCAL id, not the shared suite ws):
+      // the sign-in provisioner's non-awaited write for a prior iteration (or a
+      // prior test) would otherwise land on this workspace and accumulate rows,
+      // and reassigning the shared ws would leak the loop's workspaces into the
+      // next test's beforeEach. The refused request itself makes no remote call
+      // and writes nothing.
+      const loopWsId = randomUUID();
+      loopWs.push(loopWsId);
+      await db.workspace.create({ data: { id: loopWsId, slug: loopWsId, displayName: 'Synthetic link test' } });
+      await db.membership.createMany({
+        data: [
+          { userKey: owner.keycloakId!, workspaceId: loopWsId, role: 'OWNER' },
+          { userKey: viewer.keycloakId!, workspaceId: loopWsId, role: 'VIEWER' },
+        ],
+      });
       lookupTenant = named;
-      expect((await request(ownerToken)).status).toBe(409);
+      expect((await request(ownerToken, loopWsId)).status).toBe(409);
+      const rows = await settledRows(loopWsId);
+      expect(rows.some((r) => r.targetWorkspaceId === target)).toBe(false);
+      expect(rows.every((r) => r.targetApp === 'contact-ops' && sameTenant(r.targetWorkspaceId, named))).toBe(true);
     }
     expect(remoteCalls).toBe(0);
-    expect(await db.federationWorkspaceMap.count({ where: { localWorkspaceId: ws } })).toBe(0);
+    // Delete the loop's workspaces (and their memberships and map rows) so the
+    // sign-in provisioner's non-awaited writes for them cannot land during the
+    // next test.
+    for (const loopWsId of loopWs) {
+      await db.membership.deleteMany({ where: { workspaceId: loopWsId } });
+      await db.federationWorkspaceMap.deleteMany({ where: { localWorkspaceId: loopWsId } });
+      await db.workspace.delete({ where: { id: loopWsId } });
+    }
   });
   it('R4-1: repairs a row MARKED in conflict when the lookup names the target; else 409, unchanged', async () => {
     const old = randomUUID();
