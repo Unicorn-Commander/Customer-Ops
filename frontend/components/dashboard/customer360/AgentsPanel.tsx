@@ -250,11 +250,11 @@ export function AgentsPanel(props: {
                   {followUp.stagedDraft ? (
                     <p className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-warning-subtle px-2.5 py-1 text-[11px] font-medium text-warning">
                       <AlertTriangle className="h-3 w-3" strokeWidth={2.5} />
-                      Staged as an Email-Ops draft — awaiting your approval, not sent
+                      Staged as an Email-Ops draft, awaiting your approval, not sent
                     </p>
                   ) : (
                     <p className="mt-2 text-[11px] text-muted">
-                      A draft. Copy it, or use the Email panel’s “Save as draft” to stage it for approval — never auto-sent.
+                      A draft. Copy it, or use the Email panel’s “Save as draft” to stage it for approval; never auto-sent.
                     </p>
                   )}
                 </>
@@ -282,7 +282,7 @@ export function AgentsPanel(props: {
                     <DraftBody value={nudge.body ?? ''} />
                   </div>
                   <p className="mt-2 text-[11px] text-muted">
-                    Draft only — review, then send it yourself. The agent never charges or sends.
+                    Draft only. Review, then send it yourself. The agent never charges or sends.
                   </p>
                 </>
               ) : (
