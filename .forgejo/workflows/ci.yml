@@ -10,7 +10,8 @@
 #              (backend/src/customers/customers.rls.int.spec.ts) actually RUN as
 #              the NOBYPASSRLS `customer_ops_app` role instead of skipping via
 #              its `describeIfDb` guard — the tenant fence is proven on every PR.
-#   frontend — install, typecheck, production build, and lint.
+#   frontend — install, typecheck, production build, lint, and run the node --test
+#              specs (contact picker + Connect-your-AI panel).
 #   tenancy  — the exit-coded, hermetic scripts/verify-tenancy.sh (boots its own
 #              throwaway Postgres via docker and proves the RLS contract on every
 #              scoped table). Requires a docker-enabled runner.
@@ -53,6 +54,8 @@ jobs:
     # the full suite tenancy role split — including the NOBYPASSRLS runtime role
     # `customer_ops_app` with the deterministic dev password `verify_app` — and
     # all RLS policies + grants, exactly as the backend entrypoint does at boot.
+    # POSTGRES_MULTIPLE_DATABASES also creates the isolated
+    # customer_onboarding_test DB the two workspace integration specs need.
     services:
       postgres:
         image: postgres:17
@@ -60,9 +63,13 @@ jobs:
           POSTGRES_USER: customer_ops_admin
           POSTGRES_PASSWORD: verify_admin
           POSTGRES_DB: customerops
-        # No host `ports:` mapping: jobs reach the service by hostname
-        # (postgres:5432), and a pinned host port collides when the runner
-        # runs several jobs at once.
+          POSTGRES_MULTIPLE_DATABASES: customer_onboarding_test
+        # The RLS spec + DATABASE_URL reach the service by hostname
+        # (postgres:5432). The workspace integration specs additionally need
+        # 127.0.0.1 reachability (their URL guard rejects any other hostname)
+        # — their dedicated DB is published on a pinned job-side port.
+        ports:
+          - 54332:5432
         options: >-
           --health-cmd="pg_isready -U customer_ops_admin -d customerops"
           --health-interval=5s
@@ -79,6 +86,18 @@ jobs:
       # The spec's out-of-band owner client (seeds/cleans the non-RLS control
       # table). Falls back to the app URL if unset; we point it at the owner.
       CUSTOMER_OPS_RLS_OWNER_DATABASE_URL: postgresql://localhost:5432/customer_ops
+      # The two workspace integration specs (contact-link + workspace-onboarding,
+      # 30 tests) require an ISOLATED database so they never see customerops'
+      # bootstrap workspace (seeded by the role migration) or its test rows.
+      # Their guard pins the URL hostname to `127.0.0.1` and the path to
+      # `/customer_onboarding_test` — the service's internal name `postgres`
+      # would fail it — so the service's port is published job-side (54332) and
+      # this URL reaches the same Postgres over localhost.
+      # The role is `customer_ops_admin` (BYPASSRLS owner, the migration runner):
+      # the specs create their own rows/tables there and the schema's RLS
+      # policies never fence the owner; the customer_ops_app NOBYPASSRLS role is
+      # not what these specs exercise.
+      CUSTOMER_ONBOARDING_TEST_DB_URL: postgresql://localhost:5432/customer_ops
 
     steps:
       - name: Checkout
@@ -106,11 +125,16 @@ jobs:
         # + executed by ts-jest instead.
         run: npx eslint "src/**/*.ts"
 
-      - name: Apply migrations to the service DB (schema + RLS + roles)
+      - name: Apply migrations to the service DBs (schema + RLS + roles)
         # As the owner/admin — the same command the backend entrypoint runs. This
         # creates the customer_ops_app runtime role (NOBYPASSRLS, password
-        # verify_app) so the RLS spec below can connect as it.
-        run: npx prisma migrate deploy
+        # verify_app) so the RLS spec below can connect as it. Runs against BOTH
+        # databases: customerops (the main suite) and customer_onboarding_test
+        # (the isolated workspace integration specs, which read the URL guard
+        # and would otherwise find no tables).
+        run: |
+          npx prisma migrate deploy
+          DATABASE_URL=postgresql://localhost:5432/customer_ops npx prisma migrate deploy
         env:
           DATABASE_URL: ${{ env.ADMIN_DATABASE_URL }}
 
@@ -125,10 +149,10 @@ jobs:
           DATABASE_URL: ${{ env.ADMIN_DATABASE_URL }}
 
   # --------------------------------------------------------------------------
-  # FRONTEND — typecheck + production build + lint.
+  # FRONTEND — typecheck + production build + lint + node --test specs.
   # --------------------------------------------------------------------------
   frontend:
-    name: frontend (typecheck · build · lint)
+    name: frontend (typecheck · build · lint · test)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -162,6 +186,13 @@ jobs:
         # lint warning or error FAIL the job. `npm run lint` is `next lint
         # --max-warnings=0`.
         run: npm run lint
+
+      - name: Test (node --test, pure-logic frontend specs)
+        # lib/contactPicker.test.mjs and components/connect/ConnectYourAiPanel.
+        # test.mjs are dependency-free node:test specs over the TS helpers (they
+        # import .ts directly — the Node 20 runner's built-in type-stripping
+        # handles that). No network, no DB.
+        run: node --test lib/contactPicker.test.mjs components/connect/ConnectYourAiPanel.test.mjs
 
   # --------------------------------------------------------------------------
   # TENANCY — the hermetic, exit-coded RLS acceptance harness. It boots its OWN
