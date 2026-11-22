@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { FederationWorkspaceMapModule } from '../common/federation/federation-workspace-map.module';
 import { ContactOpsOrgLookupClient } from './contact-ops-org-lookup.client';
 import { ContactOpsMapProvisioner } from './contact-ops-map.provisioner';
+import { ContactOpsLinkService } from './contact-ops-link.service';
 
 /**
  * The contact-ops map writer: Contact-Ops' org lookup (#42) + the one place a
@@ -11,7 +12,7 @@ import { ContactOpsMapProvisioner } from './contact-ops-map.provisioner';
  */
 @Module({
   imports: [FederationWorkspaceMapModule],
-  providers: [ContactOpsOrgLookupClient, ContactOpsMapProvisioner],
-  exports: [ContactOpsMapProvisioner, ContactOpsOrgLookupClient],
+  providers: [ContactOpsOrgLookupClient, ContactOpsMapProvisioner, ContactOpsLinkService],
+  exports: [ContactOpsMapProvisioner, ContactOpsOrgLookupClient, ContactOpsLinkService],
 })
 export class ContactOpsMapModule {}

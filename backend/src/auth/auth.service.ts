@@ -5,6 +5,7 @@ import {
   Injectable,
   UnauthorizedException,
   Logger,
+  Optional,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma/prisma.service';
@@ -13,6 +14,7 @@ import { resolveUserAccess, describeAccessList } from './access-list';
 import { signupMode } from '../common/workspace/feature-flags';
 import { WorkspaceProvisioningService } from '../common/workspace/workspace-provisioning.service';
 import { MembershipService } from '../common/workspace/membership.service';
+import { ContactOpsLinkService } from '../contact-ops/contact-ops-link.service';
 import { customerOpsEntitlementsEnabled, resolveOrgEntitlement } from './org-entitlements.client';
 
 export const NO_WORKSPACE_ACCESS_RESPONSE = {
@@ -77,6 +79,8 @@ export class AuthService {
     private readonly provisioning: WorkspaceProvisioningService,
     private readonly membership: MembershipService,
     private readonly invitations: WorkspaceInvitationsService,
+    // AUD-CR-1: links the signed-in workspace to its Contact-Ops tenant.
+    @Optional() private readonly contactLinks?: ContactOpsLinkService,
   ) {
     const meta = describeAccessList();
     this.logger.log(
@@ -166,12 +170,13 @@ export class AuthService {
         );
       } else {
         if (!user) user = await this.createEntitledUser(keycloakId, profile, email!);
-        await this.provisioning.provisionEntitledOrgWorkspace({
+        const entitled = await this.provisioning.provisionEntitledOrgWorkspace({
           user,
           orgId: orgEntitlement.orgId,
           orgName: orgEntitlement.orgName,
           role: orgEntitlement.role,
         });
+        this.linkContactOps(entitled.workspaceId);
       }
     }
 
@@ -310,6 +315,7 @@ export class AuthService {
         firstName: profile?.given_name || profile?.firstName,
         lastName: profile?.family_name || profile?.lastName,
       });
+      this.linkContactOps(result.workspaceId);
       return result.user;
     } catch (err) {
       if (err instanceof ConflictException) {
@@ -318,6 +324,17 @@ export class AuthService {
       }
       throw err;
     }
+  }
+
+  /**
+   * Ask the Contact-Ops org lookup for the workspace's link row (AUD-CR-1), keyed
+   * by the stored workspace id the sign-in just provisioned or joined. Not
+   * awaited: sign-in never waits on, or fails because of, Contact-Ops. Already
+   * linked is a no-op; no tenant yet is retried later (ContactOpsLinkService).
+   */
+  private linkContactOps(workspaceId: string): void {
+    if (!this.contactLinks) return;
+    void this.contactLinks.ensureLinked(workspaceId);
   }
 
   /** Mint a local HS256 session token for a resolved user (post OIDC callback). */

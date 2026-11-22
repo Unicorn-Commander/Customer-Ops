@@ -10,10 +10,12 @@ import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { PatController } from './pat/pat.controller';
 import { PatService } from './pat/pat.service';
 import { WorkspaceModule } from '../common/workspace/workspace.module';
+import { ContactOpsMapModule } from '../contact-ops/contact-ops-map.module';
 
 @Module({
   imports: [
     WorkspaceModule,
+    ContactOpsMapModule,
     PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.registerAsync({
       imports: [ConfigModule],
