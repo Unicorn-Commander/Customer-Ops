@@ -1,8 +1,9 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { RelationshipStage, User } from '@prisma/client';
 import {
   CustomersService,
   EMAIL_NOT_CONNECTED_MESSAGE,
+  EMAIL_NOT_INCLUDED_MESSAGE,
   NO_RECIPIENT_MESSAGE,
 } from './customers.service';
 import { WorkspaceContextService } from '../common/workspace/workspace-context.service';
@@ -164,6 +165,23 @@ describe('provisional lead email recipient (AUD-CR-3)', () => {
     expect(err).toBeInstanceOf(BadRequestException);
     expect(err.message).toBe(EMAIL_NOT_CONNECTED_MESSAGE);
     expect(err.message).not.toMatch(/-Ops|EMAIL_OPS|BASE_URL|federat|mail server/i);
+    expect(email.composeEmail).not.toHaveBeenCalled();
+  });
+
+  it('not entitled to email: plain-words 403, the gate reason stays in the log', async () => {
+    const { svc, email } = makeService({ intakeEmail: 'rosa@lead.example.com' });
+    (email.checkEntitlement as jest.Mock).mockReturnValue({
+      allowed: false,
+      mode: 'enforce',
+      reason:
+        'not entitled: sending/drafting mail via Email-Ops requires a subscription with BOTH customer-ops and email-ops; the bearer does not carry both.',
+    });
+    const err = await svc
+      .sendEmailForUser(user, 'cust-1', { subject: 'Hi', body: 'b' }, WS)
+      .catch((e) => e);
+    expect(err).toBeInstanceOf(ForbiddenException);
+    expect(err.message).toBe(EMAIL_NOT_INCLUDED_MESSAGE);
+    expect(err.message).not.toMatch(/-Ops|entitled|bearer|SKU|\u2014/i);
     expect(email.composeEmail).not.toHaveBeenCalled();
   });
 });

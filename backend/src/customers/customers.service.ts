@@ -287,6 +287,11 @@ export const EMAIL_NOT_CONNECTED_MESSAGE =
 export const EMAIL_NOT_ACCEPTED_MESSAGE =
   "Email isn't set up for this workspace yet, so the message was not sent. Ask your workspace owner, or write to support@unicorncommander.ai and we will set it up.";
 
+/** The workspace's plan does not include email (AUD-CR-3 review); the gate's
+ *  internal reason goes to the log only. */
+export const EMAIL_NOT_INCLUDED_MESSAGE =
+  "Email isn't included in this workspace's plan, so the message was not sent. Ask your workspace owner, or write to support@unicorncommander.ai and we will help.";
+
 /** The mail service could not be reached; a retry is safe and never sends twice. */
 export const EMAIL_UNAVAILABLE_MESSAGE =
   "Email can't be reached right now, so the message was not sent yet. Try again in a moment; trying again never sends it twice.";
@@ -1562,7 +1567,7 @@ export class CustomersService {
       this.logger.warn(
         `Email ${mode} denied for ${ucUid} (ws=${fedCtx.workspaceId}): ${gate.reason}`,
       );
-      throw new ForbiddenException(gate.reason);
+      throw new ForbiddenException(EMAIL_NOT_INCLUDED_MESSAGE);
     }
 
     // Runtime kill switch (workspace-scoped): halt outbound SENDS at dispatch

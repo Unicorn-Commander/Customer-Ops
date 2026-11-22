@@ -7,7 +7,7 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { AuditAction, CustomerActivityKind, RelationshipStage, User } from '@prisma/client';
-import { CustomersService } from './customers.service';
+import { CustomersService, EMAIL_NOT_INCLUDED_MESSAGE } from './customers.service';
 import { WorkspaceContextService } from '../common/workspace/workspace-context.service';
 import { entitlementsOf, WithWorkspaceClaim } from '../common/workspace/workspace.util';
 import { ContactOpsPort } from '../contact-ops/contact-ops.port';
@@ -1345,7 +1345,9 @@ describe('CustomersService — Email-Ops federation (Phase 4; Email-Ops app mock
       const { tx } = makeTx(makeRow({ id: 'cust-1' }));
       lastTx.current = tx;
 
-      await expect(svc.sendEmailForUser(aaron, 'cust-1', sendDto, WS)).rejects.toThrow(/not entitled/i);
+      await expect(svc.sendEmailForUser(aaron, 'cust-1', sendDto, WS)).rejects.toThrow(
+        EMAIL_NOT_INCLUDED_MESSAGE,
+      );
       expect(email.composeEmail).not.toHaveBeenCalled();
       expect(tx.customerEmailLink.create).not.toHaveBeenCalled();
     });
