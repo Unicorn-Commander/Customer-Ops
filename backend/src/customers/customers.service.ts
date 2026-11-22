@@ -1577,12 +1577,16 @@ export class CustomersService {
         async (tx) => (await this.getInTx(tx, customerId)).contactId,
         requestedWorkspaceId,
       );
-      const contactCtx = await this.federationContext(user, requestedWorkspaceId);
-      const contact = await this.contactOps.getContact(contactCtx, contactId);
-      toAddress = contact?.primaryEmail ?? null;
-      // AUD-CR-3: a provisional lead ('prov:') has no contact record yet; use the
-      // address the lead arrived with (its intake row, workspace-scoped).
-      toAddress ??= await this.provisionalLeadEmail(user, contactId, requestedWorkspaceId);
+      if (isProvisionalContactId(contactId)) {
+        // AUD-CR-3: a provisional lead ('prov:') has no contact record, so skip
+        // the federation call; use the address the lead arrived with (its intake
+        // row, workspace-scoped by RLS).
+        toAddress = await this.provisionalLeadEmail(user, contactId, requestedWorkspaceId);
+      } else {
+        const contactCtx = await this.federationContext(user, requestedWorkspaceId);
+        const contact = await this.contactOps.getContact(contactCtx, contactId);
+        toAddress = contact?.primaryEmail ?? null;
+      }
     }
     if (!toAddress) {
       throw new BadRequestException(NO_RECIPIENT_MESSAGE);

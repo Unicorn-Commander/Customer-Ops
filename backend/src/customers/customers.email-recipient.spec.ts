@@ -99,7 +99,7 @@ function makeService(opts: { intakeEmail?: string | null; withResolver?: boolean
     undefined,
     leadLabels,
   );
-  return { svc, email, labels };
+  return { svc, email, labels, contact };
 }
 
 describe('provisional lead email recipient (AUD-CR-3)', () => {
@@ -110,6 +110,12 @@ describe('provisional lead email recipient (AUD-CR-3)', () => {
     const [, req] = (email.composeEmail as jest.Mock).mock.calls[0];
     expect(req.toAddress).toBe('rosa@lead.example.com');
     expect(req.contactId).toBe(PROV);
+  });
+
+  it('a prov: lead costs no Contact-Ops call on send', async () => {
+    const { svc, contact } = makeService({ intakeEmail: 'rosa@lead.example.com' });
+    await svc.sendEmailForUser(user, 'cust-1', { subject: 'Hello', body: 'Following up' }, WS);
+    expect(contact.getContact).not.toHaveBeenCalled();
   });
 
   it('the email panel pre-fills To from the lead intake email', async () => {
