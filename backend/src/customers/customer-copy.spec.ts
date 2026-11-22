@@ -34,7 +34,7 @@ const FILES = [
 
 /** Internal component names, engines and states a customer must not see. */
 const INTERNAL =
-  /\b(Contact-Ops|Email-Ops|Meeting-Ops|Project-Ops|Conversations-Ops|Stalwart|Listmonk|Postiz|UUDC|federat\w*|dormant|AR engine)\b/i;
+  /\b(Contact-Ops|Email-Ops|Meeting-Ops|Project-Ops|Conversations-Ops|Accounting-Ops|Stalwart|Listmonk|Postiz|UUDC|federat\w*|dormant|AR engine)\b/i;
 
 /** Allowed: plan/entitlement notices naming the products a customer buys. */
 const PLAN_NOTICE = /on your plan/;
@@ -55,9 +55,13 @@ function visibleStrings(src: string): string[] {
   const out: string[] = [];
   for (const m of body.matchAll(/>([^<>{}]+)</g)) out.push(m[1].trim());
   for (const m of body.matchAll(/'([^'\n]*)'|"([^"\n]*)"|`([^`]*)`/g)) {
+    // A literal compared against an API value (via === 'contact-ops') is not shown.
+    if (/[=!]==\s*$/.test(body.slice(0, m.index))) continue;
     out.push((m[1] ?? m[2] ?? m[3] ?? '').trim());
   }
-  return out.filter((s) => s && !/^[./@]|^api\/|^\/|^[\w-]+$/.test(s));
+  // Single bare words are identifiers; hyphenated tokens are kept, since a
+  // prop like source="meeting-ops" renders upper-cased in the SourceTag.
+  return out.filter((s) => s && !/^[./@]|^api\/|^\/|^\w+$/.test(s));
 }
 
 const present = existsSync(FRONTEND);

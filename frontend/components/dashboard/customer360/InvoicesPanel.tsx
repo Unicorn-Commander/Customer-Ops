@@ -57,7 +57,7 @@ export function InvoicesPanel(props: {
       gradient="from-emerald-400 to-teal-500"
       title="Invoices & AR"
       subtitle={subtitle}
-      tag={<SourceTag configured={panel.configured} source="accounting-ops" />}
+      tag={<SourceTag configured={panel.configured} source="invoices" />}
     >
       {!panel.configured ? (
         <ConnectNotice app="invoicing">

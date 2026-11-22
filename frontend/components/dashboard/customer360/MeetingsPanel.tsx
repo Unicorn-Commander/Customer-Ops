@@ -48,7 +48,7 @@ export function MeetingsPanel({ panel }: { panel: MeetingPanelData }) {
       gradient="from-teal-400 to-cyan-500"
       title="Meetings & action items"
       subtitle={subtitle}
-      tag={<SourceTag configured={panel.configured} source="meeting-ops" />}
+      tag={<SourceTag configured={panel.configured} source="meetings" />}
     >
       {!panel.configured ? (
         <ConnectNotice app="meetings">
