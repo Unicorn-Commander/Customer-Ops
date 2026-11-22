@@ -86,8 +86,12 @@ interface JsonRpcResponse {
   error?: { code: number; message: string };
 }
 
-/** HTTP answers from Email-Ops that a retry will not change (AUD-CR-4). */
-const REFUSED_HTTP = new Set([400, 401, 403, 404, 409, 422]);
+/** HTTP answers from Email-Ops that a retry will not change (AUD-CR-4). 401/403
+ *  are NOT here: a rejected service credential is an operator problem (expired or
+ *  misconfigured token), fixable without the customer, so it stays `unavailable`,
+ *  keeps the staged link for the idempotent retry, and is logged distinctly. */
+const REFUSED_HTTP = new Set([400, 404, 409, 422]);
+const AUTH_REJECTED_HTTP = new Set([401, 403]);
 
 /** Canonical suite SKU strings (must match Lago/Keycloak). */
 export const SKU_CUSTOMER_OPS = 'customer-ops';
@@ -296,9 +300,10 @@ export class EmailOpsClient extends EmailOpsPort {
 
   /**
    * callTool with the failure kind kept (AUD-CR-4): `refused` is an answer from
-   * Email-Ops itself (a tool error, a JSON-RPC error, or HTTP 400/401/403/404/
-   * 409/422) that a retry will not change; `unavailable` is transport, timeout,
-   * 408/429/5xx or an unreadable answer, which a retry may fix. Never throws.
+   * Email-Ops itself (a tool error, a JSON-RPC error, or HTTP 400/404/409/422)
+   * that a retry will not change; `unavailable` is transport, timeout, 401/403
+   * (our credential, an operator fix), 408/429/5xx or an unreadable answer,
+   * which a retry may fix. Never throws.
    */
   private async callToolDetailed(
     ctx: FederationContext,
@@ -331,6 +336,12 @@ export class EmailOpsClient extends EmailOpsPort {
     }
 
     if (!res.ok) {
+      if (AUTH_REJECTED_HTTP.has(res.status)) {
+        this.logger.error(
+          `Email-Ops MCP ${name} HTTP ${res.status}: service credential rejected (operator fix: check the Email-Ops token)`,
+        );
+        return fail('unavailable');
+      }
       this.logger.warn(`Email-Ops MCP ${name} HTTP ${res.status}`);
       return fail(REFUSED_HTTP.has(res.status) ? 'refused' : 'unavailable');
     }

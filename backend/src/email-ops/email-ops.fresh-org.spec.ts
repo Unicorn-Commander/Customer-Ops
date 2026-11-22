@@ -160,8 +160,8 @@ describe('compose_email for a freshly provisioned org (AUD-CR-4)', () => {
       'a tool error',
       () => rpc({ isError: true, content: [{ type: 'text', text: 'workspace not provisioned' }] }),
     ],
-    ['HTTP 403', () => ({ ok: false, status: 403, text: async () => '' }) as Response],
     ['HTTP 404', () => ({ ok: false, status: 404, text: async () => '' }) as Response],
+    ['HTTP 422', () => ({ ok: false, status: 422, text: async () => '' }) as Response],
   ])(
     'Email-Ops refuses the new org (%s): plain 422, no retry advice, no orphan link',
     async (_l, answer) => {
@@ -187,4 +187,17 @@ describe('compose_email for a freshly provisioned org (AUD-CR-4)', () => {
     expect(EMAIL_UNAVAILABLE_MESSAGE).not.toMatch(/Email-Ops|Stalwart|link is recorded/);
     expect(emailLinks).toHaveLength(1);
   });
+
+  it.each([401, 403])(
+    'Email-Ops rejects our credential (HTTP %s): 503 retry-safe, link kept, not "not set up"',
+    async (status) => {
+      const { svc, emailLinks } = setup(
+        () => ({ ok: false, status, text: async () => '' }) as Response,
+      );
+      const err = await svc.sendEmailForUser(user, 'cust-1', DTO, FRESH_ORG).catch((e) => e);
+      expect(err).toBeInstanceOf(ServiceUnavailableException);
+      expect(err.message).toBe(EMAIL_UNAVAILABLE_MESSAGE);
+      expect(emailLinks).toHaveLength(1);
+    },
+  );
 });
