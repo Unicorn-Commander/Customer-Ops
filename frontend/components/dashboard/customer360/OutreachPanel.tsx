@@ -58,7 +58,7 @@ export function OutreachPanel(props: {
     >
       {!panel.configured ? (
         <ConnectNotice app="Outreach">
-          Campaigns are federated to Outreach (Listmonk + Postiz) — Customer-Ops never holds a recipient list.
+          Campaigns are federated to Outreach (Listmonk + Postiz); Customer-Ops never holds a recipient list.
         </ConnectNotice>
       ) : (
         <>

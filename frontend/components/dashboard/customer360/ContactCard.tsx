@@ -161,7 +161,7 @@ export function ContactCard({
         <ConnectNotice app="Contact-Ops">
           Contact details federate from Contact-Ops and aren’t available right now. The relationship references
           contactId <code className="rounded bg-surface-overlay px-1 py-0.5 font-mono text-[11px] text-tertiary">{contactId.slice(0, 12)}…</code>{' '}
-          — Customer-Ops holds the reference, never a copy.
+          (Customer-Ops holds the reference, never a copy.)
         </ConnectNotice>
       ) : (
         <div className="-my-1.5 divide-y divide-[rgb(var(--co-edge-subtle))]">
@@ -171,7 +171,7 @@ export function ContactCard({
               {lifecycle === 'merged' ? (
                 <span>
                   This contact was <strong className="font-medium text-secondary">merged</strong> into another record.
-                  Edits here won’t apply — use the surviving contact.
+                  Edits here won’t apply; use the surviving contact.
                 </span>
               ) : (
                 <span>

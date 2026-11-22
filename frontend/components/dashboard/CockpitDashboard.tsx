@@ -61,7 +61,7 @@ export function CockpitDashboard({ userName, board, attention, activity, graph }
               Welcome back, {userName} <span className="co-wordmark">✦</span>
             </h2>
             <p className="mt-1.5 text-sm leading-relaxed text-tertiary">
-              Run the whole lifecycle in one place — source a lead, work it through outreach, qualify,
+              Run the whole lifecycle in one place: source a lead, work it through outreach, qualify,
               convert, then keep the relationship warm. Contacts federate from Contact-Ops; the funnel lives here.
             </p>
           </div>
@@ -180,7 +180,7 @@ export function CockpitDashboard({ userName, board, attention, activity, graph }
             <h3 className="text-sm font-semibold text-primary">Needs your attention</h3>
           </div>
           <ul className="space-y-1">
-            {attention.length === 0 && <li className="py-6 text-center text-sm text-tertiary">All clear — nothing overdue.</li>}
+            {attention.length === 0 && <li className="py-6 text-center text-sm text-tertiary">All clear; nothing overdue.</li>}
             {attention.map((a) => (
               <li key={a.id} className="group flex items-center gap-3 rounded-token px-2 py-2 transition-colors hover:bg-surface-overlay">
                 <span className={`h-2 w-2 shrink-0 rounded-full ${STAGE_META[a.stage].dot}`} />

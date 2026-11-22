@@ -83,7 +83,7 @@ export default function OutreachPage() {
         gradient="from-fuchsia-500 to-pink-500"
         eyebrow="Customer-Ops · Across the workspace"
         title="Outreach"
-        description="Every outreach touch across your workspace — live status from the Outreach app."
+        description="Every outreach touch across your workspace, live status from the Outreach app."
         onRefresh={() => void load()}
         refreshing={refreshing}
         refreshDisabled={!workspaceId}

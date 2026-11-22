@@ -61,7 +61,7 @@ export function InvoicesPanel(props: {
     >
       {!panel.configured ? (
         <ConnectNotice app="Accounting-Ops">
-          Invoicing is federated to Accounting-Ops, the AR engine — Customer-Ops never holds the ledger.
+          Invoicing is federated to Accounting-Ops, the AR engine; Customer-Ops never holds the ledger.
         </ConnectNotice>
       ) : (
         <>
@@ -164,7 +164,7 @@ function InvoiceForm(props: {
     <div className="mt-3 grid gap-2.5 rounded-token border border-subtle bg-surface-overlay/50 p-3">
       <FormError error={props.error} />
       <FieldInput label="Accounting-Ops entity id" placeholder="entity UUID" value={entityId} onChange={setEntityId} />
-      <FieldInput label="Line description" placeholder="e.g. Consulting — June" value={description} onChange={setDescription} />
+      <FieldInput label="Line description" placeholder="e.g. Consulting, June" value={description} onChange={setDescription} />
       <div className="grid grid-cols-[1fr_2fr] gap-2">
         <FieldInput label="Qty" placeholder="1" value={quantity} onChange={setQuantity} />
         <FieldInput label="Unit price" placeholder="150.00" value={unitPrice} onChange={setUnitPrice} />

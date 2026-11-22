@@ -52,7 +52,7 @@ export function MeetingsPanel({ panel }: { panel: MeetingPanelData }) {
     >
       {!panel.configured ? (
         <ConnectNotice app="Meeting-Ops">
-          Conversation signal is federated from Meeting-Ops — Customer-Ops never stores a transcript or summary.
+          Conversation signal is federated from Meeting-Ops; Customer-Ops never stores a transcript or summary.
         </ConnectNotice>
       ) : empty ? (
         <EmptyRow>No meetings with this contact yet.</EmptyRow>

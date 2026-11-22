@@ -95,7 +95,7 @@ export default function AuditPage() {
         gradient="from-slate-400 to-slate-600"
         eyebrow="Customer-Ops · System"
         title="Audit trail"
-        description="Every recorded action across your workspace — append-only, newest first."
+        description="Every recorded action across your workspace, append-only, newest first."
         onRefresh={() => void load()}
         refreshing={refreshing}
         refreshDisabled={!workspaceId}

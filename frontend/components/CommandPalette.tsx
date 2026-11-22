@@ -689,7 +689,7 @@ export function CommandPalette({ open, onClose }: CommandPaletteProps) {
               <div className="px-3 py-10 text-center">
                 <div className="text-sm font-medium text-secondary">No matches</div>
                 <div className="mt-1 text-xs text-tertiary">
-                  Try a different term — or hit{' '}
+                  Try a different term, or hit{' '}
                   <span className="font-mono text-muted">esc</span> to dismiss.
                 </div>
               </div>

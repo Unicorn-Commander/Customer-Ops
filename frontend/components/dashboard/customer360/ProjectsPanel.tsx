@@ -51,7 +51,7 @@ export function ProjectsPanel({ panel }: { panel: ProjectPanelData }) {
     >
       {!panel.configured ? (
         <ConnectNotice app="Project-Ops">
-          Delivery &amp; project status is federated from Project-Ops — Customer-Ops never stores a project or task.
+          Delivery &amp; project status is federated from Project-Ops; Customer-Ops never stores a project or task.
         </ConnectNotice>
       ) : n === 0 ? (
         <EmptyRow>No projects for this account in Project-Ops yet.</EmptyRow>

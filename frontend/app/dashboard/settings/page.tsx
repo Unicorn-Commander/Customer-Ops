@@ -32,7 +32,7 @@ const SECTIONS: Section[] = [
   {
     key: 'integrations',
     title: 'Integrations',
-    description: 'The live federation connections to your suite — what’s connected, and what each seam brings into a customer’s profile.',
+    description: 'The live federation connections to your suite: what’s connected, and what each seam brings into a customer’s profile.',
     icon: Network,
     gradient: 'from-cyan-400 to-blue-500',
     href: '/dashboard/settings/integrations',

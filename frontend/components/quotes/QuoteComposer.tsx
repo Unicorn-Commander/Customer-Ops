@@ -71,7 +71,7 @@ const SECTION_KINDS: ReadonlyArray<{ value: QuoteSection['kind']; label: string 
 ];
 
 const BRANDS: ReadonlyArray<{ value: string; label: string }> = [
-  { value: '', label: 'No brand — the considered default (Ledger)' },
+  { value: '', label: 'No brand: the considered default (Ledger)' },
   { value: 'brightwater-labs', label: 'brightwater-labs' },
   { value: 'magic-unicorn', label: 'magic-unicorn' },
   { value: 'apparel-pad', label: 'apparel-pad' },
@@ -159,7 +159,7 @@ function LineEditor({ draft, line }: { draft: QuoteDraft; line: QuoteLine }) {
       {open ? (
         <div className="grid gap-3 border-t border-subtle p-3 sm:grid-cols-2">
           <Field label="Description" className="sm:col-span-2">
-            <TextArea value={line.description_md ?? ''} onChange={(v) => set({ description_md: v || null })} rows={2} placeholder="Markdown — prose, a short list, a table" />
+            <TextArea value={line.description_md ?? ''} onChange={(v) => set({ description_md: v || null })} rows={2} placeholder="Markdown: prose, a short list, a table" />
           </Field>
           <Field label="Quantity">
             <TextInput mono value={String(line.qty)} onChange={(v) => set({ qty: Number(v) || 0 })} inputMode="decimal" />
@@ -246,7 +246,7 @@ function LineEditor({ draft, line }: { draft: QuoteDraft; line: QuoteLine }) {
                   checked={!!line.hourly.primary}
                   onChange={(e) => set({ hourly: { ...line.hourly, rate_cents: line.hourly?.rate_cents ?? 0, primary: e.target.checked } })}
                 />
-                Primary hourly line — Project-Ops takes its <code className="font-mono text-[12px]">defaultBillRate</code> from this one (A14). Only one allowed.
+                Primary hourly line: Project-Ops takes its <code className="font-mono text-[12px]">defaultBillRate</code> from this one (A14). Only one allowed.
               </label>
             </>
           ) : null}
@@ -350,7 +350,7 @@ function SectionEditor({ draft, section, ordinal }: { draft: QuoteDraft; section
       </div>
       <Field
         label="Body"
-        hint={section.kind === 'summary' ? 'the client-facing lede — prose, not bullets' : 'markdown'}
+        hint={section.kind === 'summary' ? 'the client-facing lede: prose, not bullets' : 'markdown'}
         className="mt-3"
       >
         <TextArea value={section.body_md ?? ''} onChange={(v) => set({ body_md: v || null })} rows={section.kind === 'summary' ? 5 : 3} />
@@ -461,7 +461,7 @@ export function QuoteComposer({ draft }: { draft: QuoteDraft }) {
                   </Field>
                   <p className={cn('mt-2 text-[12.5px]', bad ? 'text-danger' : 'text-muted')}>
                     {members.length} line{members.length === 1 ? '' : 's'} · {selected} selected
-                    {bad ? ' — an exclusive group must have exactly one selected before send (A8).' : ''}
+                    {bad ? '. An exclusive group must have exactly one selected before send (A8).' : ''}
                   </p>
                 </div>
               );
@@ -472,7 +472,7 @@ export function QuoteComposer({ draft }: { draft: QuoteDraft }) {
 
       <Panel title="Recipients" eyebrow="Who may accept" internal>
         <p className="mb-3 text-[13px] text-secondary">
-          When a quote names recipients, only those addresses may accept it (A1). Addresses are studio-only — the document never
+          When a quote names recipients, only those addresses may accept it (A1). Addresses are studio-only; the document never
           prints them.
         </p>
         <div className="space-y-2">
@@ -600,8 +600,8 @@ export function QuoteComposer({ draft }: { draft: QuoteDraft }) {
       </Panel>
 
       <p className="px-1 pb-2 text-[12.5px] text-muted">
-        Deposit due on acceptance {formatMoney(totals.deposit_cents, q.currency)} · year one {formatMoney(totals.year_one_cents, q.currency)} — both from{' '}
-        <code className="font-mono">computeQuote</code>, the same function the client document and the PDF use.
+        Deposit due on acceptance {formatMoney(totals.deposit_cents, q.currency)} · year one {formatMoney(totals.year_one_cents, q.currency)} (both from{' '}
+         <code className="font-mono">computeQuote</code>, the same function the client document and the PDF use).
       </p>
     </div>
   );

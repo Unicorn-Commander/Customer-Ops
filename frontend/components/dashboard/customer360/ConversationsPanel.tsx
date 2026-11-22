@@ -73,7 +73,7 @@ export function ConversationsPanel(props: {
     >
       {!panel.configured ? (
         <ConnectNotice app="the device bridge">
-          iMessage & SMS are federated from the worker&apos;s device (the UUDC messages bridge) — Customer-Ops never stores message content.
+          iMessage & SMS are federated from the worker&apos;s device (the UUDC messages bridge); Customer-Ops never stores message content.
         </ConnectNotice>
       ) : (
         <>

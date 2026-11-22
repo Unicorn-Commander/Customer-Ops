@@ -105,7 +105,7 @@ const SAMPLE_INTAKES: LeadIntake[] = [
     status: 'FAILED', displayName: null, email: 'leasing@oakwoodindustrial.example',
     phone: null, orgName: 'Oakwood Industrial', tags: ['CRE', 'industrial'],
     score: 41, expectedValue: '60000.0000', currency: 'USD', priority: 'MEDIUM',
-    ownerUserKey: OWNER_AARON, notes: 'Enrichment failed — bad domain MX.',
+    ownerUserKey: OWNER_AARON, notes: 'Enrichment failed: bad domain MX.',
     resolvedContactId: null, provisional: false, customerId: null,
     statusDetail: 'Resolution failed: contact enrichment timed out. Retry available.',
     createdByUcUid: null, resolvedAt: null, createdAt: days(-1), updatedAt: hours(-22),
@@ -242,7 +242,7 @@ export default function PreviewLeadsPage() {
       customerId: null,
       detail: body.contactId
         ? 'Bound directly to the supplied Contact-Ops contact.'
-        : 'Staged in the queue — will resolve on the next Contact-Ops sweep.',
+        : 'Staged in the queue; will resolve on the next Contact-Ops sweep.',
     };
   };
 
