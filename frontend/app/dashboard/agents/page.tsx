@@ -213,10 +213,10 @@ function FollowUpCard({ result }: { result: FollowUpResult }) {
           {result.stagedDraft ? (
             <p className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-warning-subtle px-2.5 py-1 text-[11px] font-medium text-warning">
               <AlertTriangle className="h-3 w-3" strokeWidth={2.5} />
-              Staged as an Email-Ops draft — awaiting your approval, not sent
+              Staged as an Email-Ops draft, awaiting your approval, not sent
             </p>
           ) : (
-            <p className="mt-2 text-[11px] text-muted">A draft. Copy it, or stage it from the Email panel — never auto-sent.</p>
+            <p className="mt-2 text-[11px] text-muted">A draft. Copy it, or stage it from the Email panel; never auto-sent.</p>
           )}
         </>
       ) : (
@@ -242,7 +242,7 @@ function NudgeCard({ result }: { result: CollectionsNudgeResult }) {
           <div className="mt-2">
             <DraftBody value={result.body ?? ''} />
           </div>
-          <p className="mt-2 text-[11px] text-muted">Draft only — review, then send it yourself. The agent never charges or sends.</p>
+          <p className="mt-2 text-[11px] text-muted">Draft only. Review, then send it yourself. The agent never charges or sends.</p>
         </>
       ) : (
         <NoteFallback note={result.note} />
@@ -601,7 +601,7 @@ export default function AgentsPage() {
       {mode === 'operator' && (
         <p className="mt-2 flex items-center gap-1.5 rounded-token border border-subtle bg-surface-raised px-3 py-2 text-xs text-tertiary" style={{ borderColor: `${CORAL}40` }}>
           <ShieldAlert className="h-3.5 w-3.5 shrink-0" strokeWidth={2.4} style={{ color: CORAL }} />
-          Can act on your behalf — every action waits for your confirm.
+          Can act on your behalf; every action waits for your confirm.
         </p>
       )}
 
@@ -611,9 +611,9 @@ export default function AgentsPage() {
           <div className="grid h-full place-items-center">
             <div className="max-w-md text-center">
               <div className="mb-3 inline-grid"><OfficerAvatar size="lg" /></div>
-              <h2 className="text-base font-semibold text-primary">Hello — I’m your Relations Officer.</h2>
+              <h2 className="text-base font-semibold text-primary">Hello, I’m your Relations Officer.</h2>
               <p className="mx-auto mt-1.5 max-w-sm text-[13px] leading-relaxed text-tertiary">
-                Ask me about any relationship or your whole pipeline. I’ll advise first — and only act when you confirm.
+                Ask me about any relationship or your whole pipeline. I’ll advise first, and only act when you confirm.
               </p>
               <div className="mt-4 flex flex-col items-stretch gap-2">
                 {SUGGESTIONS.map((s) => (
@@ -712,7 +712,7 @@ export default function AgentsPage() {
         </Button>
       </div>
       <p className="mt-1.5 px-1 text-[11px] text-muted">
-        Enter to send · Shift+Enter for a new line. {mode === 'advisor' ? 'Advisor mode — I won’t act without switching to Operator.' : 'Operator mode — actions wait for your confirm.'}
+        Enter to send · Shift+Enter for a new line. {mode === 'advisor' ? 'Advisor mode: I won’t act without switching to Operator.' : 'Operator mode: actions wait for your confirm.'}
       </p>
 
       {/* Workspace-resolution error (degrade clean — the composer is disabled above) */}
