@@ -42,7 +42,7 @@ export function scopeDenial(
   return envelope({
     error: 'scope_denied',
     tool: toolName,
-    required_scope: required ?? '(no scope mapping — refusing to fail open)',
+    required_scope: required ?? '(no scope mapping; refusing to fail open)',
     granted_scopes: [...granted],
     hint: 'Mint a Personal Access Token with the required scope at Settings → API tokens.',
   });
@@ -173,11 +173,7 @@ export function mcpToolDenial(
   const wsArg = (args as { workspace_id?: unknown } | null | undefined)?.workspace_id;
   const requested = typeof wsArg === 'string' ? wsArg.trim() : '';
   if (!boundWorkspaceId) {
-    return workspaceDenial(
-      toolName,
-      '(none — token has no bound workspace)',
-      requested || '(none)',
-    );
+    return workspaceDenial(toolName, '(none; token has no bound workspace)', requested || '(none)');
   }
   if (requested && requested !== boundWorkspaceId) {
     return workspaceDenial(toolName, boundWorkspaceId, requested);
