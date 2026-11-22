@@ -33,12 +33,11 @@
  * ("leave the seams"; federation MOCKED in tests).
  */
 
-import { Injectable, Logger, Optional } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { BrigadeTokenSource } from '../common/federation/brigade-token-source';
 import { FederationWorkspaceMapService } from '../common/federation/federation-workspace-map.service';
 import { ContactOpsPort, ContactVerdict, FederationContext } from './contact-ops.port';
-import { ContactOpsLinkService } from './contact-ops-link.service';
 import {
   ContactIdentityInput,
   ContactUpsertResult,
@@ -91,9 +90,6 @@ export class ContactOpsClient extends ContactOpsPort {
     private readonly config: ConfigService,
     private readonly brigade: BrigadeTokenSource,
     private readonly federationMap: FederationWorkspaceMapService,
-    // AUD-CR-1: writes the link row from the org lookup when there is none yet,
-    // so a tenant created after provisioning is picked up on next use.
-    @Optional() private readonly links?: ContactOpsLinkService,
   ) {
     super();
     if (!this.baseUrl) {
@@ -154,11 +150,9 @@ export class ContactOpsClient extends ContactOpsPort {
    *  tenant and the addressed tenant never disagree. Canonical (lowercase, R5-3):
    *  a confirmed legacy row stored in another case goes on the wire lowercase. */
   private async route(ctx: FederationContext): Promise<string | null> {
-    let target = await this.federationMap.routableTarget(ctx.workspaceId, 'contact-ops');
-    // No row yet: ask the org lookup (backed off, never overwrites) and re-read.
-    if (target === null && this.links && (await this.links.ensureLinked(ctx.workspaceId))) {
-      target = await this.federationMap.routableTarget(ctx.workspaceId, 'contact-ops');
-    }
+    // Read only: the link row is written at a PERSON's sign-in (AUD-CR-1), never
+    // here, so a service caller (e.g. the read-only home summary) writes nothing.
+    const target = await this.federationMap.routableTarget(ctx.workspaceId, 'contact-ops');
     return target === null ? null : canonicalTenantId(target);
   }
 

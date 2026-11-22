@@ -79,7 +79,7 @@ export class AuthService {
     private readonly provisioning: WorkspaceProvisioningService,
     private readonly membership: MembershipService,
     private readonly invitations: WorkspaceInvitationsService,
-    // AUD-CR-1: links the signed-in workspace to its Contact-Ops tenant.
+    // AUD-CR-1: links a signed-in person's workspaces to their Contact-Ops tenant.
     @Optional() private readonly contactLinks?: ContactOpsLinkService,
   ) {
     const meta = describeAccessList();
@@ -170,13 +170,12 @@ export class AuthService {
         );
       } else {
         if (!user) user = await this.createEntitledUser(keycloakId, profile, email!);
-        const entitled = await this.provisioning.provisionEntitledOrgWorkspace({
+        await this.provisioning.provisionEntitledOrgWorkspace({
           user,
           orgId: orgEntitlement.orgId,
           orgName: orgEntitlement.orgName,
           role: orgEntitlement.role,
         });
-        this.linkContactOps(entitled.workspaceId);
       }
     }
 
@@ -257,6 +256,11 @@ export class AuthService {
     // self-serve users (who already hold a membership) and when tenancy is off.
     await this.membership.ensureSeededMembership(user);
 
+    // AUD-CR-1: a PERSON's sign-in links each of their workspaces to its
+    // Contact-Ops tenant (first sign-in, and again on a later sign-in if the
+    // tenant appeared after). Never for a service, delegated or federation token.
+    if (AuthService.isPersonProfile(profile)) this.linkContactOps(user);
+
     // Carry the verified entitlement SKUs onto the resolved user so the OIDC
     // callback can bake them into the minted HS256 session token (the browser
     // path). The KeycloakStrategy reads them off the verified KC access token and
@@ -315,7 +319,6 @@ export class AuthService {
         firstName: profile?.given_name || profile?.firstName,
         lastName: profile?.family_name || profile?.lastName,
       });
-      this.linkContactOps(result.workspaceId);
       return result.user;
     } catch (err) {
       if (err instanceof ConflictException) {
@@ -327,14 +330,33 @@ export class AuthService {
   }
 
   /**
-   * Ask the Contact-Ops org lookup for the workspace's link row (AUD-CR-1), keyed
-   * by the stored workspace id the sign-in just provisioned or joined. Not
-   * awaited: sign-in never waits on, or fails because of, Contact-Ops. Already
-   * linked is a no-op; no tenant yet is retried later (ContactOpsLinkService).
+   * Ask the Contact-Ops org lookup for the link row of every workspace the
+   * person holds an ACTIVE membership in (AUD-CR-1), keyed by the stored
+   * membership rows, never a claim. Not awaited: sign-in never waits on, or
+   * fails because of, Contact-Ops. Linked is a no-op; no tenant yet is retried
+   * at a later sign-in after the back-off (ContactOpsLinkService).
+   * Throttled per person there, so a per-request sign-in stays cheap.
    */
-  private linkContactOps(workspaceId: string): void {
-    if (!this.contactLinks) return;
-    void this.contactLinks.ensureLinked(workspaceId);
+  private linkContactOps(user: User): void {
+    const links = this.contactLinks;
+    if (!links) return;
+    void links.linkForPerson(MembershipService.membershipKey(user), async () =>
+      (await this.membership.listActiveMemberships(user)).map((m) => m.workspaceId),
+    );
+  }
+
+  /** A person's own sign-in: a verified email and no client, delegation or
+   *  federation identity. Service callers never trigger the link write. */
+  private static isPersonProfile(profile: any): boolean {
+    return (
+      typeof profile?.email === 'string' &&
+      profile.email.trim() !== '' &&
+      profile?.email_verified === true &&
+      !profile?.act &&
+      !profile?.client_id &&
+      !profile?.clientId &&
+      !profile?.__federationActor
+    );
   }
 
   /** Mint a local HS256 session token for a resolved user (post OIDC callback). */

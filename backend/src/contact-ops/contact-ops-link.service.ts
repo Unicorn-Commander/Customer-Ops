@@ -7,12 +7,12 @@
  * Contact-Ops tenant appeared after the POST, stayed unlinked.
  *
  * Now the same writer (ContactOpsMapProvisioner.ensureForOrg: the lookup's
- * tenant for exactly this org id, never overwriting an existing row) runs:
- *   - at sign-in, for the workspace the sign-in just provisioned or joined
- *     (the stored workspace row's id: the Ops-Center org id, or the self-serve
- *     workspace id), without holding the sign-in up;
- *   - whenever a Contact-Ops call finds no routable row for a workspace, so a
- *     tenant that appears later is picked up on next use.
+ * tenant for exactly this org id, never overwriting an existing row) runs at a
+ * PERSON's sign-in, for every workspace the person holds an ACTIVE membership
+ * in (the stored membership rows), without holding the sign-in up. A tenant
+ * that appears later is picked up at a later sign-in, after the back-off.
+ * Service, delegated and federation callers never reach it (AuthService), and
+ * Contact-Ops calls only read the row: a read-only caller writes nothing.
  *
  * Idempotent and bounded: a workspace is remembered as linked only after the row
  * exists; one lookup per workspace is in flight at a time; a lookup that finds
@@ -35,12 +35,34 @@ export class ContactOpsLinkService {
   private readonly linked = new Set<string>();
   private readonly inFlight = new Map<string, Promise<boolean>>();
   private readonly lastMiss = new Map<string, number>();
+  private readonly lastPerson = new Map<string, number>();
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly lookup: ContactOpsOrgLookupClient,
     private readonly provisioner: ContactOpsMapProvisioner,
   ) {}
+
+  /**
+   * A person's sign-in (AUD-CR-1): link each of their workspaces. Asked at most
+   * once per CONTACT_LINK_RETRY_MS per person, so a per-request sign-in does not
+   * re-read memberships every time. Never throws.
+   */
+  async linkForPerson(
+    userKey: string,
+    workspaceIds: () => Promise<string[]>,
+    now: number = Date.now(),
+  ): Promise<void> {
+    if (!userKey || !this.lookup.isConfigured()) return;
+    const last = this.lastPerson.get(userKey);
+    if (last !== undefined && now - last < CONTACT_LINK_RETRY_MS) return;
+    this.lastPerson.set(userKey, now);
+    try {
+      for (const id of await workspaceIds()) await this.ensureLinked(id, now);
+    } catch (error) {
+      this.logger.warn(`contact-ops link at sign-in skipped: ${(error as Error).name}`);
+    }
+  }
 
   /**
    * True when the workspace has a contact-ops row (now or after this call).

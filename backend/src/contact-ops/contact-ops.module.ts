@@ -1,7 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ContactOpsPort } from './contact-ops.port';
 import { ContactOpsClient } from './contact-ops.client';
-import { ContactOpsMapModule } from './contact-ops-map.module';
 
 /**
  * The Contact-Ops federation seam.
@@ -16,7 +15,6 @@ import { ContactOpsMapModule } from './contact-ops-map.module';
  * every consumer.
  */
 @Module({
-  imports: [ContactOpsMapModule],
   providers: [{ provide: ContactOpsPort, useClass: ContactOpsClient }],
   exports: [ContactOpsPort],
 })

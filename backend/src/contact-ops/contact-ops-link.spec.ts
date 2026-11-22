@@ -132,29 +132,36 @@ describe('Contact-Ops link at first sign-in (AUD-CR-1)', () => {
     svc: AuthService;
     provisioning: { provisionSelfServeUser: jest.Mock; provisionEntitledOrgWorkspace: jest.Mock };
   } {
+    // The stored ACTIVE membership rows: whatever this sign-in provisioned.
+    const held: string[] = [];
     const provisioning = {
-      provisionSelfServeUser: jest.fn(async (identity: any) => ({
-        user: {
-          id: 'local-new',
-          keycloakId: identity.keycloakId,
-          email: identity.email,
-          isActive: true,
-        } as User,
-        workspaceId: SELF_SERVE_WS,
-        membership: {},
-        workspaceIdSource: 'local-fallback',
-      })),
-      provisionEntitledOrgWorkspace: jest.fn(async (req: any) => ({
-        workspaceId: req.orgId,
-        membership: {},
-        workspaceIdSource: 'local-fallback',
-      })),
+      provisionSelfServeUser: jest.fn(async (identity: any) => {
+        held.push(SELF_SERVE_WS);
+        return {
+          user: {
+            id: 'local-new',
+            keycloakId: identity.keycloakId,
+            email: identity.email,
+            isActive: true,
+          } as User,
+          workspaceId: SELF_SERVE_WS,
+          membership: {},
+          workspaceIdSource: 'local-fallback',
+        };
+      }),
+      provisionEntitledOrgWorkspace: jest.fn(async (req: any) => {
+        held.push(req.orgId);
+        return { workspaceId: req.orgId, membership: {}, workspaceIdSource: 'local-fallback' };
+      }),
     };
     const svc = new AuthService(
       { sign: jest.fn(() => 'tok') } as unknown as JwtService,
       prisma,
       provisioning as any,
-      { ensureSeededMembership: jest.fn(async () => undefined) } as any,
+      {
+        ensureSeededMembership: jest.fn(async () => undefined),
+        listActiveMemberships: jest.fn(async () => held.map((workspaceId) => ({ workspaceId }))),
+      } as any,
       { permitsIdentity: jest.fn().mockResolvedValue(false) } as any,
       links,
     );
@@ -253,20 +260,81 @@ describe('Contact-Ops link at first sign-in (AUD-CR-1)', () => {
     expect(prisma.rows).toHaveLength(1);
   });
 
-  it('the Contact-Ops client links an unmapped workspace on use ("New relationship" works)', async () => {
+  it('a tenant created after first sign-in is linked at a later sign-in, no operator', async () => {
+    process.env.CUSTOMER_OPS_SIGNUP_MODE = 'open';
+    const { svc } = authService();
+    const person = { email: 'stranger@example.com', email_verified: true };
+    const t0 = Date.now();
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(t0);
+
+    await svc.validateKeycloakUser('kc-stranger', person);
+    await settle();
+    expect(lookups).toEqual([SELF_SERVE_WS]);
+    expect(prisma.rows).toEqual([]);
+
+    tenants[SELF_SERVE_WS] = TENANT_SELF;
+    // A request inside the back-off asks nothing (sign-in runs per request).
+    await svc.validateKeycloakUser('kc-stranger', person);
+    await settle();
+    expect(lookups).toEqual([SELF_SERVE_WS]);
+
+    clock.mockReturnValue(t0 + CONTACT_LINK_RETRY_MS + 1);
+    await svc.validateKeycloakUser('kc-stranger', person);
+    await settle();
+    expect(lookups).toEqual([SELF_SERVE_WS, SELF_SERVE_WS]);
+    expect(prisma.rows).toEqual([
+      expect.objectContaining({ localWorkspaceId: SELF_SERVE_WS, targetWorkspaceId: TENANT_SELF }),
+    ]);
+  });
+
+  it('a service, delegated or federation token never triggers the lookup or a write', async () => {
+    tenants[SELF_SERVE_WS] = TENANT_SELF;
+    process.env.CUSTOMER_OPS_SIGNUP_MODE = 'open';
+    const { svc } = authService();
+    // First a person signs up (the workspace exists); clear what that did.
+    await svc.validateKeycloakUser('kc-stranger', {
+      email: 'stranger@example.com',
+      email_verified: true,
+    });
+    await settle();
+    prisma.rows.length = 0;
+    lookups.length = 0;
+    const fresh = new ContactOpsLinkService(
+      prisma,
+      new ContactOpsOrgLookupClient(config),
+      new ContactOpsMapProvisioner(prisma, new ContactOpsOrgLookupClient(config), fedMap),
+    );
+    (svc as any).contactLinks = fresh;
+
+    for (const extra of [
+      { client_id: 'ops-center-home' },
+      { clientId: 'ops-center-home' },
+      { act: { sub: 'agent' } },
+      { __federationActor: true },
+    ]) {
+      await svc
+        .validateKeycloakUser('kc-stranger', {
+          email: 'stranger@example.com',
+          email_verified: true,
+          ...extra,
+        })
+        .catch(() => undefined);
+      await settle();
+    }
+    expect(lookups).toEqual([]);
+    expect(prisma.rows).toEqual([]);
+  });
+
+  it('Contact-Ops calls only read the link row: an unmapped workspace is not linked on use', async () => {
+    tenants[ORG] = TENANT;
     const client = new ContactOpsClient(
       config,
       { exchangedToken: jest.fn().mockResolvedValue(null) } as unknown as BrigadeTokenSource,
       fedMap,
-      links,
     );
-    const ctx = { workspaceId: ORG, ucUid: 'kc-new-owner' };
-    expect(await client.isWorkspaceConnected(ctx)).toBe(false);
-
-    tenants[ORG] = TENANT;
-    jest.spyOn(Date, 'now').mockReturnValue(Date.now() + CONTACT_LINK_RETRY_MS + 1);
-    expect(await client.isWorkspaceConnected(ctx)).toBe(true);
-    expect(prisma.rows).toEqual([expect.objectContaining({ targetWorkspaceId: TENANT })]);
+    expect(await client.isWorkspaceConnected({ workspaceId: ORG, ucUid: null })).toBe(false);
+    expect(lookups).toEqual([]);
+    expect(prisma.rows).toEqual([]);
   });
 
   it('never writes over an existing row', async () => {
