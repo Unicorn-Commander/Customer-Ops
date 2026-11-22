@@ -9,7 +9,12 @@
 #              service lets the RLS integration proof
 #              (backend/src/customers/customers.rls.int.spec.ts) actually RUN as
 #              the NOBYPASSRLS `customer_ops_app` role instead of skipping via
-#              its `describeIfDb` guard — the tenant fence is proven on every PR.
+#              its `describeIfDb` guard — the tenant fence is proven on every PR —
+#              and the two onboarding integration specs
+#              (contact-link + workspace-onboarding) RUN against an isolated
+#              `customer_onboarding_test` scratch database on the same service
+#              (0 skipped; see the "Create the isolated onboarding test database"
+#              step).
 #   frontend — install, typecheck, production build, lint, and run the node --test
 #              specs (contact picker + Connect-your-AI panel).
 #   tenancy  — the exit-coded, hermetic scripts/verify-tenancy.sh (boots its own
@@ -80,6 +85,12 @@ jobs:
       # The spec's out-of-band owner client (seeds/cleans the non-RLS control
       # table). Falls back to the app URL if unset; we point it at the owner.
       CUSTOMER_OPS_RLS_OWNER_DATABASE_URL: postgresql://localhost:5432/customer_ops
+      # Isolated scratch database for the two onboarding integration specs
+      # (contact-link + workspace-onboarding). NEVER a shared/production DB: the
+      # spec guards refuse any host other than 127.0.0.1 or the `postgres`
+      # service host (when CI=true), and any database name other than
+      # `customer_onboarding_test`, so this can only ever point here.
+      CUSTOMER_ONBOARDING_TEST_DB_URL: postgresql://localhost:5432/customer_ops
 
     steps:
       - name: Checkout
@@ -107,6 +118,22 @@ jobs:
         # + executed by ts-jest instead.
         run: npx eslint "src/**/*.ts"
 
+      - name: Create the isolated onboarding test database
+        # Batch 288d14db item 5: the two onboarding integration specs need their
+        # own scratch database on the service host (their guard refuses every
+        # other host and every non-_test database name). The connect URL drops
+        # the `?schema=public` tail (psql rejects it; Prisma adds it itself), and
+        # the EXISTS check runs as the owner in that database so it never scans
+        # a foreign catalog. Idempotent so re-runs on a recycled service
+        # container stay green.
+        run: |
+          CONNECT_URL="$(printf '%s' "$CUSTOMER_ONBOARDING_TEST_DB_URL" | sed 's/[?&]schema=public//')"
+          psql "$CONNECT_URL" -tAc "SELECT 1" >/dev/null 2>&1 \
+            || psql "postgresql://localhost:5432/customer_ops" \
+                 -c "CREATE DATABASE customer_onboarding_test"
+        env:
+          CUSTOMER_ONBOARDING_TEST_DB_URL: ${{ env.CUSTOMER_ONBOARDING_TEST_DB_URL }}
+
       - name: Apply migrations to the service DB (schema + RLS + roles)
         # As the owner/admin — the same command the backend entrypoint runs. This
         # creates the customer_ops_app runtime role (NOBYPASSRLS, password
@@ -115,17 +142,28 @@ jobs:
         env:
           DATABASE_URL: ${{ env.ADMIN_DATABASE_URL }}
 
-      - name: Test (jest --ci, incl. the RLS integration proof)
+      - name: Apply migrations to the isolated onboarding test DB
+        # Same migration history, applied to the scratch database the two
+        # onboarding integration specs run against (their guard requires the
+        # _test database name on the service host in CI).
+        run: npx prisma migrate deploy
+        env:
+          DATABASE_URL: ${{ env.CUSTOMER_ONBOARDING_TEST_DB_URL }}
+
+      - name: Test (jest --ci, incl. the RLS + onboarding integration proofs)
         # DATABASE_URL is set for any code path that reads it; the RLS spec uses
-        # CUSTOMER_OPS_RLS_TEST_DATABASE_URL (app role) + the owner URL above.
-        # contact-link + workspace-onboarding integration specs not run here: they
-        # require the DB at 127.0.0.1 (spec guard); Customer-Ops batch item
+        # CUSTOMER_OPS_RLS_TEST_DATABASE_URL (app role) + the owner URL above; the
+        # contact-link + workspace-onboarding specs use
+        # CUSTOMER_ONBOARDING_TEST_DB_URL (the isolated _test database above —
+        # their guard now admits the `postgres` service host in CI, so all 30
+        # tests run instead of skipping).
         # Bounded workers: jest defaults to one worker per visible core (40 on the
         # legacy1 runner), and ts-jest workers that many SIGKILL inside the job's
         # 8 GB memory cap ("worker terminated by another process").
         run: npx jest --ci --maxWorkers=3
         env:
           DATABASE_URL: ${{ env.ADMIN_DATABASE_URL }}
+          CUSTOMER_ONBOARDING_TEST_DB_URL: ${{ env.CUSTOMER_ONBOARDING_TEST_DB_URL }}
 
   # --------------------------------------------------------------------------
   # FRONTEND — typecheck + production build + lint + node --test specs.
