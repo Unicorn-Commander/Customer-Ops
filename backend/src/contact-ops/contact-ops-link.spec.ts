@@ -280,31 +280,72 @@ describe('Contact-Ops link at first sign-in (AUD-CR-1)', () => {
     expect(prisma.rows).toHaveLength(1);
   });
 
-  it('a tenant created after first sign-in is linked at a later sign-in, no operator', async () => {
+  it('a tenant created after first sign-in is linked by a later session-token request', async () => {
     process.env.CUSTOMER_OPS_SIGNUP_MODE = 'open';
     const { svc } = authService();
     const person = { email: 'stranger@example.com', email_verified: true };
     const t0 = Date.now();
     const clock = jest.spyOn(Date, 'now').mockReturnValue(t0);
 
-    await svc.validateKeycloakUser('kc-stranger', person);
+    // First (and only) SSO sign-in: no tenant yet, nothing written.
+    const user = await svc.validateKeycloakUser('kc-stranger', person);
     await settle();
     expect(lookups).toEqual([SELF_SERVE_WS]);
     expect(prisma.rows).toEqual([]);
 
+    // From here the browser sends the minted HS256 session token.
+    prisma.user.findUnique.mockResolvedValue(user);
+    const session = {
+      sub: user.id,
+      email: 'stranger@example.com',
+      role: 'MEMBER',
+      username: 'stranger@example.com',
+      email_verified: true,
+    };
     tenants[SELF_SERVE_WS] = TENANT_SELF;
-    // A request inside the back-off asks nothing (sign-in runs per request).
-    await svc.validateKeycloakUser('kc-stranger', person);
+    // Inside the back-off: no second lookup.
+    await svc.validateJwtPayload(session);
     await settle();
     expect(lookups).toEqual([SELF_SERVE_WS]);
 
     clock.mockReturnValue(t0 + CONTACT_LINK_RETRY_MS + 1);
-    await svc.validateKeycloakUser('kc-stranger', person);
+    await svc.validateJwtPayload(session);
     await settle();
     expect(lookups).toEqual([SELF_SERVE_WS, SELF_SERVE_WS]);
     expect(prisma.rows).toEqual([
       expect.objectContaining({ localWorkspaceId: SELF_SERVE_WS, targetWorkspaceId: TENANT_SELF }),
     ]);
+  });
+
+  it('a session token that is not a person (no verified email, client or delegation) writes nothing', async () => {
+    process.env.CUSTOMER_OPS_SIGNUP_MODE = 'open';
+    const { svc } = authService();
+    const user = await svc.validateKeycloakUser('kc-stranger', {
+      email: 'stranger@example.com',
+      email_verified: true,
+    });
+    await settle();
+    lookups.length = 0;
+    tenants[SELF_SERVE_WS] = TENANT_SELF;
+    prisma.user.findUnique.mockResolvedValue(user);
+    (svc as any).contactLinks = new ContactOpsLinkService(
+      prisma,
+      new ContactOpsOrgLookupClient(config),
+      new ContactOpsMapProvisioner(prisma, new ContactOpsOrgLookupClient(config), fedMap),
+    );
+    const base = { sub: user.id, email: 'stranger@example.com', role: 'MEMBER', username: 's' };
+    for (const payload of [
+      { ...base, email_verified: false },
+      { ...base, email_verified: true, client_id: 'ops-center-home' },
+      { ...base, email_verified: true, act: { sub: 'agent' } },
+    ]) {
+      await svc.validateJwtPayload(payload);
+      await settle();
+    }
+    await svc.validateJwtPayload({ ...base, email_verified: true }, 'co_pat_fixture');
+    await settle();
+    expect(lookups).toEqual([]);
+    expect(prisma.rows).toEqual([]);
   });
 
   it('a service, delegated or federation token never triggers the lookup or a write', async () => {

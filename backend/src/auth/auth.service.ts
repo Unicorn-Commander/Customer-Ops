@@ -438,6 +438,15 @@ export class AuthService {
     if (!user || !user.isActive) {
       throw new UnauthorizedException('User not found or inactive');
     }
+    // AUD-CR-1: the browser runs on this minted session token, so a tenant that
+    // appears after first sign-in is linked here (per-person back-off applies).
+    // Only a person's session: verified email, no client/delegation identity.
+    if (
+      AuthService.isPersonProfile(payload) &&
+      !(typeof forwardedAccessToken === 'string' && forwardedAccessToken.startsWith('co_pat_'))
+    ) {
+      this.linkContactOps(user);
+    }
     return user;
   }
 
