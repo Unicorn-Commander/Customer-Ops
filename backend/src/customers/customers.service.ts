@@ -2750,7 +2750,11 @@ export class CustomersService {
     void this.workspaces
       .resolveAuthorized(user, requestedWorkspaceId)
       .then((ws) => this.graphIngest!.upsertCustomer(ws, customerId))
-      .catch(() => undefined);
+      .catch((err) =>
+        this.logger.warn(
+          `graph refresh for customer ${customerId} failed: ${(err as Error)?.message ?? err}`,
+        ),
+      );
   }
 
   /** The workspace id the current RLS transaction is bound to (GUC read). */

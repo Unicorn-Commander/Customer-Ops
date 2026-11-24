@@ -98,18 +98,28 @@ export class ProvisioningService {
   }
 
   private async register(input: CreateInput): Promise<void> {
+    // A provisioning replay finds the mirror row and returns early, so it never
+    // re-registers: a failed registration here is NOT retried. Say so.
+    const notRetried =
+      'NOT retried (a provisioning replay adopts the existing row); re-run ' +
+      'POST /workspaces on uc-registry with this org id (idempotent on the id).';
     try {
-      await this.registry.mintWorkspaceId({
+      const minted = await this.registry.mintWorkspaceId({
         workspaceId: input.orgId,
         slug: input.slugs[0],
         displayName: input.displayName,
         ownerUcUid: input.ownerSubject,
         ownerIsDefault: true,
       });
+      if (minted?.source !== 'uc-registry') {
+        this.logger.warn(
+          `uc-registry registration not confirmed for ${input.orgId} (${minted.source}); ${notRetried}`,
+        );
+      }
     } catch (error) {
       // Degrade-clean, exactly like the sign-in path.
       this.logger.warn(
-        `uc-registry registration failed for ${input.orgId}: ${(error as Error).name}`,
+        `uc-registry registration failed for ${input.orgId}: ${(error as Error).name}; ${notRetried}`,
       );
     }
   }

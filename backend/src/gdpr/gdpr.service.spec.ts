@@ -1,4 +1,8 @@
-import { ForbiddenException, NotFoundException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  InternalServerErrorException,
+  NotFoundException,
+} from '@nestjs/common';
 import { AuditAction, User } from '@prisma/client';
 import { GdprService } from './gdpr.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -277,6 +281,26 @@ describe('GdprService', () => {
       expect(audit.rows[0].resource).toBe('workspace');
       expect(audit.rows[0].details.mode).toBe('delete');
       expect(res.graphPurged).toBe(true);
+    });
+
+    it('delete mode FAILS (not done) when the workspace archive write fails (CuO-SW-2)', async () => {
+      const tx = makeTx();
+      const audit = makeAudit();
+      const prisma = makePrisma();
+      (prisma.svc.workspace.update as jest.Mock).mockRejectedValueOnce(new Error('db down'));
+      const svc = new GdprService(
+        prisma.svc,
+        makeWorkspaces(tx),
+        makeMembership(true),
+        audit.svc,
+        makeGraph().svc,
+      );
+
+      await expect(svc.offboardWorkspaceForUser(owner, WS, 'delete')).rejects.toBeInstanceOf(
+        InternalServerErrorException,
+      );
+      // What was deleted is still audited, flagged not archived.
+      expect(audit.rows[0].details.archived).toBe(false);
     });
 
     it('anonymize mode strips PII (deletes intakes, nulls fields) but keeps rows, no archive', async () => {

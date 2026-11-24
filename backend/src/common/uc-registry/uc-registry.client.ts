@@ -152,7 +152,8 @@ export class UcRegistryClient {
     // registerWorkspace() already logged the specific reason.
     this.logger.warn(
       `uc-registry registration unavailable — using locally-minted workspace id ${workspaceId} ` +
-        '(not yet confirmed upstream; a reconciliation can register it later).',
+        '(not confirmed upstream and NOT retried automatically; to register it, re-run ' +
+        `POST ${base}/workspaces with this id, which is idempotent on the supplied id).`,
     );
     return { workspaceId, source: 'local-fallback' };
   }

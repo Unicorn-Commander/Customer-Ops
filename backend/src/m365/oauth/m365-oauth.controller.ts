@@ -12,7 +12,7 @@
  * signature is the security boundary, not a bearer.
  */
 
-import { Controller, Get, Query, Req, Res, UseGuards } from '@nestjs/common';
+import { Controller, Get, Logger, Query, Req, Res, UseGuards } from '@nestjs/common';
 import {
   ApiBearerAuth,
   ApiExcludeEndpoint,
@@ -33,6 +33,8 @@ type AuthedUser = User & Partial<WithWorkspaceClaim>;
 @ApiTags('m365')
 @Controller('m365/oauth')
 export class M365OAuthController {
+  private readonly logger = new Logger(M365OAuthController.name);
+
   constructor(private readonly oauth: M365OAuthService) {}
 
   /**
@@ -81,6 +83,7 @@ export class M365OAuthController {
       return res.redirect(this.oauth.returnUrl('connected'));
     } catch (err) {
       // Don't leak the exception to the browser — log server-side, redirect clean.
+      this.logger.warn(`M365 connect failed: ${(err as Error)?.message ?? err}`);
       return res.redirect(this.oauth.returnUrl('error', 'connect_failed'));
     }
   }

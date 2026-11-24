@@ -1,4 +1,5 @@
 import { createHash } from 'crypto';
+import { Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { User } from '@prisma/client';
@@ -219,6 +220,17 @@ describe('M365 OAuth handshake', () => {
       await controller.callback('code', 'not-a-valid-jwt', undefined, {}, res);
       const target = res.redirect.mock.calls[0][0] as string;
       expect(target).toContain('m365=error');
+    });
+
+    it('logs a connect failure server-side (CuO-SW-2)', async () => {
+      const { controller } = build();
+      const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      try {
+        await controller.callback('code', 'not-a-valid-jwt', undefined, {}, fakeRes());
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('M365 connect failed'));
+      } finally {
+        warn.mockRestore();
+      }
     });
 
     it('redirects to ?m365=error when Entra returned an error (denied / admin consent)', async () => {
