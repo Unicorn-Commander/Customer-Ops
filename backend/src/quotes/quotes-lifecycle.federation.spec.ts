@@ -107,6 +107,7 @@ function build(opts: { aoResults: Array<'ok' | 'failed' | Error>; poConfigured?:
     accounting,
     workspaces,
     tx,
+    config,
     projects,
     fanOut,
     failUpdates: (v: boolean) => (failUpdate = v),
@@ -283,6 +284,43 @@ describe('QuotesLifecycleService accepted-quote fan-out retry (CuO-SW-1)', () =>
       });
       await service.reconcile();
       expect(row.federated.accounting_ops).toBe('ok');
+    });
+  });
+
+  describe('outer catch (CUO76-R2-4)', () => {
+    it('a quote load that throws stamps every configured side failed, never ok or skipped', async () => {
+      const { row, tx, accounting, projects, fanOut } = build({
+        aoResults: [],
+        poConfigured: true,
+      });
+      tx.quote.findFirst.mockRejectedValueOnce(new Error('db down'));
+      const result = await fanOut();
+      expect(result).toMatchObject({ accounting_ops: 'failed', project_ops: 'failed' });
+      expect(row.federated).toMatchObject({ accounting_ops: 'failed', project_ops: 'failed' });
+      expect(accounting.acceptQuote).not.toHaveBeenCalled();
+      expect(projects.acceptQuote).not.toHaveBeenCalled();
+    });
+
+    it('a throw after AO confirmed keeps AO ok (confirmed) and stamps PO failed', async () => {
+      const { config, fanOut, projects } = build({ aoResults: ['ok'], poConfigured: true });
+      const get = config.get.bind(config);
+      jest.spyOn(config, 'get').mockImplementation(((key: string) => {
+        if (key === 'QUOTES_PUBLIC_BASE_URL') throw new Error('config exploded');
+        return get(key);
+      }) as any);
+      const result = await fanOut();
+      expect(result).toMatchObject({ accounting_ops: 'ok', project_ops: 'failed' });
+      expect(projects.acceptQuote).not.toHaveBeenCalled();
+    });
+
+    it('a throw on the retry path leaves the retried side failed', async () => {
+      const { service, row, tx, fanOut } = build({ aoResults: ['failed'] });
+      await fanOut();
+      pastBackoff(row);
+      tx.quote.findFirst.mockRejectedValueOnce(new Error('db down'));
+      await service.reconcile();
+      expect(row.federated.accounting_ops).toBe('failed');
+      expect(row.federated.retries).toBe(1);
     });
   });
 });

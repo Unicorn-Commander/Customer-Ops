@@ -1150,7 +1150,9 @@ export class QuotesLifecycleService {
     } catch (err) {
       // The quote could not be loaded, so neither side ran. A configured side
       // that is not yet 'ok' is marked failed so reconcile() retries it (the
-      // retry re-evaluates and may settle on 'skipped').
+      // retry re-evaluates and may settle on 'skipped'). This catch only ever
+      // stamps 'failed': 'ok' survives only for a side its callee already
+      // confirmed earlier in this run (CUO76-R2-4).
       if (
         run.accounting_ops &&
         this.accounting?.isConfigured() &&
