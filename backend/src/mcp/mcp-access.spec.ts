@@ -1,6 +1,9 @@
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WorkspaceRole } from '@prisma/client';
-import { MCP_TOOL_MIN_ROLE, mcpRoleDenial, mcpToolDenial, mcpToolMinRole } from './mcp-access';
+import { MCP_TOOL_MIN_ROLE, mcpRoleDenial, mcpRoleDenialFor, mcpToolDenial, mcpToolMinRole } from './mcp-access';
 import { MCP_TOOL_SCOPE_MAP } from '../auth/pat/pat.constants';
+import { roleMeetsMinimum } from '../common/workspace/workspace-role.util';
+import { McpService } from './mcp.service';
 
 const WS = '0190a000-7e57-7000-8000-00000000c007';
 const OTHER_WS = '0190a000-7e57-7000-8000-0000000000ff';
@@ -19,6 +22,9 @@ describe('mcpToolDenial — JWT / federation callers', () => {
     expect(
       mcpToolDenial('transition_customer_stage', { workspace_id: OTHER_WS }, null, null),
     ).toBeNull();
+    // The PAT scope gate itself still lets an unmapped name through for a
+    // non-PAT caller; the DENY-BY-DEFAULT role gate (mcpRoleDenialFor /
+    // McpService.enforceToolRole) is what refuses it — see the role-RBAC block.
     expect(mcpToolDenial('not_a_real_tool', {}, null, null)).toBeNull();
   });
 });
@@ -100,40 +106,82 @@ describe('mcpToolDenial — PAT workspace fence', () => {
   });
 });
 
-describe('MCP_TOOL_MIN_ROLE — the mutation roster', () => {
-  it('every write/agent tool requires at least MEMBER (a viewer cannot mutate)', () => {
+describe('MCP_TOOL_MIN_ROLE — the role registry', () => {
+  it('every entry is at least VIEWER; every write/agent tool is at least MEMBER', () => {
     for (const role of Object.values(MCP_TOOL_MIN_ROLE)) {
-      expect([WorkspaceRole.MEMBER, WorkspaceRole.OWNER]).toContain(role);
+      expect(Object.values(WorkspaceRole)).toContain(role);
+    }
+    for (const [tool, scope] of Object.entries(MCP_TOOL_SCOPE_MAP)) {
+      if (scope.startsWith('write:') || scope === 'run:agents') {
+        // A MUTATING tool must gate at MEMBER or above — never viewer-level.
+        expect(roleMeetsMinimum(MCP_TOOL_MIN_ROLE[tool], WorkspaceRole.MEMBER)).toBe(true);
+      }
     }
   });
 
-  it('the role-gated set is exactly the write/agent scopes — read tools stay viewer-level', () => {
-    // A tool that MUTATES (write:* / run:agents in the PAT scope map) must carry a
-    // minimum role; a read:* tool must NOT. Keeps the two maps in lock-step so a
-    // new mutation tool can't slip past the role gate.
+  it('a mutating tool is mapped at MEMBER+ and a read tool at exactly VIEWER', () => {
+    // Keeps the two maps in lock-step so a new mutation tool cannot slip past
+    // the role gate and a new read tool cannot be forgotten from the registry.
     for (const [tool, scope] of Object.entries(MCP_TOOL_SCOPE_MAP)) {
       const mutates = scope.startsWith('write:') || scope === 'run:agents';
-      expect(Boolean(mcpToolMinRole(tool))).toBe(mutates);
+      expect(MCP_TOOL_MIN_ROLE[tool]).toBeDefined();
+      expect(MCP_TOOL_MIN_ROLE[tool] === WorkspaceRole.VIEWER).toBe(!mutates);
     }
+    // render_quote is a read with NO PAT scope entry; it is still mapped (VIEWER)
+    // so the role registry stays total over the registered roster.
+    expect(MCP_TOOL_MIN_ROLE['render_quote']).toBe(WorkspaceRole.VIEWER);
   });
 
-  it('an unmapped / read tool has no minimum role (null)', () => {
-    expect(mcpToolMinRole('list_customers')).toBeNull();
-    expect(mcpToolMinRole('get_customer_360')).toBeNull();
-    expect(mcpToolMinRole('health')).toBeNull();
-    expect(mcpToolMinRole('list_my_workspaces')).toBeNull();
-    expect(mcpToolMinRole('not_a_real_tool')).toBeNull();
+  it('a read tool carries an explicit VIEWER minimum (distinguishable from "forgotten")', () => {
+    expect(mcpToolMinRole('list_customers')).toBe(WorkspaceRole.VIEWER);
+    expect(mcpToolMinRole('get_customer_360')).toBe(WorkspaceRole.VIEWER);
+    expect(mcpToolMinRole('health')).toBe(WorkspaceRole.VIEWER);
+    expect(mcpToolMinRole('list_my_workspaces')).toBe(WorkspaceRole.VIEWER);
+  });
+
+  it('every REGISTERED MCP tool has a MCP_TOOL_MIN_ROLE entry (deny-by-default roster)', () => {
+    // The live enforcement registry (MCP_TOOL_MIN_ROLE) must cover every tool
+    // McpService.createServerForUser registers, so a NEW tool cannot be shipped
+    // without a role decision. A registration forgotten from the registry is
+    // refused for every caller (mcpRoleDenialFor) — this test is what catches
+    // the forgetting at the head. Quotes registration is gated on the optional
+    // QuotesService being present; pass a live stub so the quote tools register.
+    const register = jest
+      .spyOn(McpServer.prototype, 'registerTool')
+      .mockImplementation(() => ({} as any));
+    try {
+      const stub = {} as any;
+      const service = new McpService(
+        stub,
+        stub,
+        stub,
+        stub,
+        stub,
+        stub,
+        stub,
+        stub,
+        { execute: async () => ({}) } as any,
+      );
+      void service.createServerForUser({ id: 'synthetic' } as any);
+      const registered = register.mock.calls.map(([name]) => String(name));
+      expect(registered.length).toBeGreaterThanOrEqual(35);
+      const missing = registered.filter((name) => !(name in MCP_TOOL_MIN_ROLE));
+      expect(missing).toEqual([]);
+    } finally {
+      register.mockRestore();
+    }
   });
 });
 
 describe('mcpRoleDenial — workspace role RBAC on MCP tools', () => {
   it('403s a VIEWER on every mutation + agent-run tool', () => {
-    for (const tool of Object.keys(MCP_TOOL_MIN_ROLE)) {
+    for (const [tool, required] of Object.entries(MCP_TOOL_MIN_ROLE)) {
+      if (required === WorkspaceRole.VIEWER) continue; // read tools: pinned below
       const denial = mcpRoleDenial(tool, WorkspaceRole.VIEWER);
       const detail = detailOf(denial);
       expect(detail.error).toBe('role_denied');
       expect(detail.tool).toBe(tool);
-      expect(detail.required_role).toBe(MCP_TOOL_MIN_ROLE[tool].toLowerCase());
+      expect(detail.required_role).toBe(required.toLowerCase());
       expect(detail.your_role).toBe('viewer');
     }
   });
@@ -155,10 +203,56 @@ describe('mcpRoleDenial — workspace role RBAC on MCP tools', () => {
     expect(mcpRoleDenial('transition_customer_stage', WorkspaceRole.OWNER)).toBeNull();
   });
 
-  it('never gates a viewer-level read tool, regardless of role (incl. a VIEWER)', () => {
-    expect(mcpRoleDenial('list_customers', WorkspaceRole.VIEWER)).toBeNull();
-    expect(mcpRoleDenial('get_customer_360', WorkspaceRole.VIEWER)).toBeNull();
-    expect(mcpRoleDenial('health', null)).toBeNull();
-    expect(mcpRoleDenial('list_my_workspaces', WorkspaceRole.VIEWER)).toBeNull();
+  it('allows every mapped viewer-level read tool for a VIEWER, and still fails a null role', () => {
+    // The live registry carries the read tools at an EXPLICIT VIEWER minimum
+    // (so a read tool is distinguishable from a forgotten entry, which the
+    // gate below refuses for every caller). A VIEWER and any member pass; a
+    // null role (non-member) is refused, fail closed.
+    for (const tool of [
+      'list_customers',
+      'get_customer_360',
+      'pipeline_board',
+      'health',
+      'list_my_workspaces',
+      'list_quotes',
+      'list_quote_versions',
+    ]) {
+      expect(mcpRoleDenial(tool, WorkspaceRole.VIEWER)).toBeNull();
+      expect(mcpRoleDenial(tool, WorkspaceRole.OWNER)).toBeNull();
+    }
+    const detail = detailOf(mcpRoleDenial('list_customers', null));
+    expect(detail.error).toBe('role_denied');
+    expect(detail.required_role).toBe('viewer');
+    expect(detail.your_role).toBeNull();
+  });
+
+  it('DENIES an unmapped tool for every role, in the role-refusal shape (deny-by-default)', () => {
+    // A NEW mutation tool forgotten from MCP_TOOL_MIN_ROLE must not slip past
+    // the gate at viewer level: null, VIEWER, MEMBER and OWNER are all refused,
+    // and the envelope carries the SAME shape as a role refusal.
+    for (const role of [null, WorkspaceRole.VIEWER, WorkspaceRole.MEMBER, WorkspaceRole.OWNER]) {
+      const denial = mcpRoleDenial('a_brand_new_mutation_tool', role);
+      const detail = detailOf(denial);
+      expect(detail.error).toBe('role_denied');
+      expect(detail.tool).toBe('a_brand_new_mutation_tool');
+      expect(detail.required_role).toContain('unmapped tool');
+      expect(detail.your_role).toBeNull();
+    }
+  });
+
+  it('the deny-by-default is what the registry carries, not the tool name (fake-registry proof)', () => {
+    // Same function, a fixture registry: a mapped tool is gated by its entry
+    // (MEMBER refuses a VIEWER) and a tool ABSENT from the fixture is refused
+    // even for an OWNER. If the refusal were keyed on the tool name instead of
+    // the missing entry, these two assertions could not both hold.
+    const fake: Record<string, WorkspaceRole> = { only_tool: WorkspaceRole.MEMBER };
+    const viewerDetail = detailOf(mcpRoleDenialFor('only_tool', WorkspaceRole.VIEWER, fake));
+    expect(viewerDetail.error).toBe('role_denied');
+    expect(viewerDetail.required_role).toBe('member');
+    const unmappedDetail = detailOf(mcpRoleDenialFor('ghost_tool', WorkspaceRole.OWNER, fake));
+    expect(unmappedDetail.error).toBe('role_denied');
+    expect(unmappedDetail.required_role).toContain('unmapped tool');
+    // And a mapped tool the caller satisfies is allowed — the refusal is not a blanket block.
+    expect(mcpRoleDenialFor('only_tool', WorkspaceRole.MEMBER, fake)).toBeNull();
   });
 });

@@ -31,7 +31,15 @@ import { FollowUpDrafterAgent } from '../agents/follow-up-drafter.agent';
 import { CollectionsNudgeAgent } from '../agents/collections-nudge.agent';
 import { LeadIntakeService } from '../lead-intake/lead-intake.service';
 import { CustomerOpsTools } from './mcp.tools';
-import { McpDenial, mcpRoleDenial, mcpToolMinRole, mcpToolDenial, roleDenial } from './mcp-access';
+import {
+  McpDenial,
+  MCP_TOOL_MIN_ROLE,
+  mcpRoleDenialFor,
+  mcpToolMinRole,
+  mcpToolDenial,
+  roleDenial,
+  unmappedRoleDenial,
+} from './mcp-access';
 
 // The funnel stages, as a zod enum for tool input validation.
 const STAGE = z.enum(['LEAD', 'PROSPECT', 'CUSTOMER']);
@@ -100,24 +108,37 @@ export class McpService {
 
   /**
    * Enforce the calling user's workspace ROLE for one MCP tool (mcp-access
-   * MCP_TOOL_MIN_ROLE). Returns a denial envelope to short-circuit a viewer's
-   * mutation/agent-run, or `null` to allow it.
+   * MCP_TOOL_MIN_ROLE). Returns a denial envelope to short-circuit a refused
+   * call, or `null` to allow it.
    *
-   *  - A viewer-level (read) tool has no minimum role → allowed without a lookup.
-   *  - Inert while tenancy is off: no membership rows carry a role, so we skip —
-   *    mirrors the REST WorkspaceRoleGuard + MembershipService gate (and keeps
-   *    single-tenant dogfood behavior unchanged).
-   *  - Otherwise resolve the target workspace (the arg workspace_id, else the
-   *    caller's claim/default — authorizing membership) and its role. A resolve
-   *    failure (non-member / 403) is treated as "no role" → fail-closed denial.
+   *  - A tool ABSENT from MCP_TOOL_MIN_ROLE is denied for every caller
+   *    (deny-by-default, the MCP mirror of the PAT scope map): a NEW tool
+   *    forgotten from the registry must never run at viewer level. Runs even
+   *    while tenancy is off — forgetting a registry entry is a deployment
+   *    error, not a tenancy flag.
+   *  - A tool mapped at VIEWER is allowed without a role lookup: membership in
+   *    the target workspace is exactly the fence (resolveAuthorized authorizes
+   *    it), and a single-tenant caller has no role row anyway.
+   *  - A tool mapped at MEMBER+ resolves the target workspace (the arg
+   *    workspace_id, else the caller's claim/default — authorizing membership)
+   *    and its role; a resolve failure (non-member / 403) is treated as "no
+   *    role" → fail-closed denial. Inert while tenancy is off: no membership
+   *    rows carry a role, so we skip — mirrors the REST WorkspaceRoleGuard +
+   *    MembershipService gate (and keeps single-tenant dogfood behavior
+   *    unchanged).
    */
   private async enforceToolRole(
     toolName: string,
     user: User,
     args: unknown,
   ): Promise<McpDenial | null> {
-    if (!mcpToolMinRole(toolName)) return null; // viewer-level read tool
+    if (!(toolName in MCP_TOOL_MIN_ROLE)) return unmappedRoleDenial(toolName); // deny-by-default
+    const required = mcpToolMinRole(toolName);
+    if (required === WorkspaceRole.VIEWER) return null; // membership is the fence
     if (!tenancyEnabled()) return null; // single-tenant: no role to enforce
+    // From here required is a MEMBER+ role (non-null): the two early returns
+    // above remove VIEWER and null.
+    const memberMinimum = required as WorkspaceRole;
 
     const requestedWorkspaceId = (args as { workspace_id?: unknown } | null | undefined)
       ?.workspace_id;
@@ -131,9 +152,9 @@ export class McpService {
     } catch {
       // resolveAuthorized 403'd (no membership in the target workspace). Fail
       // closed: no role → denied for any mutation tool.
-      return roleDenial(toolName, mcpToolMinRole(toolName)!, null);
+      return roleDenial(toolName, memberMinimum, null);
     }
-    return mcpRoleDenial(toolName, role);
+    return mcpRoleDenialFor(toolName, role);
   }
 
   /**
