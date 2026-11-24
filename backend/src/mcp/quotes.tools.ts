@@ -100,9 +100,13 @@ export function registerQuoteLifecycleTools(
       async (args: any) => {
         try {
           if (!lifecycle) throw Error('Quotes are not enabled');
+          // Without the document service there is nothing to render: say so as an
+          // MCP error result instead of returning an undefined text body.
+          if (name === 'render_quote' && !documents)
+            throw Error('Quote rendering is not available on this deployment');
           const result =
             name === 'render_quote'
-              ? await documents?.render(user, args.workspace_id, args.quote_id, args.format)
+              ? await documents!.render(user, args.workspace_id, args.quote_id, args.format)
               : name === 'send_quote'
                 ? await lifecycle.send(user, args.workspace_id, args.quote_id, args.idempotency_key)
                 : name === 'supersede_quote'
