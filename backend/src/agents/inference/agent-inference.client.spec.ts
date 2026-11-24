@@ -393,37 +393,47 @@ describe('AgentInferenceClient (gateway MOCKED)', () => {
 
   describe('OpsCenterOrgGatewayKeyProvider', () => {
     it('fetches the v1 key endpoint and caches the key per org for at most ten minutes', async () => {
+      // Pin the clock: the provider stamps Date.now() at fetch time, which can
+      // be a few ms after a free-running read and make the expiry check flaky.
       const issuedAt = Date.now();
-      const fetchSpy = jest.fn().mockResolvedValue(
-        jsonResponse({
-          key: 'provider-key-for-tests',
-          expires_at: new Date(issuedAt + 60 * 60 * 1000).toISOString(),
-        }),
-      );
-      global.fetch = fetchSpy as any;
-      const provider = new OpsCenterOrgGatewayKeyProvider(
-        makeConfig({
-          OPS_CENTER_INTERNAL_URL: 'https://ops-center.internal.example.test/',
-          OPS_CENTER_SERVICE_TOKEN: 'ops-service-token',
-        }),
-      );
+      const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(issuedAt);
+      try {
+        const fetchSpy = jest.fn().mockResolvedValue(
+          jsonResponse({
+            key: 'provider-key-for-tests',
+            expires_at: new Date(issuedAt + 60 * 60 * 1000).toISOString(),
+          }),
+        );
+        global.fetch = fetchSpy as any;
+        const provider = new OpsCenterOrgGatewayKeyProvider(
+          makeConfig({
+            OPS_CENTER_INTERNAL_URL: 'https://ops-center.internal.example.test/',
+            OPS_CENTER_SERVICE_TOKEN: 'ops-service-token',
+          }),
+        );
 
-      const first = await provider.getKey('org-aaaa');
-      const second = await provider.getKey('org-aaaa');
+        const first = await provider.getKey('org-aaaa');
+        const second = await provider.getKey('org-aaaa');
 
-      expect(fetchSpy).toHaveBeenCalledTimes(1);
-      expect(fetchSpy.mock.calls[0][0]).toBe(
-        'https://ops-center.internal.example.test/api/v1/internal/orgs/org-aaaa/gateway-key',
-      );
-      expect(fetchSpy.mock.calls[0][1].headers.Authorization).toBe('Bearer ops-service-token');
-      expect(first.key).toBe('provider-key-for-tests');
-      expect(second).toEqual(first);
+        expect(fetchSpy).toHaveBeenCalledTimes(1);
+        expect(fetchSpy.mock.calls[0][0]).toBe(
+          'https://ops-center.internal.example.test/api/v1/internal/orgs/org-aaaa/gateway-key',
+        );
+        expect(fetchSpy.mock.calls[0][1].headers.Authorization).toBe('Bearer ops-service-token');
+        expect(first.key).toBe('provider-key-for-tests');
+        expect(second).toEqual(first);
 
-      // The key itself expires later, but the in-process cache must refresh at
-      // the ten-minute cap.
-      jest.spyOn(Date, 'now').mockReturnValue(issuedAt + ORG_GATEWAY_KEY_CACHE_MAX_MS + 1);
-      await provider.getKey('org-aaaa');
-      expect(fetchSpy).toHaveBeenCalledTimes(2);
+        // The key itself expires later, but the in-process cache must refresh at
+        // the ten-minute cap.
+        nowSpy.mockReturnValue(issuedAt + ORG_GATEWAY_KEY_CACHE_MAX_MS - 1);
+        await provider.getKey('org-aaaa');
+        expect(fetchSpy).toHaveBeenCalledTimes(1);
+        nowSpy.mockReturnValue(issuedAt + ORG_GATEWAY_KEY_CACHE_MAX_MS + 1);
+        await provider.getKey('org-aaaa');
+        expect(fetchSpy).toHaveBeenCalledTimes(2);
+      } finally {
+        nowSpy.mockRestore();
+      }
     });
   });
 });
