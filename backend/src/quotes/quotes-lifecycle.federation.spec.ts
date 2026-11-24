@@ -47,6 +47,13 @@ function build(opts: { aoResults: Array<'ok' | 'failed' | Error>; poConfigured?:
             ? [{ id: row.id, federated: row.federated }]
             : [],
         ),
+      // The retry claim: a compare-and-set on the whole federated value.
+      updateMany: jest.fn().mockImplementation(async ({ where, data }: any) => {
+        if (JSON.stringify(row.federated) !== JSON.stringify(where.federated.equals))
+          return { count: 0 };
+        row.federated = JSON.parse(JSON.stringify(data.federated));
+        return { count: 1 };
+      }),
       update: jest.fn().mockImplementation(async ({ data }: any) => {
         if (failUpdate) throw new Error('db down');
         row.federated = JSON.parse(JSON.stringify(data.federated));
@@ -99,6 +106,7 @@ function build(opts: { aoResults: Array<'ok' | 'failed' | Error>; poConfigured?:
     row,
     accounting,
     workspaces,
+    tx,
     projects,
     fanOut,
     failUpdates: (v: boolean) => (failUpdate = v),
@@ -235,6 +243,46 @@ describe('QuotesLifecycleService accepted-quote fan-out retry (CuO-SW-1)', () =>
       expect(t.accounting.acceptQuote).toHaveBeenCalledTimes(1);
       expect(t.row.federated.accounting_ops).toBe('skipped');
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('not entitled to Accounting-Ops'));
+    });
+  });
+
+  describe('retry claim (CUO76-R2-3)', () => {
+    it('two concurrent reconciles call the failed side once', async () => {
+      const { service, row, accounting, fanOut } = build({ aoResults: ['failed', 'ok', 'ok'] });
+      await fanOut();
+      pastBackoff(row);
+      await Promise.all([service.reconcile(), service.reconcile()]);
+      expect(accounting.acceptQuote).toHaveBeenCalledTimes(2);
+      expect(row.federated.accounting_ops).toBe('ok');
+    });
+
+    it('a row claimed by another replica after the scan is excluded', async () => {
+      const { service, row, accounting, tx, fanOut } = build({ aoResults: ['failed', 'ok'] });
+      await fanOut();
+      pastBackoff(row);
+      // The scan returns the stale status; another replica claims it first.
+      const stale = { ...row.federated };
+      tx.quote.findMany.mockImplementationOnce(async () => {
+        row.federated = { ...stale, next_retry_at: new Date(Date.now() + 60_000).toISOString() };
+        return [{ id: row.id, federated: stale }];
+      });
+      await service.reconcile();
+      expect(tx.quote.updateMany).toHaveBeenCalledTimes(1);
+      expect(accounting.acceptQuote).toHaveBeenCalledTimes(1);
+    });
+
+    it('the claim writes a lease, so a scan after the claim sees the row as not due', async () => {
+      const { service, row, accounting, fanOut } = build({ aoResults: ['failed'] });
+      await fanOut();
+      pastBackoff(row);
+      const now = Date.now();
+      accounting.acceptQuote.mockImplementationOnce(async () => {
+        // Mid-call: the row holds a lease in the future.
+        expect(Date.parse(String(row.federated.next_retry_at))).toBeGreaterThan(now);
+        return 'ok';
+      });
+      await service.reconcile();
+      expect(row.federated.accounting_ops).toBe('ok');
     });
   });
 });

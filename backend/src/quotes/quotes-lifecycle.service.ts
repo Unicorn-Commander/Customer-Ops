@@ -70,6 +70,8 @@ interface FederationRetry {
 /** reconcile() stops re-running a failed side after this many retries (logged). */
 export const FEDERATION_MAX_RETRIES = 20;
 /** Backoff before retry n+1: 2^n minutes, capped at 6 h (20 retries span days). */
+/** How long a reconcile() retry claim holds a row before another pass may retry it. */
+const FEDERATION_CLAIM_LEASE_MS = 15 * 60_000;
 const federationBackoffMs = (retries: number) => Math.min(2 ** retries, 360) * 60_000;
 @Injectable()
 export class QuotesLifecycleService {
@@ -1421,6 +1423,7 @@ export class QuotesLifecycleService {
         if ((Number(prior.retries) || 0) >= FEDERATION_MAX_RETRIES) continue;
         const due = Date.parse(String(prior.next_retry_at ?? ''));
         if (Number.isFinite(due) && due > Date.now()) continue;
+        if (!(await this.claimFederationRetry(workspace, row.id, prior))) continue;
         await this.federateAcceptedQuote(null, workspace, row.id, {
           accounting_ops: prior.accounting_ops === 'failed',
           project_ops: prior.project_ops === 'failed',
@@ -1431,6 +1434,40 @@ export class QuotesLifecycleService {
       }
       after = page.length === 100 ? page[page.length - 1].id : undefined;
     } while (after);
+  }
+  /**
+   * Claim a due retry row before any side is called (CUO76-R2-3), so two
+   * replicas running reconcile() at once cannot both call a side. The claim is
+   * a compare-and-set: it writes a lease into next_retry_at only while the row
+   * still holds exactly the status this scan read. A replica that read the same
+   * row loses the race (0 rows updated) and skips it; one that scans after the
+   * claim sees the lease as not yet due. The fan-out's own status write ends the
+   * lease; if the process dies mid-call the lease expires and the row is retried.
+   */
+  private async claimFederationRetry(
+    workspace: string,
+    quoteId: string,
+    prior: Record<string, unknown>,
+  ): Promise<boolean> {
+    const lease = new Date(Date.now() + FEDERATION_CLAIM_LEASE_MS).toISOString();
+    try {
+      const claimed = await this.db.withWorkspace(workspace, null, (tx) =>
+        tx.quote.updateMany({
+          where: {
+            id: quoteId,
+            workspaceId: workspace,
+            federated: { equals: prior as Prisma.InputJsonObject },
+          },
+          data: { federated: { ...prior, next_retry_at: lease } as Prisma.InputJsonObject },
+        }),
+      );
+      return claimed.count === 1;
+    } catch (err) {
+      this.logger.warn(
+        `Quote ${quoteId} fan-out retry claim failed (not retried this pass): ${(err as Error)?.message ?? err}`,
+      );
+      return false;
+    }
   }
   async expire() {
     if (!quotesEnabled(this.config.get<string>('QUOTES_ENABLED'))) return;
