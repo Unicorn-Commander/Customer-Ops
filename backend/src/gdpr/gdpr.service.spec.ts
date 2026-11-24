@@ -3,7 +3,8 @@ import {
   InternalServerErrorException,
   NotFoundException,
 } from '@nestjs/common';
-import { AuditAction, User } from '@prisma/client';
+import { ConfigService } from '@nestjs/config';
+import { AuditAction, MembershipStatus, User, WorkspaceRole } from '@prisma/client';
 import { GdprService } from './gdpr.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { WorkspaceContextService } from '../common/workspace/workspace-context.service';
@@ -137,7 +138,9 @@ describe('GdprService', () => {
       const res = await svc.eraseCustomerForUser(owner, WS, 'cust-1');
 
       expect(membership.assertOwner).toHaveBeenCalledWith(owner, WS);
-      expect(tx.customerActivity.deleteMany).toHaveBeenCalledWith({ where: { customerId: 'cust-1' } });
+      expect(tx.customerActivity.deleteMany).toHaveBeenCalledWith({
+        where: { customerId: 'cust-1' },
+      });
       expect(tx.leadIntake.deleteMany).toHaveBeenCalledWith({ where: { customerId: 'cust-1' } });
       expect(tx.customer.delete).toHaveBeenCalledWith({ where: { id: 'cust-1' } });
       // graph cleaned with the erased customer's contactId + id.
@@ -303,6 +306,52 @@ describe('GdprService', () => {
       expect(audit.rows[0].details.archived).toBe(false);
     });
 
+    it('a re-run after the failed archive passes assertOwner and archives (CUO76-R2-5)', async () => {
+      // The real owner gate, over a membership row the offboard never touches
+      // (the deletes are CRM rows only), so the re-run is still authorized.
+      const membershipRow = {
+        userKey: UC_UID,
+        workspaceId: WS,
+        role: WorkspaceRole.OWNER,
+        status: MembershipStatus.ACTIVE,
+      };
+      const prisma = makePrisma();
+      (prisma.svc as any).membership = {
+        findUnique: jest.fn(async ({ where }: any) =>
+          where.userKey_workspaceId.userKey === UC_UID &&
+          where.userKey_workspaceId.workspaceId === WS
+            ? membershipRow
+            : null,
+        ),
+      };
+      (prisma.svc.workspace.update as jest.Mock).mockRejectedValueOnce(new Error('db down'));
+      const membership = new MembershipService(prisma.svc, new ConfigService({}));
+      const tx = makeTx();
+      const audit = makeAudit();
+      const svc = new GdprService(
+        prisma.svc,
+        makeWorkspaces(tx),
+        membership,
+        audit.svc,
+        makeGraph().svc,
+      );
+
+      await expect(svc.offboardWorkspaceForUser(owner, WS, 'delete')).rejects.toBeInstanceOf(
+        InternalServerErrorException,
+      );
+      // After the committed deletes the workspace is empty.
+      for (const m of [tx.customer, tx.customerActivity, tx.customerEmailLink, tx.leadIntake])
+        (m.deleteMany as jest.Mock).mockResolvedValue({ count: 0 });
+
+      const res = await svc.offboardWorkspaceForUser(owner, WS, 'delete');
+
+      expect(res.counts.customers).toBe(0);
+      expect(prisma.updates).toEqual([{ where: { id: WS }, data: { status: 'archived' } }]);
+      expect(audit.rows).toHaveLength(2);
+      expect(audit.rows[0].details.archived).toBe(false);
+      expect(audit.rows[1].details.archived).toBeUndefined();
+    });
+
     it('anonymize mode strips PII (deletes intakes, nulls fields) but keeps rows, no archive', async () => {
       const tx = makeTx();
       const prisma = makePrisma();
@@ -352,7 +401,9 @@ describe('GdprService', () => {
         makeAudit().svc,
         makeGraph().svc,
       );
-      await expect(svc.setRetentionForUser(owner, WS, 0)).rejects.toBeInstanceOf(ForbiddenException);
+      await expect(svc.setRetentionForUser(owner, WS, 0)).rejects.toBeInstanceOf(
+        ForbiddenException,
+      );
     });
 
     it('accepts null to disable retention', async () => {

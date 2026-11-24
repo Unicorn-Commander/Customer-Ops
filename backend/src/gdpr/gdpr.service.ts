@@ -399,7 +399,9 @@ export class GdprService {
     // Mark the control row archived on a full delete. If that write fails the
     // workspace mirror would stay 'active' with its data gone, so the offboard is
     // NOT done: audit what was deleted, then fail so the owner re-runs it (the
-    // deletes above are idempotent; a re-run deletes nothing and archives).
+    // deletes above are idempotent; a re-run deletes nothing and archives). The
+    // re-run is still authorized: assertOwner reads the membership row, which
+    // the offboard never deletes, and the mirror stays 'active' (CUO76-R2-5).
     let archiveError: Error | null = null;
     if (mode === 'delete') {
       try {
