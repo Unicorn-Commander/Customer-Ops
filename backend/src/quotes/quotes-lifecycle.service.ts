@@ -1032,7 +1032,24 @@ export class QuotesLifecycleService {
           try {
             const ctx = await this.context(workspace, user ?? undefined);
             if (!this.accounting.checkEntitlement(ctx).allowed) {
-              federated.accounting_ops = 'skipped';
+              if (retry && (ctx.entitlements ?? []).length === 0) {
+                // CUO76-R2-2: the retry has no user, so its entitlements come
+                // from the workspace cache alone. A missing or empty cache is
+                // UNKNOWN, not a revocation: keep the side 'failed' so a later
+                // reconcile retries it, and say so loudly.
+                federated.accounting_ops = 'failed';
+                this.logger.error(
+                  `Quote ${quoteId} accounting_ops retry: workspace ${workspace} entitlements ` +
+                    'are unknown (no entitlement cache); left failed, reconcile will retry',
+                );
+              } else {
+                // The entitlements are known and lack Accounting-Ops: revoked.
+                federated.accounting_ops = 'skipped';
+                this.logger.warn(
+                  `Quote ${quoteId} accounting_ops fan-out skipped: workspace ${workspace} ` +
+                    'is not entitled to Accounting-Ops',
+                );
+              }
             } else {
               const totals = snap?.totals;
               federated.accounting_ops = await this.accounting.acceptQuote(ctx, {

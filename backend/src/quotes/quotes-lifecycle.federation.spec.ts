@@ -70,7 +70,7 @@ function build(opts: { aoResults: Array<'ok' | 'failed' | Error>; poConfigured?:
   const results = [...opts.aoResults];
   const accounting = {
     isConfigured: () => true,
-    checkEntitlement: () => ({ allowed: true }),
+    checkEntitlement: jest.fn((_ctx: { entitlements: string[] }) => ({ allowed: true })),
     acceptQuote: jest.fn().mockImplementation(async () => {
       const next = results.shift() ?? 'ok';
       if (next instanceof Error) throw next;
@@ -98,6 +98,7 @@ function build(opts: { aoResults: Array<'ok' | 'failed' | Error>; poConfigured?:
     service,
     row,
     accounting,
+    workspaces,
     projects,
     fanOut,
     failUpdates: (v: boolean) => (failUpdate = v),
@@ -191,5 +192,49 @@ describe('QuotesLifecycleService accepted-quote fan-out retry (CuO-SW-1)', () =>
     expect(row.federated.retries).toBe(FEDERATION_MAX_RETRIES);
     const capLogs = error.mock.calls.filter((c) => String(c[0]).includes('will not retry'));
     expect(capLogs).toHaveLength(1);
+  });
+
+  describe('retry entitlements (CUO76-R2-2)', () => {
+    /** First call (with a user) fails; the retry gate then sees only the cache. */
+    async function failThenRetry(cache: string[] | null) {
+      const t = build({ aoResults: ['failed', 'ok'] });
+      await t.fanOut();
+      expect(t.row.federated.accounting_ops).toBe('failed');
+      t.workspaces.workspaceEntitlements.mockResolvedValue(cache);
+      t.accounting.checkEntitlement.mockImplementation((ctx) => ({
+        allowed: ctx.entitlements.includes('accounting-ops'),
+      }));
+      pastBackoff(t.row);
+      await t.service.reconcile();
+      return t;
+    }
+
+    it.each([
+      ['a null cache', null],
+      ['an empty cache', []],
+    ])(
+      '%s leaves the side failed, logged at error, and a later retry still runs',
+      async (_l, cache) => {
+        const t = await failThenRetry(cache);
+        expect(t.accounting.acceptQuote).toHaveBeenCalledTimes(1);
+        expect(t.row.federated.accounting_ops).toBe('failed');
+        expect(t.row.federated.next_retry_at).toBeDefined();
+        expect(error).toHaveBeenCalledWith(expect.stringContaining('entitlements are unknown'));
+
+        // The cache is back: the next due reconcile creates the invoice once.
+        t.workspaces.workspaceEntitlements.mockResolvedValue(['customer-ops', 'accounting-ops']);
+        pastBackoff(t.row);
+        await t.service.reconcile();
+        expect(t.accounting.acceptQuote).toHaveBeenCalledTimes(2);
+        expect(t.row.federated.accounting_ops).toBe('ok');
+      },
+    );
+
+    it('a known entitlement list without Accounting-Ops stamps skipped, logged', async () => {
+      const t = await failThenRetry(['customer-ops']);
+      expect(t.accounting.acceptQuote).toHaveBeenCalledTimes(1);
+      expect(t.row.federated.accounting_ops).toBe('skipped');
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('not entitled to Accounting-Ops'));
+    });
   });
 });
