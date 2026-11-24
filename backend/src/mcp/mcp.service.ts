@@ -240,9 +240,7 @@ export class McpService {
       'health',
       {
         title: 'Customer-Ops health',
-        description:
-          'Liveness + configuration check. Returns service status, whether ' +
-          'suite tenancy is enabled, and the server time.',
+        description: 'Liveness check. Returns service status and the server time.',
         inputSchema: {},
       },
       async () => wrap(tools.health()),

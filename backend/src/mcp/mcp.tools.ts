@@ -45,7 +45,6 @@ import { User } from '@prisma/client';
 import { RelationshipStage } from '@prisma/client';
 import { MembershipService } from '../common/workspace/membership.service';
 import { listMyWorkspaces, MyWorkspace } from '../common/workspace/list-my-workspaces';
-import { tenancyEnabled } from '../common/workspace/feature-flags';
 import { CustomersService } from '../customers/customers.service';
 import { CreateInvoiceDto, EngagementKind, UpdateCustomerDto } from '../customers/dto/customer.dto';
 import { LeadTriageAgent } from '../agents/lead-triage.agent';
@@ -64,12 +63,12 @@ export class CustomerOpsTools {
     private readonly leads: LeadIntakeService,
   ) {}
 
-  /** Health/info — safe for any authenticated caller. */
-  health(): { status: string; service: string; tenancyEnabled: boolean; time: string } {
+  /** Health/info, safe for any authenticated caller. Carries no deployment
+   *  configuration (CUO-MCP-3: the tenancy mode is not disclosed to a PAT). */
+  health(): { status: string; service: string; time: string } {
     return {
       status: 'ok',
       service: 'customer-ops',
-      tenancyEnabled: tenancyEnabled(),
       time: new Date().toISOString(),
     };
   }
