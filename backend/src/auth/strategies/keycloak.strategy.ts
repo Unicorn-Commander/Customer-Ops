@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { Strategy } from 'passport-oauth2';
 import { ConfigService } from '@nestjs/config';
@@ -57,23 +57,37 @@ export class KeycloakStrategy extends PassportStrategy(Strategy, 'keycloak') {
     this.userinfoURL = `${keycloakUrl}/realms/${realm}/protocol/openid-connect/userinfo`;
   }
 
-  async validate(accessToken: string, _refreshToken: string, profile: any): Promise<any> {
+  async validate(accessToken: string, _refreshToken: string, _profile: any): Promise<any> {
     // passport-oauth2 does not fetch userinfo automatically, so we call the
     // Keycloak userinfo endpoint to get the full profile (sub, email, names).
-    let userProfile = profile;
+    // Without a userinfo profile there is no identity to resolve: refuse the
+    // sign-in with a clean 401 (CUO-CB-2) instead of resolving an empty `{}`
+    // profile into an unhandled 500. Details go to the log, never the client.
+    let userProfile: any;
     try {
       const response = await fetch(this.userinfoURL, {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
-      if (response.ok) {
-        userProfile = await response.json();
-      } else {
+      if (!response.ok) {
         this.logger.warn(
           `Failed to fetch userinfo from Keycloak: ${response.status} ${response.statusText}`,
         );
+        throw new UnauthorizedException('SSO sign-in failed');
       }
+      userProfile = await response.json();
     } catch (error) {
-      this.logger.error('Error fetching Keycloak userinfo', error as Error);
+      if (error instanceof UnauthorizedException) throw error;
+      this.logger.error(`Error fetching Keycloak userinfo: ${(error as Error)?.message}`);
+      throw new UnauthorizedException('SSO sign-in failed');
+    }
+    if (
+      !userProfile ||
+      typeof userProfile !== 'object' ||
+      typeof userProfile.sub !== 'string' ||
+      !userProfile.sub
+    ) {
+      this.logger.warn('Keycloak userinfo carried no subject; sign-in refused');
+      throw new UnauthorizedException('SSO sign-in failed');
     }
 
     // The entitlement SKUs ride on the Keycloak ACCESS token (the `entitlements`
@@ -85,7 +99,7 @@ export class KeycloakStrategy extends PassportStrategy(Strategy, 'keycloak') {
       userProfile = { ...userProfile, entitlements };
     }
 
-    const keycloakId = userProfile.sub || userProfile.id;
+    const keycloakId: string = userProfile.sub;
     const isHumanRealmProfile =
       typeof userProfile?.email === 'string' &&
       userProfile.email.trim() !== '' &&

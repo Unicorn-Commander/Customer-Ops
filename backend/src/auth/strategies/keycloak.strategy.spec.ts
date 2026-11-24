@@ -1,3 +1,4 @@
+import { UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AuthService } from '../auth.service';
 import { createHash } from 'crypto';
@@ -261,5 +262,57 @@ describe('KeycloakStrategy state + PKCE (login CSRF)', () => {
     );
     const out = await run(strategy, makeReq({}).req);
     expect(out.kind).toBe('error');
+  });
+});
+
+/**
+ * CUO-CB-2: a userinfo failure must end in a clean 401 (no `{}` profile resolved
+ * into an unhandled 500, no stack to the client).
+ */
+describe('KeycloakStrategy userinfo failure (clean 401)', () => {
+  const auth = { validateKeycloakUser: jest.fn() };
+  const strategy = () =>
+    new KeycloakStrategy(
+      new ConfigService({ JWT_SECRET: 'test-secret-for-state-signing-0123456789' }),
+      auth as unknown as AuthService,
+      singleUse(),
+    );
+
+  beforeEach(() => auth.validateKeycloakUser.mockReset());
+  afterEach(() => jest.restoreAllMocks());
+
+  async function expectClean401(p: Promise<unknown>) {
+    const err: any = await p.then(
+      () => null,
+      (e) => e,
+    );
+    expect(err).toBeInstanceOf(UnauthorizedException);
+    expect(err.getStatus()).toBe(401);
+    const body = JSON.stringify(err.getResponse());
+    expect(body).toContain('SSO sign-in failed');
+    expect(body).not.toMatch(/stack|at .*\.ts|ECONNREFUSED/);
+    expect(auth.validateKeycloakUser).not.toHaveBeenCalled();
+  }
+
+  it('a non-2xx userinfo response is a clean 401', async () => {
+    jest.spyOn(global, 'fetch').mockResolvedValue({
+      ok: false,
+      status: 503,
+      statusText: 'Service Unavailable',
+    } as Response);
+    await expectClean401(strategy().validate('header.e30.sig', '', {}));
+  });
+
+  it('a thrown userinfo fetch is a clean 401', async () => {
+    jest.spyOn(global, 'fetch').mockRejectedValue(new Error('connect ECONNREFUSED 10.0.0.1'));
+    await expectClean401(strategy().validate('header.e30.sig', '', {}));
+  });
+
+  it('a userinfo body with no subject is a clean 401', async () => {
+    jest.spyOn(global, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({ email: 'pat@example.com' }),
+    } as Response);
+    await expectClean401(strategy().validate('header.e30.sig', '', {}));
   });
 });
