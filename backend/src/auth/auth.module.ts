@@ -11,11 +11,16 @@ import { PatController } from './pat/pat.controller';
 import { PatService } from './pat/pat.service';
 import { WorkspaceModule } from '../common/workspace/workspace.module';
 import { ContactOpsMapModule } from '../contact-ops/contact-ops-map.module';
+import { RedisModule } from '../common/redis/redis.module';
+import { SecurityStoreModule } from '../common/security/security-store.module';
 
 @Module({
   imports: [
     WorkspaceModule,
     ContactOpsMapModule,
+    // KeycloakStrategy consumes SingleUseTokenStore (SSO state single use).
+    RedisModule,
+    SecurityStoreModule,
     PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.registerAsync({
       imports: [ConfigModule],

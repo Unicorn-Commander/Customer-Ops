@@ -165,6 +165,13 @@ describe('UcRegistryClient', () => {
     expect(
       warnSpy.mock.calls.some((c) => String(c[0]).includes('locally-minted workspace id')),
     ).toBe(true);
+    // CuO-SW-2: the WARN is true: no reconcile exists, it says how to re-run.
+    const fallbackWarn = String(
+      warnSpy.mock.calls.find((c) => String(c[0]).includes('locally-minted workspace id'))![0],
+    );
+    expect(fallbackWarn).toContain('NOT retried automatically');
+    expect(fallbackWarn).toContain('POST https://registry.test/workspaces');
+    expect(fallbackWarn).not.toMatch(/reconciliation can register/);
   });
 
   it('keeps the supplied id when uc-registry returns a non-2xx', async () => {

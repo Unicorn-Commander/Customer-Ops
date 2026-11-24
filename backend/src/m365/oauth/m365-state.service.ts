@@ -22,7 +22,7 @@
 
 import { Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { randomUUID } from 'crypto';
+import { createHash, createHmac, randomUUID } from 'crypto';
 import { M365Config } from '../m365.config';
 import { SingleUseTokenStore } from '../../common/security/single-use-token.store';
 
@@ -52,13 +52,31 @@ export class M365StateService {
     private readonly singleUse: SingleUseTokenStore,
   ) {}
 
-  /** Sign a short-TTL state for the given user + workspace. */
-  sign(uid: string, ws: string): string {
+  /**
+   * Sign a short-TTL state for the given user + workspace AND derive its PKCE
+   * pair (CUO-CB-3). This is the ONLY way to mint a state: there is no bare
+   * sign(), so every code-flow start carries an S256 challenge (CUO76-R2-6).
+   * The verifier is bound to the state record: it is HMAC(key, nonce), so only
+   * this server can recompute it from the state on the callback, and the state
+   * in the URL does not reveal it (it carries the nonce, never the verifier).
+   * No extra store is needed.
+   */
+  issue(uid: string, ws: string): { state: string; codeChallenge: string } {
     const payload: M365StatePayload = { uid, ws, nonce: randomUUID() };
-    return this.jwt.sign(payload, {
+    const state = this.jwt.sign(payload, {
       secret: this.secret(),
       expiresIn: this.config.stateTtlSeconds,
     });
+    const verifier = this.pkceVerifier(payload.nonce);
+    return { state, codeChallenge: createHash('sha256').update(verifier).digest('base64url') };
+  }
+
+  /** The PKCE code_verifier bound to a state nonce (43 base64url chars). */
+  pkceVerifier(nonce: string): string {
+    const secret = this.secret();
+    if (!secret) throw new Error('JWT_SECRET is not configured; cannot derive the PKCE verifier');
+    const key = createHmac('sha256', secret).update('customer-ops:m365-pkce').digest();
+    return createHmac('sha256', key).update(nonce).digest('base64url');
   }
 
   /**

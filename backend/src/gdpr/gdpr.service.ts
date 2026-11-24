@@ -36,6 +36,7 @@
 import {
   ForbiddenException,
   Injectable,
+  InternalServerErrorException,
   Logger,
   NotFoundException,
   Optional,
@@ -395,8 +396,13 @@ export class GdprService {
     let graphPurged = false;
     if (this.graphIngest) graphPurged = await this.graphIngest.purgeWorkspace(workspaceId);
 
-    // Mark the control row archived on a full delete (best-effort — the CRM data
-    // is already gone; a status-write failure must not fail the offboarding).
+    // Mark the control row archived on a full delete. If that write fails the
+    // workspace mirror would stay 'active' with its data gone, so the offboard is
+    // NOT done: audit what was deleted, then fail so the owner re-runs it (the
+    // deletes above are idempotent; a re-run deletes nothing and archives). The
+    // re-run is still authorized: assertOwner reads the membership row, which
+    // the offboard never deletes, and the mirror stays 'active' (CUO76-R2-5).
+    let archiveError: Error | null = null;
     if (mode === 'delete') {
       try {
         await this.prisma.workspace.update({
@@ -404,8 +410,10 @@ export class GdprService {
           data: { status: 'archived' },
         });
       } catch (err) {
-        this.logger.warn(
-          `offboard: could not archive workspace ${workspaceId}: ${(err as Error).message}`,
+        archiveError = err as Error;
+        this.logger.error(
+          `offboard: could not archive workspace ${workspaceId}; offboard NOT complete, ` +
+            `re-run it: ${archiveError.message}`,
         );
       }
     }
@@ -416,8 +424,19 @@ export class GdprService {
       action: AuditAction.DELETE,
       resource: 'workspace',
       resourceId: workspaceId,
-      details: { reason: 'offboard', mode, counts, graphPurged },
+      details: {
+        reason: 'offboard',
+        mode,
+        counts,
+        graphPurged,
+        ...(archiveError ? { archived: false } : {}),
+      },
     });
+    if (archiveError) {
+      throw new InternalServerErrorException(
+        'Offboarding incomplete: the workspace could not be archived. Re-run the offboard.',
+      );
+    }
 
     return { mode, counts, graphPurged };
   }

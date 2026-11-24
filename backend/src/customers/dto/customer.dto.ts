@@ -24,6 +24,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { RelationshipPriority, RelationshipStage } from '@prisma/client';
+import { IDEMPOTENCY_KEY_MESSAGE, IDEMPOTENCY_KEY_PATTERN } from '../../common/idempotency-key';
 
 /** A decimal string like "1500" or "1500.0000" (NUMERIC(20,4) compatible). */
 const DECIMAL_RE = /^-?\d{1,16}(\.\d{1,4})?$/;
@@ -312,9 +313,7 @@ export class CreateInvoiceDto {
   @IsOptional()
   @IsString()
   @MaxLength(200)
-  @Matches(/^[A-Za-z0-9._:-]+$/, {
-    message: 'idempotencyKey may contain only letters, digits, and . _ : -',
-  })
+  @Matches(IDEMPOTENCY_KEY_PATTERN, { message: IDEMPOTENCY_KEY_MESSAGE })
   idempotencyKey?: string;
 }
 
@@ -351,9 +350,7 @@ export class StartCampaignDto {
   @IsOptional()
   @IsString()
   @MaxLength(200)
-  @Matches(/^[A-Za-z0-9._:-]+$/, {
-    message: 'idempotencyKey may contain only letters, digits, and . _ : -',
-  })
+  @Matches(IDEMPOTENCY_KEY_PATTERN, { message: IDEMPOTENCY_KEY_MESSAGE })
   idempotencyKey?: string;
 }
 
@@ -380,9 +377,7 @@ export class ScheduleSocialTouchDto {
   @IsOptional()
   @IsString()
   @MaxLength(200)
-  @Matches(/^[A-Za-z0-9._:-]+$/, {
-    message: 'idempotencyKey may contain only letters, digits, and . _ : -',
-  })
+  @Matches(IDEMPOTENCY_KEY_PATTERN, { message: IDEMPOTENCY_KEY_MESSAGE })
   idempotencyKey?: string;
 }
 
@@ -434,9 +429,7 @@ export class SendEmailDto {
   @IsOptional()
   @IsString()
   @MaxLength(200)
-  @Matches(/^[A-Za-z0-9._:-]+$/, {
-    message: 'idempotencyKey may contain only letters, digits, and . _ : -',
-  })
+  @Matches(IDEMPOTENCY_KEY_PATTERN, { message: IDEMPOTENCY_KEY_MESSAGE })
   idempotencyKey?: string;
 }
 
@@ -471,9 +464,7 @@ export class SendMessageDto {
   @IsOptional()
   @IsString()
   @MaxLength(200)
-  @Matches(/^[A-Za-z0-9._:-]+$/, {
-    message: 'idempotencyKey may contain only letters, digits, and . _ : -',
-  })
+  @Matches(IDEMPOTENCY_KEY_PATTERN, { message: IDEMPOTENCY_KEY_MESSAGE })
   idempotencyKey?: string;
 }
 

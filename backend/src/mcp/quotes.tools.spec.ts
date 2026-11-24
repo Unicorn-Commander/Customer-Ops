@@ -1,4 +1,4 @@
-import { registerQuoteTools } from './quotes.tools';
+import { registerQuoteLifecycleTools, registerQuoteTools } from './quotes.tools';
 import { mcpToolDenial, mcpToolMinRole } from './mcp-access';
 import { WorkspaceRole } from '@prisma/client';
 describe('quote MCP registration and policy', () => {
@@ -35,5 +35,18 @@ describe('quote MCP registration and policy', () => {
     const result = await live.handlers.get('get_quote')(args);
     expect(execute).toHaveBeenCalledWith(user, 'a', 'get_quote', args);
     expect(JSON.parse(result.content[0].text).number).toBe('Q-fixture');
+  });
+  it('render_quote without the document service is an MCP error result, not undefined', async () => {
+    const s = server();
+    registerQuoteLifecycleTools(s, {} as any, {} as any, undefined);
+    const result = await s.handlers.get('render_quote')({ quote_id: 'fixture', format: 'html' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/rendering is not available/);
+    const render = jest.fn().mockResolvedValue({ html: '<p>fixture</p>' });
+    const live = server();
+    registerQuoteLifecycleTools(live, {} as any, {} as any, { render } as any);
+    const ok = await live.handlers.get('render_quote')({ quote_id: 'fixture', format: 'html' });
+    expect(ok.isError).toBeUndefined();
+    expect(JSON.parse(ok.content[0].text).html).toBe('<p>fixture</p>');
   });
 });

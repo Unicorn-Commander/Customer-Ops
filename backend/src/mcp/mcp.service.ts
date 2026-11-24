@@ -14,6 +14,11 @@ import { registerQuoteTools, registerQuoteLifecycleTools } from './quotes.tools'
 
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { User, AuditAction, WorkspaceRole } from '@prisma/client';
+import {
+  IDEMPOTENCY_KEY_MAX_LENGTH,
+  IDEMPOTENCY_KEY_MESSAGE,
+  IDEMPOTENCY_KEY_PATTERN,
+} from '../common/idempotency-key';
 import { z } from 'zod';
 import { MembershipService } from '../common/workspace/membership.service';
 import { WorkspaceContextService } from '../common/workspace/workspace-context.service';
@@ -37,6 +42,13 @@ const EMAIL_MODE = z.enum(['send', 'draft']);
 const PRIORITY = z.enum(['LOW', 'MEDIUM', 'HIGH']);
 const INTAKE_STATUS = z.enum(['PENDING', 'RESOLVED', 'FAILED', 'DISCARDED']);
 const RESOLVE_SCOPE = z.enum(['pending', 'pending_and_failed']);
+
+/** MCP idempotency_key: the same charset + length the REST DTOs enforce. */
+const idempotencyKeyArg = z
+  .string()
+  .max(IDEMPOTENCY_KEY_MAX_LENGTH)
+  .regex(IDEMPOTENCY_KEY_PATTERN, IDEMPOTENCY_KEY_MESSAGE)
+  .optional();
 
 @Injectable()
 export class McpService {
@@ -228,9 +240,7 @@ export class McpService {
       'health',
       {
         title: 'Customer-Ops health',
-        description:
-          'Liveness + configuration check. Returns service status, whether ' +
-          'suite tenancy is enabled, and the server time.',
+        description: 'Liveness check. Returns service status and the server time.',
         inputSchema: {},
       },
       async () => wrap(tools.health()),
@@ -444,7 +454,7 @@ export class McpService {
           notes: z.string().max(4000).optional(),
           po_number: z.string().max(128).optional(),
           auto_send: z.boolean().optional(),
-          idempotency_key: z.string().max(200).optional(),
+          idempotency_key: idempotencyKeyArg,
         },
       },
       async (args: any) => wrap(await tools.createCustomerInvoice(user, args)),
@@ -488,7 +498,7 @@ export class McpService {
           campaign_id: z.string(),
           contact_email: z.string().max(320).optional(),
           merge_fields: z.record(z.string(), z.string()).optional(),
-          idempotency_key: z.string().max(200).optional(),
+          idempotency_key: idempotencyKeyArg,
         },
       },
       async (args: any) => wrap(await tools.startCustomerCampaign(user, args)),
@@ -538,7 +548,7 @@ export class McpService {
           body: z.string().min(1).max(50000),
           in_reply_to_thread_id: z.string().max(200).optional(),
           mode: EMAIL_MODE.optional(),
-          idempotency_key: z.string().max(200).optional(),
+          idempotency_key: idempotencyKeyArg,
         },
       },
       async (args: any) => wrap(await tools.sendCustomerEmail(user, args)),
@@ -632,7 +642,7 @@ export class McpService {
           workspace_id: z.string().optional(),
           goal: z.string().max(1000).optional(),
           stage_draft: z.boolean().optional(),
-          idempotency_key: z.string().max(200).optional(),
+          idempotency_key: idempotencyKeyArg,
         },
       },
       async (args: any) => {
@@ -659,7 +669,7 @@ export class McpService {
           customer_id: z.string(),
           workspace_id: z.string().optional(),
           stage_draft: z.boolean().optional(),
-          idempotency_key: z.string().max(200).optional(),
+          idempotency_key: idempotencyKeyArg,
         },
       },
       async (args: any) => {

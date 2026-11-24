@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
   Optional,
   ServiceUnavailableException,
@@ -53,8 +54,28 @@ export class QuoteNotAvailable extends ServiceUnavailableException {
     super({ code: 'QUOTE_NOT_AVAILABLE', message: 'This quote is not available yet.' });
   }
 }
+/** quotes.federated: the per-side fan-out status of an accepted quote. */
+type FederatedStatus = {
+  accounting_ops: string;
+  project_ops: string;
+  retries?: number;
+  [key: string]: unknown;
+};
+/** Which sides reconcile() re-runs, and the stored status to keep for the rest. */
+interface FederationRetry {
+  accounting_ops: boolean;
+  project_ops: boolean;
+  prior: Record<string, unknown>;
+}
+/** reconcile() stops re-running a failed side after this many retries (logged). */
+export const FEDERATION_MAX_RETRIES = 20;
+/** Backoff before retry n+1: 2^n minutes, capped at 6 h (20 retries span days). */
+/** How long a reconcile() retry claim holds a row before another pass may retry it. */
+const FEDERATION_CLAIM_LEASE_MS = 15 * 60_000;
+const federationBackoffMs = (retries: number) => Math.min(2 ** retries, 360) * 60_000;
 @Injectable()
 export class QuotesLifecycleService {
+  private readonly logger = new Logger(QuotesLifecycleService.name);
   constructor(
     private readonly db: PrismaService,
     private readonly config: ConfigService,
@@ -921,14 +942,49 @@ export class QuotesLifecycleService {
     const federated = await this.federateAcceptedQuote(user, workspace, quoteId);
     return { ...recorded, federated };
   }
-  private async federateAcceptedQuote(user: User, workspace: string, quoteId: string) {
-    const federated: { accounting_ops: string; project_ops: string } = {
+  /**
+   * Fan an accepted quote out to Accounting-Ops (the invoice drafts) and
+   * Project-Ops (the project). Each side is attempted on its own: one side
+   * failing never stops the other. A side is 'ok' only when its callee confirmed
+   * it. The status is always written back to quotes.federated; a side that ends
+   * 'failed' is re-run by reconcile() (`retry` names the sides to re-run and the
+   * prior status to keep for the rest). Both callees are idempotent on replay,
+   * which is what makes the retry safe:
+   * - Accounting-Ops create_invoices_from_quote: its schedules are unique on
+   *   (workspace_id, quote_ref, line_position) with ON CONFLICT DO NOTHING
+   *   (accounting-ops app/ar/quotes_seam.py), so a replay adds no second invoice.
+   * - Project-Ops POST /api/v1/federation/quotes/accepted: idempotent by
+   *   (workspace, customer_ops_quote_id, version) with a pg advisory-lock
+   *   re-check inside the write tx (project-ops
+   *   backend/src/quotes/quotes-federation.service.ts); a replay returns the
+   *   same ids, never a second project.
+   */
+  private async federateAcceptedQuote(
+    user: User | null,
+    workspace: string,
+    quoteId: string,
+    retry?: FederationRetry,
+  ) {
+    const actor = user ? ucUidOf(user) : null;
+    const federated: FederatedStatus = {
       accounting_ops: 'skipped',
       project_ops: 'skipped',
+      ...(retry?.prior ?? {}),
     };
-    const attempted = { accounting_ops: false, project_ops: false };
+    const run = {
+      accounting_ops: !retry || retry.accounting_ops,
+      project_ops: !retry || retry.project_ops,
+    };
+    if (retry) federated.retries = (Number(retry.prior.retries) || 0) + 1;
+    delete federated.next_retry_at;
+    const sideFailed = (side: 'accounting_ops' | 'project_ops', err: unknown) => {
+      federated[side] = 'failed';
+      this.logger.warn(
+        `Quote ${quoteId} ${side} fan-out failed (reconcile will retry): ${(err as Error)?.message ?? err}`,
+      );
+    };
     try {
-      const bundle = await this.db.withWorkspace(workspace, ucUidOf(user), (tx) =>
+      const bundle = await this.db.withWorkspace(workspace, actor, (tx) =>
         tx.quote.findFirst({
           where: { id: quoteId, workspaceId: workspace },
           select: {
@@ -958,7 +1014,7 @@ export class QuotesLifecycleService {
       const lines = (snap?.lines ?? []).filter(
         (line) => line && line.selected !== false && line.label && line.kind,
       );
-      if (bundle && version && this.accounting?.isConfigured()) {
+      if (bundle && version && run.accounting_ops && this.accounting?.isConfigured()) {
         const entityId = this.config.get<string>('ACCOUNTING_OPS_ENTITY_ID')?.trim();
         const aoLines = lines
           .filter((line) => typeof line.amount_cents === 'number')
@@ -975,41 +1031,63 @@ export class QuotesLifecycleService {
         if (!entityId || aoLines.length === 0) {
           federated.accounting_ops = 'skipped';
         } else {
-          const ctx = await this.context(workspace, user);
-          if (!this.accounting.checkEntitlement(ctx).allowed) {
-            federated.accounting_ops = 'skipped';
-          } else {
-            const totals = snap?.totals;
-            attempted.accounting_ops = true;
-            federated.accounting_ops = await this.accounting.acceptQuote(ctx, {
-              entityId,
-              quoteRef: bundle.number,
-              version: version.versionNo,
-              currency: bundle.currency || 'USD',
-              customer: {
-                display_name: snap?.customer?.display_name || bundle.title,
-                ...(snap?.customer?.org_name ? { org: snap.customer.org_name } : {}),
-              },
-              lines: aoLines,
-              totals: totals
-                ? {
-                    one_time_total_cents: totals.one_time_cents ?? 0,
-                    milestone_total_cents: totals.milestone_cents ?? 0,
-                    deposit_cents: totals.deposit_cents ?? 0,
-                    recurring: {
-                      ...(totals.recurring?.month_cents
-                        ? { month: totals.recurring.month_cents }
-                        : {}),
-                      ...(totals.recurring?.quarter_cents
-                        ? { quarter: totals.recurring.quarter_cents }
-                        : {}),
-                      ...(totals.recurring?.year_cents
-                        ? { year: totals.recurring.year_cents }
-                        : {}),
-                    },
-                  }
-                : null,
-            });
+          try {
+            const ctx = await this.context(workspace, user ?? undefined);
+            if (!this.accounting.checkEntitlement(ctx).allowed) {
+              if (retry && (ctx.entitlements ?? []).length === 0) {
+                // CUO76-R2-2: the retry has no user, so its entitlements come
+                // from the workspace cache alone. A missing or empty cache is
+                // UNKNOWN, not a revocation: keep the side 'failed' so a later
+                // reconcile retries it, and say so loudly.
+                federated.accounting_ops = 'failed';
+                this.logger.error(
+                  `Quote ${quoteId} accounting_ops retry: workspace ${workspace} entitlements ` +
+                    'are unknown (no entitlement cache); left failed, reconcile will retry',
+                );
+              } else {
+                // The entitlements are known and lack Accounting-Ops: revoked.
+                federated.accounting_ops = 'skipped';
+                this.logger.warn(
+                  `Quote ${quoteId} accounting_ops fan-out skipped: workspace ${workspace} ` +
+                    'is not entitled to Accounting-Ops',
+                );
+              }
+            } else {
+              const totals = snap?.totals;
+              federated.accounting_ops = await this.accounting.acceptQuote(ctx, {
+                entityId,
+                quoteRef: bundle.number,
+                version: version.versionNo,
+                currency: bundle.currency || 'USD',
+                customer: {
+                  display_name: snap?.customer?.display_name || bundle.title,
+                  ...(snap?.customer?.org_name ? { org: snap.customer.org_name } : {}),
+                },
+                lines: aoLines,
+                totals: totals
+                  ? {
+                      one_time_total_cents: totals.one_time_cents ?? 0,
+                      milestone_total_cents: totals.milestone_cents ?? 0,
+                      deposit_cents: totals.deposit_cents ?? 0,
+                      recurring: {
+                        ...(totals.recurring?.month_cents
+                          ? { month: totals.recurring.month_cents }
+                          : {}),
+                        ...(totals.recurring?.quarter_cents
+                          ? { quarter: totals.recurring.quarter_cents }
+                          : {}),
+                        ...(totals.recurring?.year_cents
+                          ? { year: totals.recurring.year_cents }
+                          : {}),
+                      },
+                    }
+                  : null,
+              });
+              if (federated.accounting_ops === 'failed')
+                sideFailed('accounting_ops', new Error('Accounting-Ops did not confirm'));
+            }
+          } catch (err) {
+            sideFailed('accounting_ops', err);
           }
         }
       }
@@ -1017,6 +1095,7 @@ export class QuotesLifecycleService {
       if (
         bundle &&
         version &&
+        run.project_ops &&
         this.projects?.isConfigured() &&
         base &&
         /^https:\/\//.test(base) &&
@@ -1034,51 +1113,81 @@ export class QuotesLifecycleService {
             ? { interval: 'year', amount_cents: totals.recurring.year_cents }
             : null,
         ].filter((row) => row !== null);
-        const ctx = await this.context(workspace, user);
-        attempted.project_ops = true;
-        federated.project_ops = await this.projects.acceptQuote(ctx, {
-          customer_ops_quote_id: quoteId,
-          number: bundle.number,
-          version: version.versionNo,
-          title: bundle.title,
-          share_url: base,
-          client_name: snap?.customer?.display_name || bundle.title,
-          customer_ops_customer_id: bundle.customerId,
-          currency: (bundle.currency || 'USD').slice(0, 3),
-          billing: {
-            one_time_total_cents: totals.one_time_cents ?? 0,
-            milestone_total_cents: totals.milestone_cents ?? 0,
-            deposit_cents: totals.deposit_cents ?? 0,
-            schedule_text: `Accepted ${bundle.number}.`,
-            ...(recurring.length > 0 ? { recurring } : {}),
-          },
-          lines: lines.map((line, index) => ({
-            kind: line.kind,
-            label: String(line.label).slice(0, 500),
-            position: typeof line.position === 'number' ? line.position : index,
-            ...(typeof line.amount_cents === 'number'
-              ? { amount_cents: Math.round(line.amount_cents) }
-              : {}),
-            ...(line.id ? { customer_ops_line_id: String(line.id) } : {}),
-          })),
-        });
+        try {
+          const ctx = await this.context(workspace, user ?? undefined);
+          federated.project_ops = await this.projects.acceptQuote(ctx, {
+            customer_ops_quote_id: quoteId,
+            number: bundle.number,
+            version: version.versionNo,
+            title: bundle.title,
+            share_url: base,
+            client_name: snap?.customer?.display_name || bundle.title,
+            customer_ops_customer_id: bundle.customerId,
+            currency: (bundle.currency || 'USD').slice(0, 3),
+            billing: {
+              one_time_total_cents: totals.one_time_cents ?? 0,
+              milestone_total_cents: totals.milestone_cents ?? 0,
+              deposit_cents: totals.deposit_cents ?? 0,
+              schedule_text: `Accepted ${bundle.number}.`,
+              ...(recurring.length > 0 ? { recurring } : {}),
+            },
+            lines: lines.map((line, index) => ({
+              kind: line.kind,
+              label: String(line.label).slice(0, 500),
+              position: typeof line.position === 'number' ? line.position : index,
+              ...(typeof line.amount_cents === 'number'
+                ? { amount_cents: Math.round(line.amount_cents) }
+                : {}),
+              ...(line.id ? { customer_ops_line_id: String(line.id) } : {}),
+            })),
+          });
+          if (federated.project_ops === 'failed')
+            sideFailed('project_ops', new Error('Project-Ops did not confirm'));
+        } catch (err) {
+          sideFailed('project_ops', err);
+        }
       }
-      try {
-        await this.db.withWorkspace(workspace, ucUidOf(user), (tx) =>
-          tx.quote.update({ where: { id: quoteId }, data: { federated } }),
-        );
-      } catch {
-        // Acceptance is already committed. A failed status write does not undo it.
-      }
-    } catch {
-      // A side we never called stays skipped. A side that threw is failed.
-      // Acceptance is already committed; this status does not undo it.
-      if (attempted.accounting_ops && federated.accounting_ops !== 'ok') {
-        federated.accounting_ops = 'failed';
-      }
-      if (attempted.project_ops && federated.project_ops !== 'ok') {
-        federated.project_ops = 'failed';
-      }
+    } catch (err) {
+      // The quote could not be loaded, so neither side ran. A configured side
+      // that is not yet 'ok' is marked failed so reconcile() retries it (the
+      // retry re-evaluates and may settle on 'skipped'). This catch only ever
+      // stamps 'failed': 'ok' survives only for a side its callee already
+      // confirmed earlier in this run (CUO76-R2-4).
+      if (
+        run.accounting_ops &&
+        this.accounting?.isConfigured() &&
+        federated.accounting_ops !== 'ok'
+      )
+        sideFailed('accounting_ops', err);
+      if (run.project_ops && this.projects?.isConfigured() && federated.project_ops !== 'ok')
+        sideFailed('project_ops', err);
+    }
+    if (
+      (federated.accounting_ops === 'failed' || federated.project_ops === 'failed') &&
+      (Number(federated.retries) || 0) >= FEDERATION_MAX_RETRIES
+    )
+      this.logger.error(
+        `Quote ${quoteId} fan-out still failed after ${FEDERATION_MAX_RETRIES} retries; ` +
+          'reconcile() will not retry it again: an operator must re-run the fan-out',
+      );
+    if (federated.accounting_ops === 'failed' || federated.project_ops === 'failed')
+      federated.next_retry_at = new Date(
+        Date.now() + federationBackoffMs(Number(federated.retries) || 0),
+      ).toISOString();
+    try {
+      await this.db.withWorkspace(workspace, actor, (tx) =>
+        tx.quote.update({
+          where: { id: quoteId },
+          data: { federated: federated as Prisma.InputJsonObject },
+        }),
+      );
+    } catch (err) {
+      // Acceptance is already committed; a failed status write does not undo it,
+      // but without the write reconcile() cannot see a failed side. Say so.
+      this.logger.error(
+        `Quote ${quoteId} federated status write failed (status ${JSON.stringify(federated)}); ` +
+          `a failed side will NOT be retried until the status is recorded: ${(err as Error)?.message ?? err}`,
+      );
     }
     return federated;
   }
@@ -1276,6 +1385,90 @@ export class QuotesLifecycleService {
         for (const version of pending) await this.observe(ws.id, version.id).catch(() => undefined);
         after = pending.length === 100 ? pending[pending.length - 1].id : undefined;
       } while (after);
+      await this.retryFailedFederation(ws.id);
+    }
+  }
+  /**
+   * Re-run the accepted-quote fan-out for every side recorded 'failed' (CuO-SW-1).
+   * Only failed sides are re-run; an 'ok' side is never called again, so a
+   * confirmed invoice is not re-requested. Bounded by FEDERATION_MAX_RETRIES.
+   */
+  private async retryFailedFederation(workspace: string) {
+    let after: string | undefined;
+    do {
+      const page = await this.db
+        .withWorkspace(workspace, null, (tx) =>
+          tx.quote.findMany({
+            where: {
+              workspaceId: workspace,
+              status: 'accepted',
+              OR: [
+                { federated: { path: ['accounting_ops'], equals: 'failed' } },
+                { federated: { path: ['project_ops'], equals: 'failed' } },
+              ],
+              ...(after ? { id: { gt: after } } : {}),
+            },
+            select: { id: true, federated: true },
+            orderBy: { id: 'asc' },
+            take: 100,
+          }),
+        )
+        .catch((err) => {
+          this.logger.warn(
+            `Quote fan-out retry scan failed for ${workspace}: ${err?.message ?? err}`,
+          );
+          return [];
+        });
+      for (const row of page) {
+        const prior = (row.federated ?? {}) as Record<string, unknown>;
+        // Exhausted rows were logged once when they hit the cap.
+        if ((Number(prior.retries) || 0) >= FEDERATION_MAX_RETRIES) continue;
+        const due = Date.parse(String(prior.next_retry_at ?? ''));
+        if (Number.isFinite(due) && due > Date.now()) continue;
+        if (!(await this.claimFederationRetry(workspace, row.id, prior))) continue;
+        await this.federateAcceptedQuote(null, workspace, row.id, {
+          accounting_ops: prior.accounting_ops === 'failed',
+          project_ops: prior.project_ops === 'failed',
+          prior,
+        }).catch((err) =>
+          this.logger.warn(`Quote ${row.id} fan-out retry failed: ${err?.message ?? err}`),
+        );
+      }
+      after = page.length === 100 ? page[page.length - 1].id : undefined;
+    } while (after);
+  }
+  /**
+   * Claim a due retry row before any side is called (CUO76-R2-3), so two
+   * replicas running reconcile() at once cannot both call a side. The claim is
+   * a compare-and-set: it writes a lease into next_retry_at only while the row
+   * still holds exactly the status this scan read. A replica that read the same
+   * row loses the race (0 rows updated) and skips it; one that scans after the
+   * claim sees the lease as not yet due. The fan-out's own status write ends the
+   * lease; if the process dies mid-call the lease expires and the row is retried.
+   */
+  private async claimFederationRetry(
+    workspace: string,
+    quoteId: string,
+    prior: Record<string, unknown>,
+  ): Promise<boolean> {
+    const lease = new Date(Date.now() + FEDERATION_CLAIM_LEASE_MS).toISOString();
+    try {
+      const claimed = await this.db.withWorkspace(workspace, null, (tx) =>
+        tx.quote.updateMany({
+          where: {
+            id: quoteId,
+            workspaceId: workspace,
+            federated: { equals: prior as Prisma.InputJsonObject },
+          },
+          data: { federated: { ...prior, next_retry_at: lease } as Prisma.InputJsonObject },
+        }),
+      );
+      return claimed.count === 1;
+    } catch (err) {
+      this.logger.warn(
+        `Quote ${quoteId} fan-out retry claim failed (not retried this pass): ${(err as Error)?.message ?? err}`,
+      );
+      return false;
     }
   }
   async expire() {

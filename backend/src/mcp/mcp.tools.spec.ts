@@ -589,4 +589,22 @@ describe('CustomerOpsTools — MCP arg → DTO delegation mapping', () => {
       );
     });
   });
+
+  describe('health: no deployment configuration disclosed (CUO-MCP-3)', () => {
+    it('returns status, service and time only; never tenancyEnabled', () => {
+      const prev = process.env.CUSTOMER_OPS_TENANCY_ENABLED;
+      try {
+        for (const v of ['true', 'false']) {
+          process.env.CUSTOMER_OPS_TENANCY_ENABLED = v;
+          const out = makeTools().tools.health();
+          expect(Object.keys(out).sort()).toEqual(['service', 'status', 'time']);
+          expect(out).not.toHaveProperty('tenancyEnabled');
+          expect(JSON.stringify(out)).not.toMatch(/tenan/i);
+        }
+      } finally {
+        if (prev === undefined) delete process.env.CUSTOMER_OPS_TENANCY_ENABLED;
+        else process.env.CUSTOMER_OPS_TENANCY_ENABLED = prev;
+      }
+    });
+  });
 });

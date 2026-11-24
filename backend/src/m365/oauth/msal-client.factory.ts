@@ -43,21 +43,26 @@ export class MsalClientFactory {
   }
 
   /** Build the consent URL the SPA redirects the user to. `state` is the signed,
-   *  single-use JWT that re-establishes the user on the callback. */
-  async getAuthCodeUrl(state: string): Promise<string> {
+   *  single-use JWT that re-establishes the user on the callback;
+   *  `codeChallenge` is the PKCE S256 challenge bound to that state. */
+  async getAuthCodeUrl(state: string, codeChallenge: string): Promise<string> {
     return this.cca().getAuthCodeUrl({
       scopes: this.config.scopes,
       redirectUri: this.config.redirectUri,
       state,
+      codeChallenge,
+      codeChallengeMethod: 'S256',
     });
   }
 
-  /** Redeem the authorization code from the callback for tokens. */
-  async acquireTokenByCode(code: string): Promise<MsalTokenResult> {
+  /** Redeem the authorization code from the callback for tokens, proving the
+   *  PKCE verifier bound to the callback's state. */
+  async acquireTokenByCode(code: string, codeVerifier: string): Promise<MsalTokenResult> {
     const result = await this.cca().acquireTokenByCode({
       code,
       scopes: this.config.scopes,
       redirectUri: this.config.redirectUri,
+      codeVerifier,
     });
     return this.toResult(result);
   }

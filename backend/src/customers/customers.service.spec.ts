@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  Logger,
   NotFoundException,
   ServiceUnavailableException,
   UnprocessableEntityException,
@@ -2069,5 +2070,38 @@ describe('CustomersService — *ForUser audit side-effects (Phase 7; AuditServic
     await svc.createForUser(entitledAaron, { contactId: 'contact-9' }, 'requested-but-overridden');
     expect(workspaces.resolveAuthorized).toHaveBeenCalledTimes(1);
     expect((audit.log as jest.Mock).mock.calls[0][0].workspaceId).toBe(WS);
+  });
+});
+
+describe('CustomersService graph refresh failure is logged (CuO-SW-2)', () => {
+  it('a failed post-commit graph refresh WARNs instead of vanishing', async () => {
+    const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    try {
+      const workspaces = {
+        resolveAuthorized: jest.fn().mockRejectedValue(new Error('workspace lookup failed')),
+      } as unknown as WorkspaceContextService;
+      const graph = { upsertCustomer: jest.fn() };
+      const stub = {} as any;
+      const svc = new CustomersService(
+        workspaces,
+        stub,
+        stub,
+        stub,
+        stub,
+        stub,
+        stub,
+        undefined,
+        undefined,
+        graph as any,
+      );
+      (svc as any).refreshGraph({ id: 'user-1' }, 'cust-1', null);
+      await new Promise((r) => setImmediate(r));
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('graph refresh for customer cust-1 failed'),
+      );
+      expect(graph.upsertCustomer).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

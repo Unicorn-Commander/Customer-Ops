@@ -1,3 +1,5 @@
+import { createHash } from 'crypto';
+import { Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { User } from '@prisma/client';
@@ -72,6 +74,17 @@ function build(configOver: Record<string, string | undefined> = {}) {
 }
 
 describe('M365 OAuth handshake', () => {
+  // The PKCE verifier is keyed off JWT_SECRET (as in production) and fails
+  // closed when it is unset, so the spec provides it.
+  const savedSecret = process.env.JWT_SECRET;
+  beforeAll(() => {
+    process.env.JWT_SECRET = JWT_SECRET;
+  });
+  afterAll(() => {
+    if (savedSecret === undefined) delete process.env.JWT_SECRET;
+    else process.env.JWT_SECRET = savedSecret;
+  });
+
   describe('start', () => {
     it('signs a state and returns the MSAL consent URL', async () => {
       const { service, msal } = build();
@@ -88,10 +101,61 @@ describe('M365 OAuth handshake', () => {
     });
   });
 
+  describe('PKCE S256 (CUO-CB-3)', () => {
+    it('start sends an S256 challenge; complete redeems with the verifier bound to the state', async () => {
+      const { service, msal } = build();
+      await service.start(USER);
+      const [stateArg, challenge] = (msal.getAuthCodeUrl as jest.Mock).mock.calls[0];
+      expect(challenge).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      // The verifier is never readable from the state in the URL.
+      const decoded = JSON.stringify(new JwtService({}).decode(stateArg));
+      expect(decoded).not.toMatch(/verifier|challenge/i);
+
+      await service.complete('auth-code-1', stateArg);
+      const verifier = (msal.acquireTokenByCode as jest.Mock).mock.calls[0][1] as string;
+      expect(verifier).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      expect(createHash('sha256').update(verifier).digest('base64url')).toBe(challenge);
+    });
+
+    it('fails closed when JWT_SECRET is unset', async () => {
+      const { state } = build();
+      delete process.env.JWT_SECRET;
+      try {
+        expect(() => state.pkceVerifier('n1')).toThrow(/JWT_SECRET/);
+      } finally {
+        process.env.JWT_SECRET = JWT_SECRET;
+      }
+    });
+
+    it('each state gets its own verifier', async () => {
+      const { state } = build();
+      const a = state.issue(USER.id, WS);
+      const b = state.issue(USER.id, WS);
+      expect(a.codeChallenge).not.toBe(b.codeChallenge);
+    });
+
+    it('there is no bare sign(): every minted state comes with an S256 challenge (CUO76-R2-6)', async () => {
+      const { state } = build();
+      expect((state as any).sign).toBeUndefined();
+      const issued = state.issue(USER.id, WS);
+      const nonce = (new JwtService({}).decode(issued.state) as { nonce: string }).nonce;
+      expect(issued.codeChallenge).toBe(
+        createHash('sha256').update(state.pkceVerifier(nonce)).digest('base64url'),
+      );
+    });
+
+    it('a rejected state never reaches the code redemption', async () => {
+      const { service, msal } = build();
+      const forged = new JwtService({ secret: 'attacker-secret' }).sign({ uid: 'mallory', ws: WS, nonce: 'x' });
+      await expect(service.complete('code', forged)).rejects.toThrow();
+      expect(msal.acquireTokenByCode).not.toHaveBeenCalled();
+    });
+  });
+
   describe('complete — the security boundary', () => {
     it('verifies the signed state, redeems the code, and stores the refresh token ENCRYPTED (never plaintext)', async () => {
       const { service, state, stored, cipher } = build();
-      const signed = state.sign(USER.id, WS);
+      const signed = state.issue(USER.id, WS).state;
 
       const out = await service.complete('auth-code-1', signed);
       expect(out).toEqual({ userId: USER.id, workspaceId: WS });
@@ -126,7 +190,7 @@ describe('M365 OAuth handshake', () => {
 
     it('REJECTS a REPLAYED state (single-use nonce consumed on first success)', async () => {
       const { service, state } = build();
-      const signed = state.sign(USER.id, WS);
+      const signed = state.issue(USER.id, WS).state;
       await service.complete('code', signed); // first use OK
       await expect(service.complete('code', signed)).rejects.toThrow(/already used/);
     });
@@ -140,7 +204,7 @@ describe('M365 OAuth handshake', () => {
         scopes: [],
         account: { homeAccountId: 'h' },
       });
-      const signed = state.sign(USER.id, WS);
+      const signed = state.issue(USER.id, WS).state;
       await expect(service.complete('code', signed)).rejects.toThrow(/did not return a refresh token/);
     });
   });
@@ -153,7 +217,7 @@ describe('M365 OAuth handshake', () => {
     it('redirects to ?m365=connected on success', async () => {
       const { controller, state } = build();
       const res = fakeRes();
-      const signed = state.sign(USER.id, WS);
+      const signed = state.issue(USER.id, WS).state;
       await controller.callback('code', signed, undefined, {}, res);
       expect(res.redirect).toHaveBeenCalledWith(
         expect.stringContaining('/dashboard/settings/integrations?m365=connected'),
@@ -166,6 +230,17 @@ describe('M365 OAuth handshake', () => {
       await controller.callback('code', 'not-a-valid-jwt', undefined, {}, res);
       const target = res.redirect.mock.calls[0][0] as string;
       expect(target).toContain('m365=error');
+    });
+
+    it('logs a connect failure server-side (CuO-SW-2)', async () => {
+      const { controller } = build();
+      const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      try {
+        await controller.callback('code', 'not-a-valid-jwt', undefined, {}, fakeRes());
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('M365 connect failed'));
+      } finally {
+        warn.mockRestore();
+      }
     });
 
     it('redirects to ?m365=error when Entra returned an error (denied / admin consent)', async () => {
