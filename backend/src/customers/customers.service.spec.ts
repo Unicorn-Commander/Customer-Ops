@@ -77,7 +77,9 @@ function makeTx(customerRow: any) {
     $queryRaw: jest.fn().mockResolvedValue([{ ws: WS }]),
     customer: {
       findUnique: jest.fn().mockResolvedValue(customerRow),
-      findFirst: jest.fn().mockResolvedValue(null),
+      // getInTx reads by (id, workspaceId) — the GUC-bound row — so the fake
+      // resolves findFirst to the bound row exactly like findUnique did.
+      findFirst: jest.fn().mockResolvedValue(customerRow),
       findMany: jest.fn().mockResolvedValue(customerRow ? [customerRow] : []),
       create: jest.fn(async ({ data }: any) => makeRow({ ...data, id: 'cust-new' })),
       update: jest.fn(async ({ data }: any) => ({ ...customerRow, ...data })),
@@ -365,7 +367,7 @@ describe('CustomersService — relationship logic', () => {
 
     it('404s when the relationship does not exist', async () => {
       const { tx } = makeTx(null);
-      tx.customer.findUnique.mockResolvedValue(null);
+      tx.customer.findFirst.mockResolvedValue(null);
       const { svc } = makeService();
       await expect(
         svc.transitionInTx(tx, 'missing', RelationshipStage.PROSPECT, undefined, UC_UID),
@@ -373,9 +375,46 @@ describe('CustomersService — relationship logic', () => {
     });
   });
 
+  describe('getInTx — the workspace-bound read (defense in depth over FORCED RLS)', () => {
+    it('carries the GUC workspaceId in the where (not just the RLS fence)', async () => {
+      const { tx } = makeTx(makeRow());
+      const { svc } = makeService();
+
+      const row = await svc.getInTx(tx, 'cust-1');
+
+      expect(row.id).toBe('cust-1');
+      // The lookup is findFirst (no compound-unique accessor on id+workspaceId),
+      // and the where binds BOTH the id and the transaction's GUC workspace —
+      // so a misconfigured / no-GUC session cannot return another tenant's row.
+      expect(tx.customer.findFirst).toHaveBeenCalledTimes(1);
+      expect(tx.customer.findFirst).toHaveBeenCalledWith({
+        where: { id: 'cust-1', workspaceId: WS },
+      });
+      expect(tx.customer.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('404s when the row belongs to ANOTHER workspace (cross-tenant read refused)', async () => {
+      const OTHER_WS = '0190a000-7e57-7000-8000-00000000c0ff';
+      const { tx } = makeTx(makeRow({ workspaceId: OTHER_WS }));
+      // A misconfigured / no-GUC session that is not bound to the row's tenant:
+      // the (id, workspaceId) where the service builds cannot match that row,
+      // so the read is refused even though FORCED RLS is not doing the work.
+      // (The where is what this test proves, so the fake resolves it naively.)
+      tx.customer.findFirst.mockResolvedValue(null);
+      const { svc } = makeService();
+      await expect(svc.getInTx(tx, 'cust-1')).rejects.toThrow(NotFoundException);
+      expect(tx.customer.findFirst).toHaveBeenCalledWith({
+        where: { id: 'cust-1', workspaceId: WS },
+      });
+    });
+  });
+
   describe('create', () => {
     it('creates a LEAD relationship + a CREATED activity, scoped to the GUC workspace', async () => {
       const { tx, activities } = makeTx(makeRow());
+      // The blank-slate create: no existing row, so the (workspace, contact)
+      // duplicate check must not collide with the getInTx fixture row.
+      tx.customer.findFirst.mockResolvedValue(null);
       const { svc } = makeService();
 
       const created = await svc.createInTx(
@@ -1751,6 +1790,7 @@ describe('CustomersService — *ForUser audit side-effects (Phase 7; AuditServic
     const { svc, audit, lastTx } = makeAuditedService();
     const { tx } = makeTx(makeRow());
     lastTx.current = tx;
+    tx.customer.findFirst.mockResolvedValue(null); // blank-slate create: no existing relationship
 
     const created = await svc.createForUser(entitledAaron, { contactId: 'contact-9', source: 'webform' }, WS);
 
@@ -1773,6 +1813,7 @@ describe('CustomersService — *ForUser audit side-effects (Phase 7; AuditServic
       const { svc, lastTx } = makeAuditedService({ contact: { verifyContact } });
       const { tx } = makeTx(makeRow());
       lastTx.current = tx;
+      tx.customer.findFirst.mockResolvedValue(null); // blank-slate create
       const err = await svc
         .createForUser(entitledAaron, { contactId: 'E2E Test Contact' }, WS)
         .catch((e) => e);
@@ -1815,6 +1856,7 @@ describe('CustomersService — *ForUser audit side-effects (Phase 7; AuditServic
     const { svc, lastTx } = makeAuditedService();
     const { tx } = makeTx(makeRow());
     lastTx.current = tx;
+    tx.customer.findFirst.mockResolvedValue(null); // blank-slate create
     await svc.createForUser(entitledAaron, { contactId: 'c-1' }, WS);
     expect(tx.customer.create).toHaveBeenCalledTimes(1);
   });
@@ -1844,6 +1886,7 @@ describe('CustomersService — *ForUser audit side-effects (Phase 7; AuditServic
       const { svc, lastTx } = makeAuditedService();
       const { tx } = makeTx(makeRow());
       lastTx.current = tx;
+      tx.customer.findFirst.mockResolvedValue(null); // blank-slate create
       const prev = process.env.UC_ENTITLEMENT_MODE;
       process.env.UC_ENTITLEMENT_MODE = 'open';
       try {
@@ -2066,6 +2109,7 @@ describe('CustomersService — *ForUser audit side-effects (Phase 7; AuditServic
     const { svc, audit, lastTx, workspaces } = makeAuditedService();
     const { tx } = makeTx(makeRow());
     lastTx.current = tx;
+    tx.customer.findFirst.mockResolvedValue(null); // blank-slate create
 
     await svc.createForUser(entitledAaron, { contactId: 'contact-9' }, 'requested-but-overridden');
     expect(workspaces.resolveAuthorized).toHaveBeenCalledTimes(1);

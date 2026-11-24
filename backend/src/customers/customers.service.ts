@@ -2600,7 +2600,15 @@ export class CustomersService {
   }
 
   async getInTx(tx: WorkspaceTxClient, id: string) {
-    const row = await tx.customer.findUnique({ where: { id } });
+    // Defense-in-depth: bind the read to the GUC workspace EXPLICITLY. FORCED
+    // RLS on `customers` already scopes every row to current_workspace_id(), but
+    // the where clause must not depend on that alone — a no-GUC or misconfigured
+    // session would otherwise return the row for ANY tenant that owns `id`.
+    // findFirst with (id, workspaceId) is equivalent to the unique (id) lookup
+    // inside a correctly-bound tx (the row's own workspaceId matches the GUC),
+    // and returns nothing cross-tenant even if RLS were bypassed or off.
+    const workspaceId = await this.boundWorkspaceId(tx);
+    const row = await tx.customer.findFirst({ where: { id, workspaceId } });
     if (!row) throw new NotFoundException(`Customer ${id} not found`);
     return row;
   }

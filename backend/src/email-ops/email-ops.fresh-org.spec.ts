@@ -77,6 +77,13 @@ function setup(answer: () => Response | Promise<Response>) {
         contactId: 'contact-7',
         stage: RelationshipStage.LEAD,
       }),
+      // getInTx reads by (id, workspaceId) — the GUC-bound row.
+      findFirst: jest.fn().mockResolvedValue({
+        id: 'cust-1',
+        workspaceId: FRESH_ORG,
+        contactId: 'contact-7',
+        stage: RelationshipStage.LEAD,
+      }),
     },
     customerActivity: { create: jest.fn(async ({ data }: any) => data) },
     customerEmailLink: {

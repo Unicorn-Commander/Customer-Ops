@@ -41,7 +41,11 @@ function makeService(opts: { intakeEmail?: string | null; withResolver?: boolean
   const emailLinks: any[] = [];
   const tx: any = {
     $queryRaw: jest.fn().mockResolvedValue([{ ws: WS }]),
-    customer: { findUnique: jest.fn().mockResolvedValue(row) },
+    customer: {
+      findUnique: jest.fn().mockResolvedValue(row),
+      // getInTx reads by (id, workspaceId) — the GUC-bound row.
+      findFirst: jest.fn().mockResolvedValue(row),
+    },
     customerActivity: { create: jest.fn(async ({ data }: any) => data) },
     customerEmailLink: {
       findMany: jest.fn(async () => emailLinks),
