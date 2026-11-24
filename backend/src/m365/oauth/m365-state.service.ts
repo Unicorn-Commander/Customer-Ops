@@ -52,16 +52,14 @@ export class M365StateService {
     private readonly singleUse: SingleUseTokenStore,
   ) {}
 
-  /** Sign a short-TTL state for the given user + workspace. */
-  sign(uid: string, ws: string): string {
-    return this.issue(uid, ws).state;
-  }
-
   /**
-   * Sign a state AND derive its PKCE pair (CUO-CB-3). The verifier is bound to
-   * the state record: it is HMAC(key, nonce), so only this server can recompute
-   * it from the state on the callback, and the state in the URL does not reveal
-   * it (it carries the nonce, never the verifier). No extra store is needed.
+   * Sign a short-TTL state for the given user + workspace AND derive its PKCE
+   * pair (CUO-CB-3). This is the ONLY way to mint a state: there is no bare
+   * sign(), so every code-flow start carries an S256 challenge (CUO76-R2-6).
+   * The verifier is bound to the state record: it is HMAC(key, nonce), so only
+   * this server can recompute it from the state on the callback, and the state
+   * in the URL does not reveal it (it carries the nonce, never the verifier).
+   * No extra store is needed.
    */
   issue(uid: string, ws: string): { state: string; codeChallenge: string } {
     const payload: M365StatePayload = { uid, ws, nonce: randomUUID() };
