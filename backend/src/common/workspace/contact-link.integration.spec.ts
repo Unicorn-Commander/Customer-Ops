@@ -124,10 +124,18 @@ suite('Contact connection actual HTTP and isolated PostgreSQL', () => {
           where: { userKey_workspaceId: { userKey: owner.keycloakId!, workspaceId: ws } },
           data: { status: 'SUSPENDED' },
         });
-      if (mode === 'conflict')
-        await db.federationWorkspaceMap.create({
-          data: { localWorkspaceId: ws, targetApp: 'contact-ops', targetWorkspaceId: randomUUID() },
+      // A conflicting map installed mid-authorization. An upsert, not a create:
+      // the non-awaited sign-in provisioner may have written this workspace's
+      // contact-ops row first, and a unique violation thrown here would surface
+      // as the controller's fail-closed 403 instead of reaching the conflict check.
+      if (mode === 'conflict') {
+        const rival = randomUUID();
+        await db.federationWorkspaceMap.upsert({
+          where: { localWorkspaceId_targetApp: { localWorkspaceId: ws, targetApp: 'contact-ops' } },
+          create: { localWorkspaceId: ws, targetApp: 'contact-ops', targetWorkspaceId: rival },
+          update: { targetWorkspaceId: rival },
         });
+      }
       if (mode === 'reject')
         return new Response(JSON.stringify({ result: { isError: true } }), { status: 200 });
       return new Response(
@@ -351,10 +359,15 @@ suite('Contact connection actual HTTP and isolated PostgreSQL', () => {
   it('refuses a conflicting map installed during remote authorization', async () => {
     mode = 'conflict';
     expect((await request(ownerToken)).status).toBe(409);
-    const row = await db.federationWorkspaceMap.findFirstOrThrow({
-      where: { localWorkspaceId: ws },
-    });
-    expect(row.targetWorkspaceId).not.toBe(target);
+    // Refused with no write: no map row points at the refused target, and the
+    // controller wrote no connection audit entry.
+    const rows = await settledRows(ws);
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((r) => !sameTenant(r.targetWorkspaceId, target))).toBe(true);
+    const logs = await db.withWorkspace(ws, owner.keycloakId!, (tx) =>
+      tx.auditLog.findMany({ where: { workspaceId: ws, resource: 'contact_connection' } }),
+    );
+    expect(logs).toHaveLength(0);
   });
   it('validates allowed fields and target UUID before any remote operation', async () => {
     expect((await request(ownerToken, ws, { target_workspace_id: 'not-uuid' })).status).toBe(400);
