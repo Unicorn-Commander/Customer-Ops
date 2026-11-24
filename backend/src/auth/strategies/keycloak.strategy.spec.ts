@@ -1,11 +1,17 @@
 import { ConfigService } from '@nestjs/config';
 import { AuthService } from '../auth.service';
+import { createHash } from 'crypto';
 import { KeycloakStrategy } from './keycloak.strategy';
+import { SingleUseTokenStore } from '../../common/security/single-use-token.store';
+import { RedisService } from '../../common/redis/redis.service';
+import { KEYCLOAK_STATE_COOKIE } from './keycloak-state.store';
+
+const singleUse = () => new SingleUseTokenStore({ client: null } as unknown as RedisService);
 
 describe('KeycloakStrategy self-host endpoints', () => {
   const auth = { validateKeycloakUser: jest.fn() };
   const create = (config: Record<string, string> = {}) =>
-    new KeycloakStrategy(new ConfigService(config), auth as unknown as AuthService);
+    new KeycloakStrategy(new ConfigService(config), auth as unknown as AuthService, singleUse());
   const endpoints = (strategy: KeycloakStrategy) => (strategy as any)._oauth2;
 
   afterEach(() => jest.restoreAllMocks());
@@ -64,5 +70,196 @@ describe('KeycloakStrategy self-host endpoints', () => {
       profile,
       'test-access-token',
     );
+  });
+});
+
+/**
+ * CUO-CB-1: login CSRF. The login leg must send state + PKCE S256 and set a
+ * signed __Host- cookie; the callback must refuse a missing, foreign or replayed
+ * state BEFORE the token-endpoint call, and a normal login still works.
+ */
+describe('KeycloakStrategy state + PKCE (login CSRF)', () => {
+  const USER = { id: 'user-1' };
+  const auth = { validateKeycloakUser: jest.fn().mockResolvedValue(USER) };
+  const config = { JWT_SECRET: 'test-secret-for-state-signing-0123456789' };
+
+  type Outcome = { kind: 'redirect' | 'success' | 'fail' | 'error'; arg: any; status?: any };
+
+  function fakeRes() {
+    const headers: Record<string, any> = {};
+    return {
+      headers,
+      getHeader: (k: string) => headers[k.toLowerCase()],
+      setHeader: (k: string, v: any) => {
+        headers[k.toLowerCase()] = v;
+      },
+    };
+  }
+
+  function makeReq(query: Record<string, string>, cookie?: string) {
+    const res = fakeRes();
+    const req: any = {
+      query,
+      headers: { host: 'customerops.example.com', ...(cookie ? { cookie } : {}) },
+      url: '/api/v1/auth/keycloak',
+      connection: { encrypted: true },
+      res,
+    };
+    return { req, res };
+  }
+
+  /** Run one passport authenticate() pass and resolve with its outcome. */
+  function run(strategy: KeycloakStrategy, req: any): Promise<Outcome> {
+    return new Promise((resolve) => {
+      const s = strategy as any;
+      s.redirect = (arg: any) => resolve({ kind: 'redirect', arg });
+      s.success = (arg: any) => resolve({ kind: 'success', arg });
+      s.fail = (arg: any, status?: any) => resolve({ kind: 'fail', arg, status });
+      s.error = (arg: any) => resolve({ kind: 'error', arg });
+      s.authenticate(req, {});
+    });
+  }
+
+  function setup() {
+    const strategy = new KeycloakStrategy(
+      new ConfigService(config),
+      auth as unknown as AuthService,
+      singleUse(),
+    );
+    const tokenCall = jest
+      .fn()
+      .mockImplementation((_code: string, _params: any, cb: any) =>
+        cb(null, 'header.e30.sig', 'refresh', {}),
+      );
+    (strategy as any)._oauth2.getOAuthAccessToken = tokenCall;
+    jest.spyOn(global, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({ sub: 'kc-1', email: 'pat@example.com', email_verified: true }),
+    } as Response);
+    return { strategy, tokenCall };
+  }
+
+  /** Start a login; return the state, challenge and the Cookie header to send back. */
+  async function startLogin(strategy: KeycloakStrategy) {
+    const { req, res } = makeReq({});
+    const out = await run(strategy, req);
+    expect(out.kind).toBe('redirect');
+    const url = new URL(out.arg);
+    const setCookie: string[] = res.headers['set-cookie'];
+    expect(setCookie).toHaveLength(1);
+    const cookie = setCookie[0].split(';')[0];
+    return {
+      url,
+      setCookie: setCookie[0],
+      cookie,
+      state: url.searchParams.get('state')!,
+      challenge: url.searchParams.get('code_challenge')!,
+    };
+  }
+
+  afterEach(() => jest.restoreAllMocks());
+
+  it('login sends state + S256 challenge and sets a signed __Host- cookie', async () => {
+    const { strategy } = setup();
+    const login = await startLogin(strategy);
+    expect(login.state).toBeTruthy();
+    expect(login.url.searchParams.get('code_challenge_method')).toBe('S256');
+    expect(login.challenge).toBeTruthy();
+    expect(login.setCookie.startsWith(`${KEYCLOAK_STATE_COOKIE}=`)).toBe(true);
+    expect(login.setCookie).toContain('Path=/');
+    expect(login.setCookie).toContain('Secure');
+    expect(login.setCookie).toContain('HttpOnly');
+    expect(login.setCookie).toContain('SameSite=Lax');
+    expect(login.setCookie).not.toMatch(/Domain=/i);
+    const maxAge = Number(/Max-Age=(\d+)/.exec(login.setCookie)![1]);
+    expect(maxAge).toBeGreaterThan(0);
+    expect(maxAge).toBeLessThanOrEqual(600);
+    // The cookie value is signed: body.signature.
+    expect(login.cookie.split('=')[1]).toMatch(/^[\w-]+\.[\w-]+$/);
+  });
+
+  it('a normal login works end to end and sends the matching code_verifier', async () => {
+    const { strategy, tokenCall } = setup();
+    const login = await startLogin(strategy);
+    const { req, res } = makeReq({ code: 'auth-code', state: login.state }, login.cookie);
+    const out = await run(strategy, req);
+    expect(out.kind).toBe('success');
+    expect(out.arg).toBe(USER);
+    expect(tokenCall).toHaveBeenCalledTimes(1);
+    const verifier = tokenCall.mock.calls[0][1].code_verifier;
+    expect(createHash('sha256').update(verifier).digest('base64url')).toBe(login.challenge);
+    // The callback clears the cookie (single use).
+    expect(res.headers['set-cookie'][0]).toContain('Max-Age=0');
+  });
+
+  it('a replayed callback (same cookie + state) is refused with no token call', async () => {
+    const { strategy, tokenCall } = setup();
+    const login = await startLogin(strategy);
+    const first = await run(
+      strategy,
+      makeReq({ code: 'c1', state: login.state }, login.cookie).req,
+    );
+    expect(first.kind).toBe('success');
+    const replay = await run(
+      strategy,
+      makeReq({ code: 'c2', state: login.state }, login.cookie).req,
+    );
+    expect(replay.kind).toBe('fail');
+    expect(replay.status).toBe(403);
+    expect(tokenCall).toHaveBeenCalledTimes(1);
+  });
+
+  it('a callback with no state cookie is refused with no token call', async () => {
+    const { strategy, tokenCall } = setup();
+    const login = await startLogin(strategy);
+    const out = await run(strategy, makeReq({ code: 'c', state: login.state }).req);
+    expect(out.kind).toBe('fail');
+    expect(tokenCall).not.toHaveBeenCalled();
+  });
+
+  it('a callback with no state param is refused with no token call', async () => {
+    const { strategy, tokenCall } = setup();
+    const login = await startLogin(strategy);
+    const out = await run(strategy, makeReq({ code: 'c' }, login.cookie).req);
+    expect(out.kind).toBe('fail');
+    expect(tokenCall).not.toHaveBeenCalled();
+  });
+
+  it('a foreign state (an attacker login replayed into a victim browser) is refused', async () => {
+    const { strategy, tokenCall } = setup();
+    const victim = await startLogin(strategy);
+    const attacker = await startLogin(strategy);
+    const out = await run(
+      strategy,
+      makeReq({ code: 'attacker-code', state: attacker.state }, victim.cookie).req,
+    );
+    expect(out.kind).toBe('fail');
+    expect(tokenCall).not.toHaveBeenCalled();
+  });
+
+  it('a tampered or expired state cookie is refused', async () => {
+    const { strategy, tokenCall } = setup();
+    const login = await startLogin(strategy);
+    const [name, value] = login.cookie.split('=');
+    const [body] = value.split('.');
+    const tampered = `${name}=${body}.AAAA`;
+    const t = await run(strategy, makeReq({ code: 'c', state: login.state }, tampered).req);
+    expect(t.kind).toBe('fail');
+
+    const realNow = Date.now();
+    jest.spyOn(Date, 'now').mockReturnValue(realNow + 601_000);
+    const e = await run(strategy, makeReq({ code: 'c', state: login.state }, login.cookie).req);
+    expect(e.kind).toBe('fail');
+    expect(tokenCall).not.toHaveBeenCalled();
+  });
+
+  it('fails closed (no redirect) when JWT_SECRET is unset', async () => {
+    const strategy = new KeycloakStrategy(
+      new ConfigService({}),
+      auth as unknown as AuthService,
+      singleUse(),
+    );
+    const out = await run(strategy, makeReq({}).req);
+    expect(out.kind).toBe('error');
   });
 });

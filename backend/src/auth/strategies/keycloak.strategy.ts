@@ -3,6 +3,8 @@ import { PassportStrategy } from '@nestjs/passport';
 import { Strategy } from 'passport-oauth2';
 import { ConfigService } from '@nestjs/config';
 import { AuthService } from '../auth.service';
+import { SingleUseTokenStore } from '../../common/security/single-use-token.store';
+import { KeycloakStateCookieStore } from './keycloak-state.store';
 
 /**
  * Keycloak OIDC (Authorization Code) strategy for the browser login flow.
@@ -17,6 +19,7 @@ export class KeycloakStrategy extends PassportStrategy(Strategy, 'keycloak') {
   constructor(
     private configService: ConfigService,
     private authService: AuthService,
+    singleUse: SingleUseTokenStore,
   ) {
     const keycloakUrl = (
       configService.get<string>('KEYCLOAK_URL') || 'http://127.0.0.1:8080'
@@ -40,6 +43,15 @@ export class KeycloakStrategy extends PassportStrategy(Strategy, 'keycloak') {
       clientSecret: configService.get('KEYCLOAK_CLIENT_SECRET', ''),
       callbackURL,
       scope: ['openid', 'profile', 'email'],
+      // Login-CSRF defence (CUO-CB-1): a signed, single-use __Host- cookie holds
+      // the state handle + PKCE verifier; a missing, foreign or replayed state is
+      // refused before the token-endpoint code exchange.
+      pkce: 'S256',
+      state: true,
+      store: new KeycloakStateCookieStore(
+        () => configService.get<string>('JWT_SECRET') || '',
+        singleUse,
+      ),
     });
 
     this.userinfoURL = `${keycloakUrl}/realms/${realm}/protocol/openid-connect/userinfo`;
