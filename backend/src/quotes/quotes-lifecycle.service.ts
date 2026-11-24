@@ -946,9 +946,16 @@ export class QuotesLifecycleService {
    * failing never stops the other. A side is 'ok' only when its callee confirmed
    * it. The status is always written back to quotes.federated; a side that ends
    * 'failed' is re-run by reconcile() (`retry` names the sides to re-run and the
-   * prior status to keep for the rest). Both callees are keyed on the quote's
-   * natural identity (AO: quote_ref + version; PO: customer_ops_quote_id +
-   * version), per docs/quotes/CONTRACT-v1.md section 3.
+   * prior status to keep for the rest). Both callees are idempotent on replay,
+   * which is what makes the retry safe:
+   * - Accounting-Ops create_invoices_from_quote: its schedules are unique on
+   *   (workspace_id, quote_ref, line_position) with ON CONFLICT DO NOTHING
+   *   (accounting-ops app/ar/quotes_seam.py), so a replay adds no second invoice.
+   * - Project-Ops POST /api/v1/federation/quotes/accepted: idempotent by
+   *   (workspace, customer_ops_quote_id, version) with a pg advisory-lock
+   *   re-check inside the write tx (project-ops
+   *   backend/src/quotes/quotes-federation.service.ts); a replay returns the
+   *   same ids, never a second project.
    */
   private async federateAcceptedQuote(
     user: User | null,

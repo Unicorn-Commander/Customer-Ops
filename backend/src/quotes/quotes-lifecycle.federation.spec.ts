@@ -145,7 +145,8 @@ describe('QuotesLifecycleService accepted-quote fan-out retry (CuO-SW-1)', () =>
       accounting.acceptQuote.mock.results.map((r: jest.MockResult<Promise<string>>) => r.value),
     );
     expect(okCalls.filter((v) => v === 'ok')).toHaveLength(1);
-    // Same natural key on both calls (quote_ref + version).
+    // Same quote_ref (and line positions) on both calls: AO dedupes schedules on
+    // (workspace_id, quote_ref, line_position).
     const keys = accounting.acceptQuote.mock.calls.map((c: any[]) => [c[1].quoteRef, c[1].version]);
     expect(keys).toEqual([
       ['Q-2026-0001', 1],
