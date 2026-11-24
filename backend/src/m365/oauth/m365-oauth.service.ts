@@ -42,8 +42,8 @@ export class M365OAuthService {
   async start(user: AuthedUser): Promise<{ url: string }> {
     this.requireConfigured();
     const workspaceId = await this.workspaces.resolveAuthorized(user);
-    const signedState = this.state.sign(user.id, workspaceId);
-    const url = await this.msal.getAuthCodeUrl(signedState);
+    const { state: signedState, codeChallenge } = this.state.issue(user.id, workspaceId);
+    const url = await this.msal.getAuthCodeUrl(signedState, codeChallenge);
     this.logger.log(`M365 consent started for user ${user.id} (workspace ${workspaceId})`);
     return { url };
   }
@@ -58,7 +58,7 @@ export class M365OAuthService {
     // The state IS the security boundary — verify + single-use consume FIRST.
     const claims = await this.state.verifyAndConsume(state);
 
-    const token = await this.msal.acquireTokenByCode(code);
+    const token = await this.msal.acquireTokenByCode(code, this.state.pkceVerifier(claims.nonce));
     if (!token.refreshToken) {
       // No offline_access granted (or admin-consent stripped it) → nothing to store.
       throw new Error('Microsoft did not return a refresh token (offline_access not granted)');
