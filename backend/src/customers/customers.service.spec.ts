@@ -942,6 +942,66 @@ describe('CustomersService — Accounting-Ops invoicing (Phase 3; AO mocked)', (
       expect(Number(panel.items[0].balanceDue)).toBe(0);
     });
 
+    it('bounds the poll fan-out: 20 links never exceed 8 polls in flight and the panel is order-identical', async () => {
+      const N = 20;
+      // Each poll holds open for a tick: the fake client records the in-flight
+      // peak, so an unbounded Promise.all (20 at once) would trip the ceiling.
+      let inFlight = 0;
+      let peakInFlight = 0;
+      const ao = entitledAo({
+        getInvoiceById: jest.fn(async (ctx, id) => {
+          inFlight++;
+          peakInFlight = Math.max(peakInFlight, inFlight);
+          await new Promise((r) => setTimeout(r, 2));
+          inFlight--;
+          return { ...FED_INVOICE, id, invoiceNumber: `INV-${id}`, status: 'paid', balanceDue: '0.0000' };
+        }),
+      });
+      const { svc, accounting, lastTx } = makeService({ accounting: ao });
+      const { tx, invoiceLinks } = makeTx(makeRow({ id: 'cust-1' }));
+      for (let i = 1; i <= N; i++) {
+        invoiceLinks.push({
+          id: `link-${i}`,
+          workspaceId: WS,
+          customerId: 'cust-1',
+          externalSource: 'customer-ops',
+          externalRef: `cust:cust-1:key-${i}`,
+          entityId: 'entity-1',
+          aoInvoiceId: `inv-${i}`,
+          currency: 'USD',
+          lastStatus: 'sent',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+      }
+      lastTx.current = tx;
+
+      const panel = await svc.invoicesForUser(aaron, 'cust-1', WS);
+
+      // Every link polled exactly once, by AO id.
+      expect(accounting.getInvoiceById).toHaveBeenCalledTimes(N);
+      // The fan-out is bounded: at most 8 polls in flight at once (the ceiling
+      // is INVOICE_POLL_CONCURRENCY, the same bound the system refresh uses).
+      expect(peakInFlight).toBeLessThanOrEqual(8);
+      // Bounding must not starve: with 8 workers and 20 links the pool is
+      // always busy, so the peak hits the ceiling (an unbounded Promise.all
+      // would report 20; a degenerate 1 would report 1).
+      expect(peakInFlight).toBe(8);
+      // The panel is order-identical to the pre-fix render: item i is link i,
+      // overlaid with its own polled invoice (status paid, balance 0).
+      expect(panel.items).toHaveLength(N);
+      for (let i = 1; i <= N; i++) {
+        expect(panel.items[i - 1]).toMatchObject({
+          id: `link-${i}`,
+          externalRef: `cust:cust-1:key-${i}`,
+          aoInvoiceId: `inv-${i}`,
+          invoiceNumber: `INV-inv-${i}`,
+          status: 'paid',
+        });
+        expect(Number(panel.items[i - 1].balanceDue)).toBe(0);
+      }
+    });
+
     it('degrade-clean: when AO is unconfigured the panel reports configured:false and polls nothing', async () => {
       const { svc, accounting, lastTx } = makeService(); // default AO = dormant
       const { tx, invoiceLinks } = makeTx(makeRow({ id: 'cust-1' }));
