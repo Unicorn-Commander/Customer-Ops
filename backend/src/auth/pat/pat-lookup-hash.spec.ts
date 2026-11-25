@@ -201,12 +201,23 @@ describe('PAT legacy scan cap (CUO-PAT-1b)', () => {
 
   it('scans no more than 50 rows and WARNs (no token material) when the cap is hit', async () => {
     const w = world();
-    // One cheap (cost 4) hash shared by 60 rows keeps the test fast; verifyPat
-    // still runs a real bcrypt compare per row.
+    // seedLegacy would start a production-cost bcrypt hash per row (generatePat
+    // hashes eagerly), so insert rows directly with one cheap (cost 4) hash
+    // shared by 60 rows; verifyPat still runs a real bcrypt compare per row.
     const cheap = bcrypt.hashSync('co_pat_someone-elses', 4);
     for (let i = 0; i < 60; i++) {
       // eslint-disable-next-line no-await-in-loop
-      await w.seedLegacy({ tokenHash: `${cheap}` });
+      await w.prisma.personalAccessToken.create({
+        data: {
+          userId: owner.id,
+          workspaceId: WS,
+          name: 'legacy',
+          prefix: 'co_pat_',
+          tokenHash: cheap,
+          scopes: [],
+          entitlements: [],
+        },
+      });
     }
     const warn = jest.spyOn((w.service as any).logger, 'warn').mockImplementation(() => undefined);
     verify.mockClear();
