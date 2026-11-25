@@ -1,4 +1,5 @@
 import { createHash } from 'crypto';
+import * as bcrypt from 'bcryptjs';
 import { User } from '@prisma/client';
 import { PatService } from './pat.service';
 import * as patUtil from './pat.util';
@@ -20,7 +21,15 @@ function world(opts: { ownerActive?: boolean } = {}) {
   const prisma = {
     personalAccessToken: {
       create: jest.fn(async ({ data }: any) => {
-        const row = { id: `pat-${store.length + 1}`, lastUsedAt: null, revokedAt: null, expiresAt: null, createdAt: new Date(), lookupHash: null, ...data };
+        const row = {
+          id: `pat-${store.length + 1}`,
+          lastUsedAt: null,
+          revokedAt: null,
+          expiresAt: null,
+          createdAt: new Date(),
+          lookupHash: null,
+          ...data,
+        };
         store.push(row);
         return row;
       }),
@@ -28,9 +37,9 @@ function world(opts: { ownerActive?: boolean } = {}) {
         const r = store.find((x) => x.lookupHash === where.lookupHash);
         return r ? { ...r, user } : null;
       }),
-      findMany: jest.fn(async ({ where }: any) => {
+      findMany: jest.fn(async ({ where, take }: any) => {
         const now = Date.now();
-        return store
+        const rows = store
           .filter(
             (r) =>
               (where.lookupHash !== null || r.lookupHash == null) &&
@@ -38,6 +47,7 @@ function world(opts: { ownerActive?: boolean } = {}) {
               (r.expiresAt == null || new Date(r.expiresAt).getTime() > now),
           )
           .map((r) => ({ ...r, user }));
+        return take ? rows.slice(0, take) : rows;
       }),
       update: jest.fn(async ({ where, data }: any) => {
         const r = store.find((x) => x.id === where.id);
@@ -46,13 +56,24 @@ function world(opts: { ownerActive?: boolean } = {}) {
       }),
     },
   } as unknown as PrismaService;
-  const membership = { resolveAndAuthorize: jest.fn(async (_u: User, req?: string | null) => req ?? WS) } as unknown as MembershipService;
+  const membership = {
+    resolveAndAuthorize: jest.fn(async (_u: User, req?: string | null) => req ?? WS),
+  } as unknown as MembershipService;
   const service = new PatService(prisma, membership);
   /** Seed a pre-migration token: bcrypt hash only, lookupHash NULL. */
   const seedLegacy = async (extra: Record<string, unknown> = {}) => {
     const { plaintext, hash } = patUtil.generatePat();
     const row = await (prisma as any).personalAccessToken.create({
-      data: { userId: owner.id, workspaceId: WS, name: 'legacy', prefix: 'co_pat_', tokenHash: await hash, scopes: [], entitlements: [], ...extra },
+      data: {
+        userId: owner.id,
+        workspaceId: WS,
+        name: 'legacy',
+        prefix: 'co_pat_',
+        tokenHash: await hash,
+        scopes: [],
+        entitlements: [],
+        ...extra,
+      },
     });
     return { plaintext, row };
   };
@@ -159,5 +180,50 @@ describe('PAT lookupHash (CUO-PAT-1a)', () => {
       const t = await mint(w);
       await expect(w.service.findByPlaintext(t)).resolves.toMatchObject({ workspaceId: WS });
     });
+  });
+});
+
+describe('PAT legacy scan cap (CUO-PAT-1b)', () => {
+  let verify: jest.SpyInstance;
+  beforeEach(() => {
+    verify = jest.spyOn(patUtil, 'verifyPat');
+  });
+  afterEach(() => verify.mockRestore());
+
+  it('asks for at most 50 legacy rows, most recently used first, nulls last', async () => {
+    const { service, prisma } = world();
+    await service.findByPlaintext('co_pat_garbage');
+    const arg = prisma.personalAccessToken.findMany.mock.calls[0][0];
+    expect(arg.take).toBe(50);
+    expect(arg.orderBy).toEqual({ lastUsedAt: { sort: 'desc', nulls: 'last' } });
+    expect(arg.where.lookupHash).toBeNull();
+  });
+
+  it('scans no more than 50 rows and WARNs (no token material) when the cap is hit', async () => {
+    const w = world();
+    // One cheap (cost 4) hash shared by 60 rows keeps the test fast; verifyPat
+    // still runs a real bcrypt compare per row.
+    const cheap = bcrypt.hashSync('co_pat_someone-elses', 4);
+    for (let i = 0; i < 60; i++) {
+      // eslint-disable-next-line no-await-in-loop
+      await w.seedLegacy({ tokenHash: `${cheap}` });
+    }
+    const warn = jest.spyOn((w.service as any).logger, 'warn').mockImplementation(() => undefined);
+    verify.mockClear();
+    await expect(w.service.findByPlaintext('co_pat_garbage')).resolves.toBeNull();
+    expect(verify).toHaveBeenCalledTimes(50);
+    expect(warn).toHaveBeenCalledTimes(1);
+    const msg = String(warn.mock.calls[0][0]);
+    expect(msg).toContain('50');
+    expect(msg).not.toContain('garbage');
+    expect(msg).not.toContain(sha('co_pat_garbage'));
+  });
+
+  it('does not WARN under the cap', async () => {
+    const w = world();
+    await w.seedLegacy();
+    const warn = jest.spyOn((w.service as any).logger, 'warn').mockImplementation(() => undefined);
+    await w.service.findByPlaintext('co_pat_garbage');
+    expect(warn).not.toHaveBeenCalled();
   });
 });

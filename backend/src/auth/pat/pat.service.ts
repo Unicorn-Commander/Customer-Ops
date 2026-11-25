@@ -31,6 +31,8 @@ import { generatePat, isPatToken, verifyPat } from './pat.util';
 const DEFAULT_PAT_EXPIRY_DAYS = 90;
 const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
+/** Max legacy (lookupHash NULL) rows bcrypt-scanned per request (CUO-PAT-1b). */
+const LEGACY_SCAN_CAP = 50;
 
 /**
  * SHA-256 hex of the plaintext: the indexed lookup key. The token is 256 bits of
@@ -285,7 +287,14 @@ export class PatService {
           AND: [{ OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] }],
         },
         include: { user: true },
+        orderBy: { lastUsedAt: { sort: 'desc', nulls: 'last' } },
+        take: LEGACY_SCAN_CAP,
       });
+      if (legacy.length >= LEGACY_SCAN_CAP) {
+        this.logger.warn(
+          `Legacy PAT scan hit its cap of ${LEGACY_SCAN_CAP} rows (lookupHash IS NULL); older legacy tokens may be unreachable until re-minted`,
+        );
+      }
       for (const candidate of legacy) {
         // eslint-disable-next-line no-await-in-loop
         if (await verifyPat(plaintext, candidate.tokenHash)) {
