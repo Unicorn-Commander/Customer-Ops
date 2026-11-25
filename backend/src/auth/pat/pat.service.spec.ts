@@ -28,15 +28,24 @@ describe('PatService', () => {
           store.push(row);
           return row;
         }),
+        findUnique: jest.fn(async ({ where }: any) => {
+          const r = where.lookupHash !== undefined
+            ? store.find((x) => x.lookupHash === where.lookupHash)
+            : store.find((x) => x.id === where.id);
+          if (!r) return null;
+          return where.lookupHash !== undefined
+            ? { ...r, user: r.userId === aaron.id ? aaron : { id: r.userId, isActive: true } }
+            : r;
+        }),
         findMany: jest.fn(async ({ where }: any) => {
           // emulate the active-token filter (revokedAt null + not expired)
           const now = Date.now();
           let rows = store.filter((r) => r.revokedAt == null && (r.expiresAt == null || new Date(r.expiresAt).getTime() > now));
+          if (where && 'lookupHash' in where) rows = rows.filter((r) => r.lookupHash == null);
           if (where?.userId) rows = rows.filter((r) => r.userId === where.userId);
           if (where && 'include' in where) {/* noop */}
           return rows.map((r) => ({ ...r, user: r.userId === aaron.id ? aaron : { id: r.userId, isActive: true } }));
         }),
-        findUnique: jest.fn(async ({ where }: any) => store.find((r) => r.id === where.id) ?? null),
         update: jest.fn(async ({ where, data }: any) => {
           const r = store.find((x) => x.id === where.id);
           Object.assign(r, data);

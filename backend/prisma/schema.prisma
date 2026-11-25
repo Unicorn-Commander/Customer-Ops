@@ -855,6 +855,9 @@ model PersonalAccessToken {
   name        String
   prefix      String    @default("co_pat_")
   tokenHash   String    @unique
+  // SHA-256 hex of the plaintext: the indexed lookup key so a bad token costs zero
+  // bcrypt. NULL = legacy row, backfilled on first successful use (CUO-PAT-1).
+  lookupHash  String?   @unique
   scopes      String[]
   // SKUs snapshotted at mint from the minting session user's verified
   // entitlements, INTERSECTED with `workspaceId`'s server-side entitlements — so

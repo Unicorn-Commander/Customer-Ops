@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import {
   BadRequestException,
   Injectable,
@@ -30,6 +31,15 @@ import { generatePat, isPatToken, verifyPat } from './pat.util';
 const DEFAULT_PAT_EXPIRY_DAYS = 90;
 const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
+
+/**
+ * SHA-256 hex of the plaintext: the indexed lookup key. The token is 256 bits of
+ * CSPRNG output, so an unsalted fast hash is not brute-forceable; bcrypt in
+ * `tokenHash` stays the real check. Never log this value.
+ */
+function lookupHashOf(plaintext: string): string {
+  return createHash('sha256').update(plaintext).digest('hex');
+}
 
 export interface CreatePatInput {
   name: string;
@@ -215,6 +225,7 @@ export class PatService {
         name,
         prefix: PAT_PREFIX,
         tokenHash,
+        lookupHash: lookupHashOf(plaintext),
         scopes,
         entitlements,
         expiresAt,
@@ -241,31 +252,64 @@ export class PatService {
   /**
    * Resolve a plaintext PAT to its owning user. Returns null on any failure (no
    * match / revoked / expired / owner inactive) so the caller emits one generic
-   * 401. Bumps `lastUsedAt` (fire-and-forget). O(n) bcrypt scan over active
-   * tokens — fine at low volume (add a SHA-256 fast-lookup index later if it
-   * ever isn't).
+   * 401. Bumps `lastUsedAt` (fire-and-forget).
+   *
+   * Indexed path: SHA-256 the plaintext, look the row up by the unique
+   * `lookupHash` index, run ONE bcrypt verify on it. Legacy path (tokens minted
+   * before the column existed, lookupHash NULL): bcrypt-scan only those rows, and
+   * lazily backfill the hash on a match. A garbage token therefore costs zero
+   * bcrypt once every legacy token has been used once.
    */
   async findByPlaintext(plaintext: string): Promise<PatResolution | null> {
     if (!isPatToken(plaintext)) return null;
 
     const now = new Date();
-    const candidates = await this.prisma.personalAccessToken.findMany({
-      where: { revokedAt: null, AND: [{ OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] }] },
+    const lookupHash = lookupHashOf(plaintext);
+    const isActive = (t: { revokedAt: Date | null; expiresAt: Date | null }) =>
+      t.revokedAt == null && (t.expiresAt == null || t.expiresAt > now);
+
+    let token: (PersonalAccessToken & { user: User | null }) | null = null;
+    let backfill = false;
+
+    const indexed = await this.prisma.personalAccessToken.findUnique({
+      where: { lookupHash },
       include: { user: true },
     });
+    if (indexed) {
+      if (isActive(indexed) && (await verifyPat(plaintext, indexed.tokenHash))) token = indexed;
+    } else {
+      const legacy = await this.prisma.personalAccessToken.findMany({
+        where: {
+          lookupHash: null,
+          revokedAt: null,
+          AND: [{ OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] }],
+        },
+        include: { user: true },
+      });
+      for (const candidate of legacy) {
+        // eslint-disable-next-line no-await-in-loop
+        if (await verifyPat(plaintext, candidate.tokenHash)) {
+          token = candidate;
+          backfill = true;
+          break;
+        }
+      }
+    }
 
-    for (const token of candidates) {
-      // eslint-disable-next-line no-await-in-loop
-      const match = await verifyPat(plaintext, token.tokenHash);
-      if (!match) continue;
+    if (token) {
       if (!token.user || !token.user.isActive) return null;
 
-      // Fire-and-forget the lastUsedAt bump — losing a timestamp is not a 500.
+      // Fire-and-forget the lastUsedAt bump (and the lazy lookupHash backfill for
+      // a legacy token) — losing either is not a 500.
+      const tokenId = token.id;
       this.prisma.personalAccessToken
-        .update({ where: { id: token.id }, data: { lastUsedAt: now } })
+        .update({
+          where: { id: tokenId },
+          data: backfill ? { lastUsedAt: now, lookupHash } : { lastUsedAt: now },
+        })
         .catch((err) =>
           this.logger.warn(
-            `Failed to bump lastUsedAt for PAT ${token.id}: ${(err as Error).message}`,
+            `Failed to bump lastUsedAt for PAT ${tokenId}: ${(err as Error).message}`,
           ),
         );
 

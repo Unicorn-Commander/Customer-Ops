@@ -59,7 +59,13 @@ function patWorld(env: Record<string, string | undefined>) {
         rows.push(row);
         return row;
       }),
-      findMany: jest.fn(async () => rows.map((r) => ({ ...r, user: aaron }))),
+      findUnique: jest.fn(async ({ where }: any) => {
+        const r = rows.find((x) => x.lookupHash === where.lookupHash);
+        return r ? { ...r, user: aaron } : null;
+      }),
+      findMany: jest.fn(async () =>
+        rows.filter((r) => r.lookupHash == null).map((r) => ({ ...r, user: aaron })),
+      ),
       update: jest.fn(async () => undefined),
     },
     membership: { findMany: jest.fn(async () => []), findUnique: jest.fn(async () => null) },
