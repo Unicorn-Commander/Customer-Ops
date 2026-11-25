@@ -105,6 +105,15 @@ import {
 } from './dto/customer.dto';
 
 /**
+ * The cap on Accounting-Ops polls in flight at once for one invoice-panel
+ * render (both the customer-360 GET and the scheduler's system refresh). A
+ * 360 can carry up to 100 links; an unbounded Promise.all would fire them all
+ * at AO at once (socket/pool exhaustion here, a thundering herd there), so the
+ * poll fan-out runs through mapWithConcurrency with this worker pool.
+ */
+const INVOICE_POLL_CONCURRENCY = 8;
+
+/**
  * Close a relationship as lost inside an open workspace transaction.
  *
  * `transition_customer_stage` only allows LEAD, PROSPECT, and CUSTOMER
@@ -977,10 +986,15 @@ export class CustomersService {
       );
     }
     if (configured && fedCtx && entitled && links.length > 0) {
-      // 1) Poll every link concurrently — pure federation, no DB tx held open.
-      const polled = await Promise.all(
-        links.map(async (l) => ({ link: l, invoice: await this.pollInvoice(fedCtx, l) })),
-      );
+      // 1) Poll every link with BOUNDED concurrency (INVOICE_POLL_CONCURRENCY) —
+      //    a 360 can hold up to 100 links and an unbounded Promise.all would
+      //    fire them all at AO at once. Pure federation, no DB tx held open.
+      //    mapWithConcurrency preserves input order, so `polled` is aligned
+      //    with `links` exactly as before.
+      const polled = await mapWithConcurrency(links, INVOICE_POLL_CONCURRENCY, async (l) => ({
+        link: l,
+        invoice: await this.pollInvoice(fedCtx, l),
+      }));
       // 2) Persist all refreshed projections in ONE workspace tx (was one tx per
       //    link — up to 100 transactions on a many-invoice 360). Best-effort: a
       //    batch write failure degrades to the freshly-polled values for render.
@@ -1177,7 +1191,6 @@ export class CustomersService {
     //    an unbounded Promise.all would fire them all at AO at once. Pure
     //    federation, no DB tx held open across the network calls.
     const fedCtx: InvoiceFederationContext = { workspaceId, ucUid: null, entitlements: [] };
-    const INVOICE_POLL_CONCURRENCY = 8;
     const polled = await mapWithConcurrency(links, INVOICE_POLL_CONCURRENCY, async (link) => ({
       link,
       invoice: await this.pollInvoice(fedCtx, link as Record<string, any>),
