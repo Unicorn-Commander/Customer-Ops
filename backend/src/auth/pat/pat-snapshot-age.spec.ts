@@ -61,11 +61,16 @@ function harness(
         store.push(row);
         return row;
       }),
+      findUnique: jest.fn(async ({ where }: any) => {
+        const r = store.find((x) => x.lookupHash === where.lookupHash);
+        return r ? { ...r, user: aaron } : null;
+      }),
       findMany: jest.fn(async () => {
         const now = Date.now();
         return store
           .filter(
             (r) =>
+              r.lookupHash == null &&
               r.revokedAt == null &&
               (r.expiresAt == null || new Date(r.expiresAt).getTime() > now),
           )

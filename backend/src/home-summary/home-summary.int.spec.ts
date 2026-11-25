@@ -559,14 +559,14 @@ describeDb('home-summary (CONTRACT v1, real DB, fake JWKS)', () => {
       customers: await owner.customer.count({ where: { workspaceId: WS } }),
       quotes: await owner.quote.count({ where: { workspaceId: WS } }),
       activities: await owner.customerActivity.count({ where: { workspaceId: WS } }),
-      users: await owner.user.count(),
+      users: await seededUsersRowCount(),
     };
     await call(q, signServiceToken());
     const after = {
       customers: await owner.customer.count({ where: { workspaceId: WS } }),
       quotes: await owner.quote.count({ where: { workspaceId: WS } }),
       activities: await owner.customerActivity.count({ where: { workspaceId: WS } }),
-      users: await owner.user.count(),
+      users: await seededUsersRowCount(),
     };
     expect(after).toEqual(before);
   });

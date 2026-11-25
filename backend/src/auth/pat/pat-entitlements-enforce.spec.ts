@@ -84,10 +84,16 @@ function world(opts: WorldOpts = {}) {
       }),
       findMany: jest.fn(async () =>
         patRows
-          .filter((r) => r.revokedAt == null)
+          .filter((r) => r.lookupHash == null && r.revokedAt == null)
           .map((r) => ({ ...r, user: aaron })),
       ),
-      findUnique: jest.fn(async ({ where }: any) => patRows.find((r) => r.id === where.id) ?? null),
+      findUnique: jest.fn(async ({ where }: any) => {
+        if (where.lookupHash !== undefined) {
+          const r = patRows.find((x) => x.lookupHash === where.lookupHash);
+          return r ? { ...r, user: aaron } : null;
+        }
+        return patRows.find((r) => r.id === where.id) ?? null;
+      }),
       update: jest.fn(async ({ where, data }: any) => {
         const r = patRows.find((x) => x.id === where.id);
         Object.assign(r, data);
