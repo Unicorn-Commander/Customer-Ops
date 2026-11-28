@@ -423,12 +423,16 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       }
 
       const rawBearer = request ? JwtStrategy.extractBearerToken(request) : undefined;
+      // A no-email human realm bearer is forwarded too (PO-CONN): the service
+      // may resolve it through the realm userinfo endpoint instead of 401ing
+      // it with invalid_token (which loops a web connector into sign-in).
       const forwardableBearer =
         rawBearer &&
         typeof payload?.iss === 'string' &&
         payload.iss.includes('/realms/') &&
         !this.brigadeTrustedIssuers.has(payload.iss) &&
-        JwtStrategy.isHumanRealmPayload(payload) &&
+        (JwtStrategy.isHumanRealmPayload(payload) ||
+          JwtStrategy.isNoEmailHumanRealmPayload(payload)) &&
         !rawBearer.startsWith('co_pat_')
           ? rawBearer
           : undefined;
@@ -493,6 +497,21 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       typeof payload?.email === 'string' &&
       payload.email.trim() !== '' &&
       payload?.email_verified === true &&
+      !payload?.act &&
+      !payload?.client_id &&
+      !payload?.clientId
+    );
+  }
+
+  /**
+   * A NO-email human realm session: the same shape as `isHumanRealmPayload`
+   * minus the email claims — exactly the token a web connector forwards that
+   * today resolves to "no email" and 401s (the sign-in loop). These are the
+   * only bearers the service may enrich via the realm userinfo endpoint.
+   */
+  private static isNoEmailHumanRealmPayload(payload: any): boolean {
+    return (
+      !(typeof payload?.email === 'string' && payload.email.trim() !== '') &&
       !payload?.act &&
       !payload?.client_id &&
       !payload?.clientId

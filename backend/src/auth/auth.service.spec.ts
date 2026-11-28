@@ -6,6 +6,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { WorkspaceProvisioningService } from '../common/workspace/workspace-provisioning.service';
 import { MembershipService } from '../common/workspace/membership.service';
 import { __resetAccessListCacheForTests } from './access-list';
+import { clearUserinfoCacheForTests } from './userinfo';
 
 /**
  * The JIT gate (validateKeycloakUser, SUITE-IDENTITY §D5) under both signup
@@ -44,6 +45,7 @@ describe('AuthService.validateKeycloakUser — signup modes', () => {
         findMany: jest.fn(async () => []),
         create: jest.fn(async ({ data }: any) => userRow(data)),
         update: jest.fn(async ({ data }: any) => ({ ...data })),
+        updateMany: jest.fn(async () => ({ count: 0 })),
       },
     } as unknown as PrismaService;
 
@@ -79,18 +81,49 @@ describe('AuthService.validateKeycloakUser — signup modes', () => {
 
   beforeEach(() => {
     __resetAccessListCacheForTests();
+    clearUserinfoCacheForTests();
     delete process.env.CUSTOMER_OPS_ACCESS_LIST; // legacy fallback (Aaron+Shafen OWNER)
     delete process.env.CUSTOMER_OPS_SIGNUP_MODE;
     delete process.env.CUSTOMER_OPS_ENTITLEMENTS_ENABLED;
     delete process.env.UC_ENTITLEMENTS_URL;
     delete process.env.CUSTOMER_OPS_ENTITLEMENT_FEATURE_KEY;
+    delete process.env.CUSTOMER_OPS_USERINFO_FETCH;
+    delete process.env.KEYCLOAK_URL;
+    delete process.env.KEYCLOAK_PUBLIC_URL;
+    delete process.env.KEYCLOAK_REALM;
   });
   afterEach(() => {
     delete process.env.CUSTOMER_OPS_SIGNUP_MODE;
     delete process.env.CUSTOMER_OPS_ENTITLEMENTS_ENABLED;
     delete process.env.UC_ENTITLEMENTS_URL;
     delete process.env.CUSTOMER_OPS_ENTITLEMENT_FEATURE_KEY;
+    delete process.env.CUSTOMER_OPS_USERINFO_FETCH;
+    delete process.env.KEYCLOAK_URL;
+    delete process.env.KEYCLOAK_PUBLIC_URL;
+    delete process.env.KEYCLOAK_REALM;
     jest.restoreAllMocks();
+  });
+
+  // PO-CONN tests: the configured realm issuer + a no-email human bearer.
+  const REALM_ISSUER = 'https://auth.example.test/realms/uchub';
+  // A long token exp would cache the very first (unlinked) verdict for 900 s
+  // and make later same-bearer assertions stale; keep test exps short (300 s).
+  let bearerExp = Math.floor(Date.now() / 1000) + 300;
+  const noEmailConfig = () => {
+    process.env.CUSTOMER_OPS_USERINFO_FETCH = 'true';
+    process.env.KEYCLOAK_URL = 'https://auth.example.test';
+    process.env.KEYCLOAK_PUBLIC_URL = 'https://auth.example.test';
+    process.env.KEYCLOAK_REALM = 'uchub';
+    // The resolved connector email must be on the allow-list for the
+    // "creates an entitled/allowed user" assertion to pass.
+    process.env.CUSTOMER_OPS_ACCESS_LIST = 'connector@magicunicorn.tech:OWNER';
+    bearerExp = Math.floor(Date.now() / 1000) + 300;
+  };
+  const noEmailPayload = (sub: string) => ({
+    sub,
+    iss: REALM_ISSUER,
+    aud: 'customer-ops',
+    exp: bearerExp,
   });
 
   describe('invite mode (default)', () => {
@@ -240,9 +273,13 @@ describe('AuthService.validateKeycloakUser — signup modes', () => {
 
     it('rejects a verified token with NO email even in open mode (nothing to key on)', async () => {
       const { svc, provisioning } = makeService();
+      // PO-CONN: a no-email bearer with no local row now 403s with a structured
+      // no_workspace_access (never 401s with invalid_token, which loops a web
+      // connector into sign-in). The browser path (no forwarded bearer) hits
+      // the same gate and gets the same 403.
       await expect(
         svc.validateKeycloakUser('kc-noemail', { sub: 'kc-noemail', preferred_username: 'x' }),
-      ).rejects.toThrow(UnauthorizedException);
+      ).rejects.toMatchObject({ status: 403 });
       expect(provisioning.provisionSelfServeUser).not.toHaveBeenCalled();
     });
   });
@@ -370,6 +407,213 @@ describe('AuthService.validateKeycloakUser — signup modes', () => {
       ).rejects.toMatchObject({ status: 403 });
       expect(provisioning.provisionEntitledOrgWorkspace).not.toHaveBeenCalled();
       expect(provisioning.provisionSelfServeUser).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('PO-CONN: no-email realm human bearer resolves via userinfo', () => {
+    const userinfoResponse = (over: Record<string, unknown> = {}) =>
+      ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          sub: 'kc-noemail-entitled',
+          email: 'connector@magicunicorn.tech',
+          email_verified: true,
+          preferred_username: 'connector',
+          given_name: 'Conn',
+          family_name: 'Ector',
+          ...over,
+        }),
+      }) as Response;
+
+    const guardRealFetch = () => {
+      const real = global.fetch;
+      (global as any).fetch = jest.fn(async () => {
+        throw new Error('real fetch reached — every test must mock global fetch');
+      });
+      return () => {
+        (global as any).fetch = real;
+      };
+    };
+
+    it('creates an entitled/allowed user exactly as the email path would', async () => {
+      const restore = guardRealFetch();
+      noEmailConfig();
+      const fetcher = jest.spyOn(global, 'fetch').mockResolvedValue(userinfoResponse());
+      const { svc, prisma, provisioning } = makeService();
+
+      const user = await svc.validateJwtPayload(noEmailPayload('kc-noemail-entitled'), 'bearer-1');
+
+      restore();
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(prisma.user.create).toHaveBeenCalledTimes(1);
+      expect((prisma.user.create as jest.Mock).mock.calls[0][0].data).toMatchObject({
+        email: 'connector@magicunicorn.tech',
+        keycloakId: 'kc-noemail-entitled',
+        username: 'connector',
+      });
+      expect(provisioning.provisionSelfServeUser).not.toHaveBeenCalled();
+      expect(user.keycloakId).toBe('kc-noemail-entitled');
+      expect((user as any).__verifiedEmail).toBe('connector@magicunicorn.tech');
+    });
+
+    it('not entitled -> 403 no_workspace_access, never 401', async () => {
+      const restore = guardRealFetch();
+      noEmailConfig();
+      const fetcher = jest.spyOn(global, 'fetch').mockResolvedValue(
+        userinfoResponse({ sub: 'kc-noemail-stranger', email: 'stranger@example.com' }),
+      );
+      const { svc } = makeService();
+
+      await expect(
+        svc.validateJwtPayload(noEmailPayload('kc-noemail-stranger'), 'bearer-stranger'),
+      ).rejects.toMatchObject({
+        status: 403,
+        response: { error: 'no_workspace_access' },
+      });
+      restore();
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    });
+
+    it('userinfo sub mismatch -> refused, 403, and no user created', async () => {
+      const restore = guardRealFetch();
+      noEmailConfig();
+      const fetcher = jest.spyOn(global, 'fetch').mockResolvedValue(
+        userinfoResponse({ sub: 'attacker-sub', email: 'aaron@magicunicorn.tech' }),
+      );
+      const { svc, prisma } = makeService();
+
+      await expect(
+        svc.validateJwtPayload(noEmailPayload('kc-noemail-stranger'), 'bearer-mismatch'),
+      ).rejects.toMatchObject({ status: 403, response: { error: 'no_workspace_access' } });
+      restore();
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(prisma.user.create).not.toHaveBeenCalled();
+    });
+
+    it('act/client_id token -> no fetch, no link (an unbound local user is not linked)', async () => {
+      const restore = guardRealFetch();
+      noEmailConfig();
+      const fetcher = jest.spyOn(global, 'fetch');
+      const unbound = {
+        id: 'local-unbound',
+        email: 'connector@magicunicorn.tech',
+        keycloakId: null,
+        isActive: true,
+      } as User;
+      const { svc, prisma } = makeService({ findUniqueResult: unbound });
+      // The email-link path would bind this row; a machine token must not.
+      (prisma.user.findUnique as jest.Mock).mockImplementation(async ({ where }: any) =>
+        where.keycloakId ? null : unbound,
+      );
+
+      await expect(
+        svc.validateJwtPayload(
+          { ...noEmailPayload('kc-machine'), act: { sub: 'x' } },
+          'bearer-machine',
+        ),
+      ).rejects.toMatchObject({ status: 403 });
+      await expect(
+        svc.validateJwtPayload(
+          { ...noEmailPayload('kc-client'), client_id: 'svc' },
+          'bearer-client',
+        ),
+      ).rejects.toMatchObject({ status: 403 });
+      restore();
+      expect(fetcher).not.toHaveBeenCalled();
+      expect(prisma.user.updateMany).not.toHaveBeenCalled();
+      expect((prisma.user.findUnique as jest.Mock).mock.calls.length).toBeGreaterThan(0);
+    });
+
+    it('already linked -> no fetch, resolves by keycloakId as today', async () => {
+      const restore = guardRealFetch();
+      noEmailConfig();
+      const fetcher = jest.spyOn(global, 'fetch');
+      const linked = {
+        id: 'local-linked',
+        email: 'connector@magicunicorn.tech',
+        keycloakId: 'kc-noemail-entitled',
+        isActive: true,
+      } as User;
+      const { svc } = makeService({ findUniqueResult: linked });
+
+      const user = await svc.validateJwtPayload(noEmailPayload('kc-noemail-entitled'), 'bearer-2');
+      restore();
+      expect(fetcher).not.toHaveBeenCalled();
+      expect(user.id).toBe('local-linked');
+    });
+
+    it('cache hit -> one fetch per bearer (the second request is served from the digest cache)', async () => {
+      const restore = guardRealFetch();
+      noEmailConfig();
+      const fetcher = jest.spyOn(global, 'fetch').mockResolvedValue(userinfoResponse());
+      const { svc } = makeService();
+
+      // First request: the profile is fetched and cached under the bearer digest.
+      await svc.validateJwtPayload(noEmailPayload('kc-noemail-entitled'), 'bearer-cache');
+      // Second request with the SAME bearer: the cached profile short-circuits
+      // the fetch (cache hit) and the already-linked sub resolves by keycloakId.
+      await svc.validateJwtPayload(noEmailPayload('kc-noemail-entitled'), 'bearer-cache');
+      restore();
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    });
+
+    it('userinfo error -> today behavior: 403 no_workspace_access (not 401)', async () => {
+      const restore = guardRealFetch();
+      noEmailConfig();
+      const fetcher = jest.spyOn(global, 'fetch').mockResolvedValue({
+        ok: false,
+        status: 503,
+        json: async () => ({}),
+      } as Response);
+      const { svc } = makeService();
+
+      await expect(
+        svc.validateJwtPayload(noEmailPayload('kc-noemail-stranger'), 'bearer-outage'),
+      ).rejects.toMatchObject({ status: 403, response: { error: 'no_workspace_access' } });
+      restore();
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    });
+
+    it('flag off -> no fetch, same 403 body', async () => {
+      const restore = guardRealFetch();
+      // No CUSTOMER_OPS_USERINFO_FETCH in beforeEach; set the realm config only.
+      process.env.KEYCLOAK_URL = 'https://auth.example.test';
+      process.env.KEYCLOAK_PUBLIC_URL = 'https://auth.example.test';
+      process.env.KEYCLOAK_REALM = 'uchub';
+      const fetcher = jest.spyOn(global, 'fetch');
+      const { svc } = makeService();
+
+      await expect(
+        svc.validateJwtPayload(noEmailPayload('kc-noemail-stranger'), 'bearer-off'),
+      ).rejects.toMatchObject({ status: 403, response: { error: 'no_workspace_access' } });
+      restore();
+      expect(fetcher).not.toHaveBeenCalled();
+    });
+
+    it('verified token with no local user after userinfo -> 403 shape (never 401 invalid_token)', async () => {
+      const restore = guardRealFetch();
+      noEmailConfig();
+      const fetcher = jest
+        .spyOn(global, 'fetch')
+        .mockResolvedValue(
+          userinfoResponse({ sub: 'kc-noemail-stranger', email: 'stranger@example.com' }),
+        );
+      const { svc } = makeService();
+
+      let error: any;
+      try {
+        await svc.validateJwtPayload(noEmailPayload('kc-noemail-stranger'), 'bearer-403');
+      } catch (e) {
+        error = e;
+      }
+      restore();
+      expect(error).toBeInstanceOf(ForbiddenException);
+      expect(error.status).toBe(403);
+      expect(error.status).not.toBe(401);
+      expect(error.getResponse()).toMatchObject({ error: 'no_workspace_access' });
+      expect(error.getResponse().message).toMatch(/no Customer-Ops access/);
+      expect(fetcher).toHaveBeenCalledTimes(1);
     });
   });
 });

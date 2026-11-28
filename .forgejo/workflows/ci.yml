@@ -146,11 +146,14 @@ jobs:
         # tests run instead of skipping).
         # Bounded workers: jest defaults to one worker per visible core (40 on the
         # legacy1 runner), and ts-jest workers that many SIGKILL inside the job's
-        # 8 GB memory cap ("worker terminated by another process").
+        # 8 GB memory cap ("worker terminated by another process"). The single
+        # jest process also peaks near 2 GB under ts-jest, so give it its own
+        # 4 GB heap (step-level env, not a run-line flag).
         run: npx jest --ci --maxWorkers=3
         env:
           DATABASE_URL: ${{ env.ADMIN_DATABASE_URL }}
           CUSTOMER_ONBOARDING_TEST_DB_URL: ${{ env.CUSTOMER_ONBOARDING_TEST_DB_URL }}
+          NODE_OPTIONS: --max-old-space-size=4096
 
   # --------------------------------------------------------------------------
   # FRONTEND — typecheck + production build + lint + node --test specs.

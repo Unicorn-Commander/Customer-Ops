@@ -16,11 +16,35 @@ import { WorkspaceProvisioningService } from '../common/workspace/workspace-prov
 import { MembershipService } from '../common/workspace/membership.service';
 import { ContactOpsLinkService } from '../contact-ops/contact-ops-link.service';
 import { customerOpsEntitlementsEnabled, resolveOrgEntitlement } from './org-entitlements.client';
+import {
+  UserinfoProfile,
+  fetchRealmUserinfo,
+  isUserinfoCandidate,
+  userinfoFetchEnabled,
+} from './userinfo';
 
 export const NO_WORKSPACE_ACCESS_RESPONSE = {
   error: 'no_workspace_access',
   message: 'You are signed in but have no Customer-Ops access. Contact your administrator.',
 } as const;
+
+/**
+ * Verified token, correct shape, zero Customer-Ops admission: the 403 a web
+ * connector must get (a 401 `invalid_token` would make it re-run sign-in in a
+ * loop). Same body as the email-path NoWorkspaceAccessException — the guard's
+ * `isNoWorkspaceAccessError` already maps `error: 'no_workspace_access'` to the
+ * 403 insufficient_scope header on /api/v1/mcp — with a message that is true
+ * for the no-email bearer case.
+ */
+export class ConnectorAdmissionException extends ForbiddenException {
+  constructor() {
+    super({
+      error: 'no_workspace_access',
+      message:
+        'You are signed in to the realm but have no Customer-Ops access. Ask your administrator to grant you access.',
+    });
+  }
+}
 
 export class NoWorkspaceAccessException extends ForbiddenException {
   constructor() {
@@ -72,6 +96,12 @@ export interface KeycloakValidationOptions {
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
+  /**
+   * The raw realm bearer of the request being validated (set by the strategy
+   * before `validateJwtPayload`). Used ONLY for its sha256 digest as the
+   * userinfo cache key — never logged, never stored. Cleared per request.
+   */
+  private forwardedBearer?: string;
 
   constructor(
     private readonly jwtService: JwtService,
@@ -100,6 +130,7 @@ export class AuthService {
     profile: any,
     forwardedAccessToken?: string,
     options?: KeycloakValidationOptions,
+    userinfoToken?: { iss?: unknown; exp?: unknown },
   ): Promise<User> {
     const email: string | undefined = profile?.email;
 
@@ -179,6 +210,27 @@ export class AuthService {
       }
     }
 
+    // PO-CONN (step 3.5): a VERIFIED no-email realm human bearer may resolve
+    // through the realm userinfo endpoint BEFORE the JIT branches, so the
+    // resolved email flows through the normal access-list + create path. The
+    // resolver is a no-op (null) for everything except a trusted realm
+    // HUMAN-session token whose `sub` is not already linked and which carries
+    // no email claim — those are exactly the connector tokens that today 401'd
+    // with invalid_token, making a web connector re-run sign-in in a loop.
+    // Anything still not admitted below is a 403, never a 401.
+    if (!user && !email && userinfoToken) {
+      const userinfo = await this.resolveRealmUserinfo(keycloakId, profile, userinfoToken);
+      if (userinfo?.email) {
+        return this.validateKeycloakUser(
+          keycloakId,
+          { ...profile, ...userinfo },
+          forwardedAccessToken,
+          options,
+          userinfoToken,
+        );
+      }
+    }
+
     // 4. JIT-provision. The access-list match ALWAYS wins first (unchanged in
     //    both signup modes) when the new entitlement path did not admit the
     //    caller; the not-matched case is what the signup mode gates.
@@ -235,9 +287,12 @@ export class AuthService {
         user = await this.provisionSelfServe(keycloakId, profile, email);
       } else {
         // Invite-only (default): a uchub account does not by itself grant access.
+        // A no-email bearer that reached here had the userinfo resolver
+        // attempted (step 3.5) and still did not yield an admitted email — a
+        // 403, never a 401, so a connector stops looping on sign-in.
         this.logger.warn(`Rejected SSO JIT for ${email || '(no email)'} — ${access.reason}`);
         if (email) throw new NoWorkspaceAccessException();
-        throw new UnauthorizedException('Invalid token');
+        throw new ConnectorAdmissionException();
       }
     }
 
@@ -282,6 +337,62 @@ export class AuthService {
         ? user.email.trim().toLowerCase()
         : null;
     return user;
+  }
+
+  /**
+   * PO-CONN: resolve a verified no-email realm human bearer through the realm
+   * userinfo endpoint. Runs ONLY on the forwarded-bearer path (a browser
+   * callback always arrives with a profile) and ONLY for a trusted realm
+   * HUMAN-session token whose `sub` is not already linked locally (guard (a)
+   * — an already-linked sub never triggers a fetch). Returns the merged
+   * profile fields (email, email_verified AND-ed with the same machine guard
+   * as the email-claim path, names, preferred_username) or null when the
+   * fetch is refused or unavailable — null keeps today's behavior exactly.
+   * The bearer is never logged; only its sha256 digest keys the cache.
+   */
+  private async resolveRealmUserinfo(
+    keycloakId: string,
+    profile: any,
+    token?: { iss?: unknown; exp?: unknown },
+  ): Promise<UserinfoProfile | null> {
+    if (typeof token?.iss !== 'string' || token.iss.trim() === '') return null;
+    // keycloakId is the verified JWT `sub` (payload.sub from the strategy); the
+    // strategy's profile projection drops it, so use keycloakId directly.
+    if (typeof keycloakId !== 'string' || keycloakId.trim() === '') return null;
+    const iss = token.iss;
+    const primary = AuthService.primaryRealmIssuer();
+    const trusted = AuthService.trustedRealmIssuers();
+    if (trusted.size === 0 || !trusted.has(iss)) return null;
+    if (primary !== null && iss !== primary) return null;
+    if (!isUserinfoCandidate({ iss, sub: keycloakId }, [primary ?? ''])) return null;
+    // Guard (a): an already-linked sub never triggers a fetch.
+    if (await this.prisma.user.findUnique({ where: { keycloakId } })) return null;
+    if (!userinfoFetchEnabled()) return null;
+
+    const resolution = await fetchRealmUserinfo({
+      trustedIssuers: [primary ?? ''],
+      issuer: iss,
+      sub: keycloakId,
+      exp: typeof token.exp === 'number' && Number.isFinite(token.exp) ? token.exp : undefined,
+      cache: true,
+      bearer: this.forwardedBearer ?? '',
+    });
+    if (resolution.outcome !== 'profile' || !resolution.profile) return null;
+    const fetched = resolution.profile;
+    // The same machine guard the email-claim path uses, AND-ed into
+    // email_verified (guard (c)).
+    const machine = fetched.act != null || fetched.client_id != null || fetched.clientId != null;
+    const email =
+      typeof fetched.email === 'string' && fetched.email.trim() !== '' ? fetched.email : undefined;
+    return {
+      sub: fetched.sub,
+      email,
+      email_verified: !machine && fetched.email_verified === true && email !== undefined,
+      preferred_username:
+        typeof fetched.preferred_username === 'string' ? fetched.preferred_username : undefined,
+      given_name: typeof fetched.given_name === 'string' ? fetched.given_name : undefined,
+      family_name: typeof fetched.family_name === 'string' ? fetched.family_name : undefined,
+    };
   }
 
   /**
@@ -397,12 +508,26 @@ export class AuthService {
    *   - Locally-signed session token (no/foreign `iss`) → resolve by local id.
    */
   async validateJwtPayload(payload: any, forwardedAccessToken?: string): Promise<User> {
+    // PO-CONN: the userinfo resolver needs the verified issuer + expiry, which
+    // the strategy's profile projection drops. Pass the verified payload in
+    // alongside the profile; it reaches only the resolver (validateKeycloakUser
+    // ignores it) and never the JIT branches.
+    const userinfoToken = {
+      iss: payload?.iss,
+      exp: typeof payload?.exp === 'number' ? payload.exp : undefined,
+    };
     const issuer: string | undefined = payload?.iss;
     const isKeycloakRealmToken = typeof issuer === 'string' && issuer.includes('/realms/');
     const isBrigadeFederationToken =
       typeof issuer === 'string' && AuthService.brigadeTrustedIssuers().includes(issuer);
 
     if (isKeycloakRealmToken || isBrigadeFederationToken) {
+      // PO-CONN: expose the raw realm bearer to the userinfo resolver (it uses
+      // only the sha256 digest as its cache key; it never logs the token).
+      this.forwardedBearer =
+        typeof forwardedAccessToken === 'string' && forwardedAccessToken.trim() !== ''
+          ? forwardedAccessToken
+          : undefined;
       // Brigade's transitional sub may be an email; surface it as the profile
       // email so the access-list + email-link path still resolves. Harmless for
       // Keycloak realm tokens (which DO emit email) and for the long-term
@@ -419,17 +544,26 @@ export class AuthService {
         act: payload.act,
         __federationActor: isBrigadeFederationToken,
       };
+      // A no-email human realm bearer is a HUMAN-session token too (PO-CONN):
+      // it carries no email claim, so `isHumanRealmToken` (which requires one)
+      // would skip it and the service would 401 with invalid_token — the
+      // sign-in loop a web connector falls into. Accept both shapes here; the
+      // no-email one is only ever enriched via the realm userinfo endpoint
+      // (step 3.5), never admitted without a resolved email.
       const humanRealmToken =
         isKeycloakRealmToken &&
         !isBrigadeFederationToken &&
-        AuthService.isHumanRealmToken(payload) &&
+        (AuthService.isHumanRealmToken(payload) || AuthService.isNoEmailHumanRealmToken(payload)) &&
         typeof forwardedAccessToken === 'string' &&
         !forwardedAccessToken.startsWith('co_pat_');
       return humanRealmToken
-        ? this.validateKeycloakUser(payload.sub, profile, forwardedAccessToken, {
-            cacheEntitlement: true,
-            tokenExp: payload.exp,
-          })
+        ? this.validateKeycloakUser(
+            payload.sub,
+            profile,
+            forwardedAccessToken,
+            { cacheEntitlement: true, tokenExp: payload.exp },
+            userinfoToken,
+          )
         : this.validateKeycloakUser(payload.sub, profile);
     }
 
@@ -466,12 +600,52 @@ export class AuthService {
       .filter(Boolean);
   }
 
+  /**
+   * The realm issuers that already verified a forwarded token's signature:
+   * the configured Keycloak realm issuer (exact value) and the configured
+   * federation issuer set. Only an `iss` in this set may be userinfo-fetched
+   * (guard (a) — the issuer must be one that verified the signature).
+   */
+  private static trustedRealmIssuers(): Set<string> {
+    const set = new Set<string>(AuthService.brigadeTrustedIssuers());
+    const primary = AuthService.primaryRealmIssuer();
+    if (primary) set.add(primary);
+    return set;
+  }
+
+  /** The configured Keycloak realm issuer (exact value), or null when unset. */
+  private static primaryRealmIssuer(): string | null {
+    const base = (process.env.KEYCLOAK_PUBLIC_URL || process.env.KEYCLOAK_URL || '').replace(
+      /\/$/,
+      '',
+    );
+    const realm = process.env.KEYCLOAK_REALM;
+    if (!base || !realm) return null;
+    return `${base}/realms/${encodeURIComponent(realm)}`;
+  }
+
   /** Realm users have a verified email; service/machine tokens do not. */
   private static isHumanRealmToken(payload: any): boolean {
     return (
       typeof payload?.email === 'string' &&
       payload.email.trim() !== '' &&
       payload?.email_verified === true &&
+      !payload?.act &&
+      !payload?.client_id &&
+      !payload?.clientId
+    );
+  }
+
+  /**
+   * PO-CONN: a HUMAN realm session whose claims carry no email — exactly the
+   * token a web connector forwards that today resolves to "no email" and 401s
+   * (the sign-in loop). Same shape as `isHumanRealmToken` minus the email
+   * claims; these are the only bearers the service may enrich via the realm
+   * userinfo endpoint. Mirrors JwtStrategy.isNoEmailHumanRealmPayload.
+   */
+  private static isNoEmailHumanRealmToken(payload: any): boolean {
+    return (
+      !(typeof payload?.email === 'string' && payload.email.trim() !== '') &&
       !payload?.act &&
       !payload?.client_id &&
       !payload?.clientId
