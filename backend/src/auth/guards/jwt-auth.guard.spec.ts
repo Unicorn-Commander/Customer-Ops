@@ -2,6 +2,8 @@ import { ExecutionContext, ForbiddenException, UnauthorizedException } from '@ne
 import { JwtAuthGuard } from './jwt-auth.guard';
 import { JWT_ONLY_KEY } from '../decorators/jwt-only.decorator';
 import { REQUIRE_SCOPES_KEY } from '../decorators/require-scopes.decorator';
+import { ConnectorAdmissionException, NoWorkspaceAccessException } from '../auth.service';
+import { MCP_INSUFFICIENT_SCOPE_HEADER } from '../oauth-discovery/mcp-auth-header';
 
 const WS = '0190a000-7e57-7000-8000-00000000c007';
 const OTHER_WS = '0190a000-7e57-7000-8000-0000000000ff';
@@ -181,6 +183,65 @@ describe('JwtAuthGuard', () => {
       });
       const guard = makeGuard(reflector, jest.fn().mockResolvedValue(resolution(['read:customers'], WS)));
       await expect(guard.canActivate(ctx)).rejects.toBeInstanceOf(ForbiddenException);
+    });
+  });
+
+  describe('handleRequest (MCP WWW-Authenticate header mapping)', () => {
+    // The guard owns the failure-path header: a 403 no_workspace_access must
+    // emit the RFC 6750 insufficient_scope challenge (a verified token with no
+    // access), while an unverifiable 401 must emit the 401 invalid_token
+    // challenge. This pins the mapping for the PO-CONN ConnectorAdmissionException.
+    const superProto = Object.getPrototypeOf(JwtAuthGuard.prototype);
+    const mcpRequest = { headers: { authorization: 'Bearer fixture-bearer' }, url: '/api/v1/mcp' };
+    const response = { setHeader: jest.fn() };
+    const makeMcpCtx = () => ({
+      ctx: {
+        getType: () => 'http',
+        switchToHttp: () => ({ getRequest: () => mcpRequest, getResponse: () => response }),
+        getHandler: () => () => undefined,
+        getClass: () => class {},
+      } as unknown as ExecutionContext,
+      reflector: { getAllAndOverride: jest.fn(() => undefined) },
+    });
+
+    afterEach(() => jest.clearAllMocks());
+
+    // The real AuthGuard('jwt').handleRequest rethrows the (or a) auth error
+    // after the guard sets the header, so the call is expected to throw — assert
+    // the header, then swallow the rethrow.
+    function runHandleRequest(err: any): void {
+      const { ctx } = makeMcpCtx();
+      const guard = makeGuard({ getAllAndOverride: jest.fn(() => undefined) } as any, jest.fn());
+      let thrown: any;
+      try {
+        guard.handleRequest(err, undefined, undefined, ctx);
+      } catch (e) {
+        thrown = e;
+      }
+      // Passport rethrows on a failed auth (the header was set before the throw).
+      expect(thrown).toBeDefined();
+    }
+
+    it('maps ConnectorAdmissionException (403) to the 403 insufficient_scope header, not 401 invalid_token', () => {
+      runHandleRequest(new ConnectorAdmissionException());
+      // The 403 insufficient_scope challenge is set…
+      expect(response.setHeader).toHaveBeenCalledWith('WWW-Authenticate', MCP_INSUFFICIENT_SCOPE_HEADER);
+      // …and the 401 invalid_token challenge is NOT (that would loop a
+      // connector into re-running sign-in for a token that verified fine).
+      const values = (response.setHeader as jest.Mock).mock.calls.map((c: any[]) => c[1]);
+      expect(values.some((v: any) => typeof v === 'string' && v.includes('invalid_token'))).toBe(false);
+    });
+
+    it('maps NoWorkspaceAccessException (the email path, 403) to the same 403 insufficient_scope header', () => {
+      runHandleRequest(new NoWorkspaceAccessException());
+      expect(response.setHeader).toHaveBeenCalledWith('WWW-Authenticate', MCP_INSUFFICIENT_SCOPE_HEADER);
+    });
+
+    it('maps an unverifiable 401 (invalid token) to the 401 invalid_token header, NOT insufficient_scope', () => {
+      runHandleRequest(new UnauthorizedException('Invalid token'));
+      const values = (response.setHeader as jest.Mock).mock.calls.map((c: any[]) => c[1]);
+      expect(values.some((v: any) => typeof v === 'string' && v.includes('invalid_token'))).toBe(true);
+      expect(values).not.toContain(MCP_INSUFFICIENT_SCOPE_HEADER);
     });
   });
 
