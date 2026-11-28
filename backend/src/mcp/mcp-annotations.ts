@@ -7,13 +7,113 @@ import { MCP_TOOL_NO_SCOPE } from '../auth/pat/pat.constants';
  * this repo's CommonJS tsconfig; the structure is identical, so the object we
  * build assigns cleanly into the SDK's `config.annotations` field.
  */
-interface ToolAnnotations {
+export interface ToolAnnotations {
   title?: string;
   readOnlyHint?: boolean;
   destructiveHint?: boolean;
   idempotentHint?: boolean;
   openWorldHint?: boolean;
 }
+
+/**
+ * F3-CUO-2a — write:* tools that ONLY ADD rows (a non-read-only tool is
+ * destructive unless it only adds, per the MCP spec). Each name was read
+ * handler-by-handler (REPORT.md):
+ *
+ *   create_quote          quotes.service.ts create_quote: `tx.quote.create` — a new row
+ *   add_quote_section     add_quote_section: `tx.quoteSection.create`
+ *   add_quote_line        add_quote_line: `tx.quoteLine.create` (the update_ branch is separate)
+ *   add_quote_cost        add_quote_cost: `tx.quoteCost.create`
+ *   add_quote_attachment  add_quote_attachment: `tx.quoteAttachment.create`
+ *   create_customer_invoice
+ *                        customers.service.ts createInvoiceForUser: AO `create_invoice` call
+ *                        (new invoice; idempotent on the same ref) + a local link row
+ *   record_quote_acceptance
+ *                        quotes-lifecycle.service.ts recordAcceptance: append-only event rows,
+ *                        a version's accepted* fields, quote status → accepted (a one-way
+ *                        terminal transition), the customer → CUSTOMER stage
+ *   record_customer_engagement
+ *                        customers.service.ts recordEngagementForUser: activity rows + a
+ *                        one-step FORWARD stage advance only (the funnel never moves backward)
+ *   add_customer_note     addNoteForUser: appends one activity row
+ *   add_quote_line / record_*: never overwrite or delete an existing row.
+ *
+ * EVERY other write:* tool is destructive by default: update_* / set_* /
+ * transition_* / mark_* / supersede_* / revoke_* / discard_* /
+ * remove_quote_line / resolve_pending_leads (its provisional-merge path
+ * DELETEs the provisional customer row) etc. — each overwrites or removes
+ * existing data (one line per tool in REPORT.md).
+ */
+export const ADDITIVE_WRITE_TOOLS: ReadonlySet<string> = new Set([
+  'create_quote',
+  'add_quote_section',
+  'add_quote_line',
+  'add_quote_cost',
+  'add_quote_attachment',
+  'create_customer_invoice',
+  'record_quote_acceptance',
+  'record_customer_engagement',
+  'add_customer_note',
+]);
+
+/**
+ * F3-CUO-2b — write:* tools that themselves deliver to a party OUTSIDE the
+ * customer's workspace (an email to a person, or another app):
+ *
+ *   send_quote            quotes-lifecycle.service.ts send(): `email.composeEmail`
+ *                        (mode='draft' — an Email-Ops agent-inbox message addressed to the
+ *                        customer, approved by a human before anything leaves)
+ *   send_customer_email   customers.service.ts sendEmailForUser: `emailOps.composeEmail` —
+ *                        mode 'send' (default, kills the kill-switch path) or 'draft'
+ *   start_customer_campaign
+ *                        customers.service.ts startCampaignForUser: `outreach.enrollContact`
+ *                        — the Outreach app owns the campaign + every send
+ *   create_customer_invoice
+ *                        customers.service.ts createInvoiceForUser: `accountingOps.createInvoice`
+ *                        — the invoice is created in Accounting-Ops (the ledger SoR)
+ *   record_quote_acceptance
+ *                        quotes-lifecycle.service.ts recordAcceptance → federateAcceptedQuote:
+ *                        `accounting.acceptQuote` + `projects.acceptQuote` (the accepted quote
+ *                        fans out to Accounting-Ops + Project-Ops)
+ *   ingest_lead           lead-intake.service.ts ingestForUser → resolveOne:
+ *                        `contactOps.upsertContact` — identity CENTRALIZES in Contact-Ops
+ *                        (the person SoR) before the local LEAD projection is written
+ *
+ * resolve_pending_leads also calls `contactOps.upsertContact`, but it is the
+ * RECONCILER for rows ingest_lead already staged (it resolves intakes the same
+ * path landed, it sends nothing new) — it is NOT listed here.
+ */
+export const OPEN_WORLD_TOOLS: ReadonlySet<string> = new Set([
+  'send_quote',
+  'send_customer_email',
+  'start_customer_campaign',
+  'create_customer_invoice',
+  'record_quote_acceptance',
+  'ingest_lead',
+]);
+
+/**
+ * F3-CUO-2c — the run:agents relationship agents. Their handlers (read
+ * agent-by-agent, REPORT.md) all log ONE CustomerActivity(AGENT_RUN) row (a
+ * DB write) and, for the two drafters with `stage_draft=true`, stage the draft
+ * into the Email-Ops agent inbox via `sendEmailForUser` (mode='draft',
+ * hardcoded — a draft-only write). None is pure text, so none is read-only.
+ * None overwrites or deletes existing data (append-only rows + the draft
+ * staging), so none is destructive. Inference runs through OUR OWN gateway
+ * (AgentInferenceClient → AGENT_INFERENCE_BASE_URL / ORG_GATEWAY_BASE_URL,
+ * the suite's 4-lane inference — not a third-party LLM), and the staged
+ * drafts await a human approval before they leave the workspace, so none is
+ * open-world.
+ *
+ *   triage_customer              assessment only — no draft, no stage_draft arg
+ *   draft_followup               draft + optional Email-Ops agent-inbox staging (mode='draft')
+ *   draft_collections_nudge      draft + optional Email-Ops agent-inbox staging (mode='draft')
+ */
+export const AGENT_WRITE_TOOLS: ReadonlySet<string> = new Set([
+  'triage_customer',
+  'draft_followup',
+  'draft_collections_nudge',
+]);
 
 /**
  * MCP ToolAnnotations for one tool, derived from the PAT scope map.
@@ -26,12 +126,15 @@ interface ToolAnnotations {
  * are covered too) and calls it with MCP_TOOL_SCOPE_MAP[name].
  *
  *   - a `read:*` tool            → readOnly, non-destructive, closed-world
- *   - a `write:*` tool           → not readOnly; destructive when the name
- *                                  starts with delete_/remove_/archive_;
- *                                  openWorld when it starts with send_
- *   - a `run:agents` tool        → readOnly: the relationship agents are
- *                                  DRAFT-ONLY (they return an assessment or a
- *                                  draft and NEVER auto-send/post/move a stage)
+ *   - a `write:*` tool           → not readOnly; destructive UNLESS the tool
+ *                                  is in ADDITIVE_WRITE_TOOLS (it only adds
+ *                                  rows); openWorld when it is in
+ *                                  OPEN_WORLD_TOOLS (it delivers outside the
+ *                                  workspace)
+ *   - a `run:agents` tool        → non-destructive write: the agents log an
+ *                                  AGENT_RUN row (and the drafters optionally
+ *                                  stage a draft) but never overwrite/delete —
+ *                                  see AGENT_WRITE_TOOLS
  *   - a tool in MCP_TOOL_NO_SCOPE (health, list_my_workspaces) → read-only
  *   - anything else (no scope)   → undefined: do not guess. A tool that is
  *                                  neither mapped nor scope-exempt must never
@@ -39,7 +142,11 @@ interface ToolAnnotations {
  *                                  spec test fails on it.
  *
  * `existing` (config.annotations, if any) is spread LAST — an author-provided
- * annotation always wins over the scope-derived default.
+ * annotation always wins over the scope-derived default. A `title` is never
+ * emitted by the scope projection: it would clobber the tool config's top-level
+ * `title` (the SDK's ToolAnnotations carries a `title`, and the SDK promotes
+ * `config.title` to the registered tool's title, so emitting the same value
+ * twice is redundant and a typo here would silently rename the tool).
  *
  * Mirrors the Project-Ops F3 shape (PR MagicUnicorn/Project-Ops#168).
  */
@@ -49,14 +156,17 @@ export function mcpAnnotationsFor(
   existing?: ToolAnnotations,
 ): ToolAnnotations | undefined {
   let annotations: ToolAnnotations;
-  if (scope?.startsWith('read:') || scope === 'run:agents' || MCP_TOOL_NO_SCOPE.has(name)) {
+  if (scope?.startsWith('read:') || MCP_TOOL_NO_SCOPE.has(name)) {
     annotations = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
   } else if (scope?.startsWith('write:')) {
     annotations = {
       readOnlyHint: false,
-      destructiveHint: /^(delete_|remove_|archive_)/.test(name),
-      openWorldHint: name.startsWith('send_'),
+      destructiveHint: !ADDITIVE_WRITE_TOOLS.has(name),
+      openWorldHint: OPEN_WORLD_TOOLS.has(name),
     };
+  } else if (scope === 'run:agents') {
+    if (!AGENT_WRITE_TOOLS.has(name)) return undefined; // fail closed: a new agent is audited before it ships
+    annotations = { readOnlyHint: false, destructiveHint: false, openWorldHint: false };
   } else {
     return undefined;
   }
