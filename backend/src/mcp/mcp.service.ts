@@ -31,6 +31,8 @@ import { FollowUpDrafterAgent } from '../agents/follow-up-drafter.agent';
 import { CollectionsNudgeAgent } from '../agents/collections-nudge.agent';
 import { LeadIntakeService } from '../lead-intake/lead-intake.service';
 import { CustomerOpsTools } from './mcp.tools';
+import { mcpAnnotationsFor } from './mcp-annotations';
+import { MCP_TOOL_SCOPE_MAP } from '../auth/pat/pat.constants';
 import {
   McpDenial,
   MCP_TOOL_MIN_ROLE,
@@ -214,6 +216,17 @@ export class McpService {
           'Contact-Ops is dormant), never a second contact store.',
       },
     );
+
+    // F3 BYO-AI: stamp MCP ToolAnnotations (readOnly/destructive/openWorld) onto
+    // EVERY tool from the PAT scope map, so web ChatGPT + Claude can tell a read
+    // from a write and stop confirmation-clicking reads. Wrapped ONCE here —
+    // before the gate wrap below and before any registerTool call — so the
+    // quote tools (registered last via quotes.tools.ts) are covered too.
+    // Existing config.annotations win (spread last); an unmapped tool gets NONE
+    // (no guessing — the spec test fails on it).
+    const rawAnnotate = server.registerTool.bind(server);
+    server.registerTool = (name: string, config: any, handler: any) =>
+      rawAnnotate(name, withAnnotations(name, config), handler);
 
     const tools = new CustomerOpsTools(
       this.membership,
@@ -834,4 +847,15 @@ function wrap(payload: unknown) {
       },
     ],
   };
+}
+
+/**
+ * F3 BYO-AI: project the PAT scope of one MCP tool onto its config annotations
+ * (mcpAnnotationsFor) so MCP clients can tell reads from writes. A tool with no
+ * scope mapping and not in MCP_TOOL_NO_SCOPE gets NO annotations (no guessing);
+ * an existing config.annotations is spread last and wins.
+ */
+function withAnnotations(name: string, config: any): any {
+  const annotations = mcpAnnotationsFor(name, MCP_TOOL_SCOPE_MAP[name], config?.annotations);
+  return annotations ? { ...config, annotations } : config;
 }
