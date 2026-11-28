@@ -16,9 +16,15 @@ export interface ToolAnnotations {
 }
 
 /**
- * F3-CUO-2a — write:* tools that ONLY ADD rows (a non-read-only tool is
- * destructive unless it only adds, per the MCP spec). Each name was read
- * handler-by-handler (REPORT.md):
+ * F3-CUO-2a / F3-CUO-3 — write:* tools that are ADDITIVE.
+ *
+ * RULE (F3-CUO-3): "additive" means the tool adds NEW records and does NOT
+ * overwrite or delete existing USER data. Bookkeeping writes do NOT count as
+ * overwrites: updatedAt touches, sequence/number counters, and cached
+ * projection rows of data held in another app. Status, stage, version,
+ * selection and content changes DO count as overwrites.
+ *
+ * Every name below was read handler-by-handler (one line per tool in REPORT.md):
  *
  *   create_quote          quotes.service.ts create_quote: `tx.quote.create` — a new row
  *   add_quote_section     add_quote_section: `tx.quoteSection.create`
@@ -28,21 +34,28 @@ export interface ToolAnnotations {
  *   create_customer_invoice
  *                        customers.service.ts createInvoiceForUser: AO `create_invoice` call
  *                        (new invoice; idempotent on the same ref) + a local link row
- *   record_quote_acceptance
- *                        quotes-lifecycle.service.ts recordAcceptance: append-only event rows,
- *                        a version's accepted* fields, quote status → accepted (a one-way
- *                        terminal transition), the customer → CUSTOMER stage
- *   record_customer_engagement
- *                        customers.service.ts recordEngagementForUser: activity rows + a
- *                        one-step FORWARD stage advance only (the funnel never moves backward)
  *   add_customer_note     addNoteForUser: appends one activity row
- *   add_quote_line / record_*: never overwrite or delete an existing row.
  *
- * EVERY other write:* tool is destructive by default: update_* / set_* /
- * transition_* / mark_* / supersede_* / revoke_* / discard_* /
- * remove_quote_line / resolve_pending_leads (its provisional-merge path
- * DELETEs the provisional customer row) etc. — each overwrites or removes
- * existing data (one line per tool in REPORT.md).
+ * Removed in F3-CUO-3 (they DO overwrite existing USER data — status, stage,
+ * version, selection changes):
+ *   record_quote_acceptance
+ *                        quotes-lifecycle.service.ts:892-913 — updates the
+ *                        current quoteVersion (acceptedSnapshot / acceptedAt /
+ *                        acceptedBy / disposition → 'accepted'), the quote's
+ *                        status → 'accepted' (a status change), the selected
+ *                        option-group quoteLines (a selection change) and the
+ *                        customer's stage → 'CUSTOMER' (a stage change)
+ *   record_customer_engagement
+ *                        customers.service.ts:1799-1820 — on an advancing
+ *                        signal, overwrites the customer's stage and stamps
+ *                        lastStageChangeAt (a stage change, not bookkeeping)
+ *
+ * EVERY other write:* tool is destructive: update_* / set_* / transition_* /
+ * mark_* / supersede_* / revoke_* / discard_* / remove_quote_line /
+ * record_quote_acceptance / record_customer_engagement /
+ * resolve_pending_leads (its provisional-merge path DELETEs the provisional
+ * customer row) etc. — each overwrites or removes existing data (one line per
+ * tool in REPORT.md).
  */
 export const ADDITIVE_WRITE_TOOLS: ReadonlySet<string> = new Set([
   'create_quote',
@@ -51,8 +64,6 @@ export const ADDITIVE_WRITE_TOOLS: ReadonlySet<string> = new Set([
   'add_quote_cost',
   'add_quote_attachment',
   'create_customer_invoice',
-  'record_quote_acceptance',
-  'record_customer_engagement',
   'add_customer_note',
 ]);
 
@@ -78,10 +89,14 @@ export const ADDITIVE_WRITE_TOOLS: ReadonlySet<string> = new Set([
  *   ingest_lead           lead-intake.service.ts ingestForUser → resolveOne:
  *                        `contactOps.upsertContact` — identity CENTRALIZES in Contact-Ops
  *                        (the person SoR) before the local LEAD projection is written
- *
- * resolve_pending_leads also calls `contactOps.upsertContact`, but it is the
- * RECONCILER for rows ingest_lead already staged (it resolves intakes the same
- * path landed, it sends nothing new) — it is NOT listed here.
+ *   resolve_pending_leads
+ *                        lead-intake.service.ts resolvePending: Pass A runs
+ *                        resolveOne → `contactOps.upsertContact` (line 310) for
+ *                        every pending intake, and Pass B upgradeProvisional →
+ *                        `contactOps.upsertContact` (line 764) for every
+ *                        provisional — it pushes the intake's identity UP into
+ *                        Contact-Ops (the person SoR, another app), it does not
+ *                        only reconcile local rows (F3-CUO-3b)
  */
 export const OPEN_WORLD_TOOLS: ReadonlySet<string> = new Set([
   'send_quote',
@@ -90,6 +105,7 @@ export const OPEN_WORLD_TOOLS: ReadonlySet<string> = new Set([
   'create_customer_invoice',
   'record_quote_acceptance',
   'ingest_lead',
+  'resolve_pending_leads',
 ]);
 
 /**

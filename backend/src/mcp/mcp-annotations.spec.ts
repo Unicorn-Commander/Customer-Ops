@@ -61,6 +61,30 @@ describe('mcpAnnotationsFor — pure cases', () => {
     });
   });
 
+  it('F3-CUO-3a: record_quote_acceptance is a DESTRUCTIVE write (quote version, status, selected lines, customer stage change)', () => {
+    expect(mcpAnnotationsFor('record_quote_acceptance', 'write:*')).toEqual({
+      readOnlyHint: false,
+      destructiveHint: true,
+      openWorldHint: true,
+    });
+  });
+
+  it('F3-CUO-3a: record_customer_engagement is a DESTRUCTIVE write (customer stage + lastStageChangeAt change)', () => {
+    expect(mcpAnnotationsFor('record_customer_engagement', 'write:*')).toEqual({
+      readOnlyHint: false,
+      destructiveHint: true,
+      openWorldHint: false,
+    });
+  });
+
+  it('F3-CUO-3b: resolve_pending_leads is open-world (pending + provisional passes upsert into Contact-Ops)', () => {
+    expect(mcpAnnotationsFor('resolve_pending_leads', 'write:*')).toEqual({
+      readOnlyHint: false,
+      destructiveHint: true,
+      openWorldHint: true,
+    });
+  });
+
   it('send_customer_email (sends mail to a person) is open-world + destructive (mode=send is the default)', () => {
     expect(mcpAnnotationsFor('send_customer_email', 'write:*')).toEqual({
       readOnlyHint: false,
@@ -267,11 +291,12 @@ describe('McpService — the FULL annotation surface (F3-CUO-2)', () => {
       'create_customer_invoice',
       'record_quote_acceptance',
       'ingest_lead',
+      'resolve_pending_leads', // F3-CUO-3b: pending + provisional passes upsert into Contact-Ops
     ]) {
       expect(of(n)?.openWorldHint).toBe(true);
       expect(of(n)?.readOnlyHint).toBe(false);
     }
-    // additive writes: they only add rows (REPORT.md) — never destructive.
+    // additive writes: they only add new records, no user-data overwrite (REPORT.md).
     for (const n of [
       'create_quote',
       'add_quote_section',
@@ -280,8 +305,6 @@ describe('McpService — the FULL annotation surface (F3-CUO-2)', () => {
       'add_quote_attachment',
       'add_customer_note',
       'create_customer_invoice',
-      'record_quote_acceptance',
-      'record_customer_engagement',
     ]) {
       expect(of(n)?.destructiveHint).toBe(false);
     }
@@ -302,6 +325,9 @@ describe('McpService — the FULL annotation surface (F3-CUO-2)', () => {
       'send_quote',
       'send_customer_email',
       'start_customer_campaign',
+      // F3-CUO-3a: no longer additive — status / stage / version / selection changes
+      'record_quote_acceptance',
+      'record_customer_engagement',
     ]) {
       expect(of(n)?.destructiveHint).toBe(true);
     }
