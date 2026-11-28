@@ -164,6 +164,48 @@ describe('JwtStrategy human realm bearer forwarding', () => {
     expect(auth.validateJwtPayload).toHaveBeenCalledWith(payload, 'fixture-human-bearer');
   });
 
+  it('forwards a NO-email human realm bearer (PO-CONN: the service may resolve it via userinfo)', async () => {
+    const { strategy, auth } = makeStrategy();
+    // Exactly the token a web connector forwards that today resolves to "no
+    // email" and 401s with invalid_token (the sign-in loop): a realm human
+    // session with no email claim, no act/client_id. The strategy must forward
+    // the raw bearer so the service can resolve it through the realm userinfo
+    // endpoint instead of 401ing it.
+    const payload = {
+      sub: 'kc-noemail',
+      iss: 'https://auth.example.test/realms/uchub',
+      aud: 'customer-ops',
+      // no email, no email_verified, no act/client_id
+    };
+
+    await strategy.validate(
+      { headers: { authorization: 'Bearer fixture-noemail-bearer' } } as any,
+      payload,
+    );
+
+    expect(auth.validateJwtPayload).toHaveBeenCalledWith(payload, 'fixture-noemail-bearer');
+  });
+
+  it('does not forward a no-email bearer that carries a machine or delegation shape', async () => {
+    const { strategy, auth } = makeStrategy();
+    const human = {
+      sub: 'kc-human',
+      iss: 'https://auth.example.test/realms/uchub',
+      aud: 'customer-ops',
+      email: 'human@lantern-harbor.example',
+      email_verified: true,
+    };
+    const machine = { ...human, email: undefined, email_verified: undefined, act: { sub: 'x' } };
+
+    await strategy.validate(
+      { headers: { authorization: 'Bearer fixture-machine-bearer' } } as any,
+      machine,
+    );
+
+    // A machine/delegation token is never forwarded for userinfo resolution.
+    expect(auth.validateJwtPayload).toHaveBeenLastCalledWith(machine);
+  });
+
   it('does not forward PAT-shaped or federation bearers', async () => {
     const { strategy, auth } = makeStrategy();
     const human = {
