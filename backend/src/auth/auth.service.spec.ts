@@ -689,5 +689,28 @@ describe('AuthService.validateKeycloakUser — signup modes', () => {
       expect(error.getResponse().message).toMatch(/no Customer-Ops access/);
       expect(fetcher).toHaveBeenCalledTimes(1);
     });
+
+    it('verified human but userinfo carries NO email -> 403 (verified-no-access, not 401)', async () => {
+      // H2/H3: the 403 is reserved for a bearer the realm has VERIFIED as a
+      // human identity (sub matched, profile fetched) that the existing gate
+      // still rejects. A verified profile with no email is exactly that: a
+      // 403 "signed in, no access" — not the 401 that would loop a connector
+      // into sign-in, and not a transient 5xx answer either.
+      const restore = guardRealFetch();
+      noEmailConfig();
+      const fetcher = jest
+        .spyOn(global, 'fetch')
+        .mockResolvedValue(
+          userinfoResponse({ sub: 'kc-noemail-noemail', email: undefined }),
+        );
+      const { svc, prisma } = makeService();
+
+      await expect(
+        svc.validateJwtPayload(noEmailPayload('kc-noemail-noemail'), 'bearer-noemail'),
+      ).rejects.toMatchObject({ status: 403, response: { error: 'no_workspace_access' } });
+      restore();
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(prisma.user.create).not.toHaveBeenCalled();
+    });
   });
 });

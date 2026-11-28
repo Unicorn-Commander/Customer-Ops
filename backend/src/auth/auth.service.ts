@@ -211,7 +211,15 @@ export class AuthService {
     // realm HUMAN-session token, `sub` not already linked, no email claim) —
     // with the flag off the JWT path skips the resolver entirely and this
     // method's behavior is byte-for-byte today's (no 401→403 change).
+    // The resolver must run exactly ONCE per request: a verified profile that
+    // carries no email re-enters this method flagged (see below) to hit the
+    // gate, and that re-entry must NOT re-resolve (it would re-fetch forever —
+    // the sub is never linked, so the guard (a) link check never short-circuits
+    // and the profile is never cached). The marker is a per-call argument,
+    // never per-request state on this singleton.
+    const alreadyResolved = (profile as { __poConnResolved?: unknown })?.__poConnResolved === true;
     const userinfoArmed =
+      !alreadyResolved &&
       typeof forwardedAccessToken === 'string' &&
       userinfoFetchEnabled() &&
       typeof userinfoToken?.iss === 'string' &&
@@ -224,8 +232,9 @@ export class AuthService {
       );
       // Transient/unverifiable (5xx, timeout, transport, non-JSON, sub
       // mismatch): NOT an admission verdict. A 403 here would tell a web
-      // connector to stop retrying sign-in, and the verdict is cached up to
-      // 900 s — so a 3 s Keycloak blip would stick. Keep today's 401.
+      // connector to stop retrying sign-in, and a cached verdict would stick —
+      // so a 3 s Keycloak blip would read as "no account" for the session.
+      // Keep today's 401 so the connector keeps retrying sign-in.
       if (outcome.outcome !== 'profile') {
         this.logger.warn(
           `Realm userinfo unresolved for ${keycloakId} (${outcome.outcome}); keeping the 401 sign-in answer`,
@@ -234,21 +243,24 @@ export class AuthService {
       }
       const userinfo = outcome.profile!;
       if (userinfo.email) {
+        // A resolved email: feed it through the normal access-list + create
+        // path (the re-entry now has an email, so the resolver is a no-op).
         return this.validateKeycloakUser(
           keycloakId,
-          { ...profile, ...userinfo },
+          { ...profile, ...userinfo, __poConnResolved: true },
           forwardedAccessToken,
           options,
           userinfoToken,
         );
       }
-      // The realm VERIFIED this bearer as a human identity (sub matched the
-      // token, profile fetched) but the existing gate below will still reject
-      // it (no email to key on, or no access). That is the 403 "signed in, no
-      // access" answer — never the 401 that loops a connector into sign-in.
+      // The realm VERIFIED this bearer as a human identity (sub matched,
+      // profile fetched) but it carries no email, so the gate below will still
+      // reject it. That is the 403 "signed in, no access" answer — never the
+      // 401 that would loop a connector into sign-in. The marker stops the
+      // resolver from re-running on the re-entry.
       return this.validateKeycloakUser(
         keycloakId,
-        { ...profile, __poConnVerified: true },
+        { ...profile, __poConnResolved: true, __poConnVerified: true },
         forwardedAccessToken,
         options,
         userinfoToken,
