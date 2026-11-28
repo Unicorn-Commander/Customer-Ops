@@ -109,24 +109,41 @@ export const OPEN_WORLD_TOOLS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * F3-CUO-2c — the run:agents relationship agents. Their handlers (read
- * agent-by-agent, REPORT.md) all log ONE CustomerActivity(AGENT_RUN) row (a
- * DB write) and, for the two drafters with `stage_draft=true`, stage the draft
- * into the Email-Ops agent inbox via `sendEmailForUser` (mode='draft',
- * hardcoded — a draft-only write). None is pure text, so none is read-only.
- * None overwrites or deletes existing data (append-only rows + the draft
- * staging), so none is destructive. Inference runs through OUR OWN gateway
- * (AgentInferenceClient → AGENT_INFERENCE_BASE_URL / ORG_GATEWAY_BASE_URL,
- * the suite's 4-lane inference — not a third-party LLM), and the staged
- * drafts await a human approval before they leave the workspace, so none is
- * open-world.
+ * F3-CUO-2c / F3-CUO-4 — the run:agents relationship agents. Their handlers
+ * (read agent-by-agent, REPORT.md) all log ONE CustomerActivity(AGENT_RUN) row
+ * (a DB write) and, for the two drafters with `stage_draft=true`, stage the
+ * draft into the Email-Ops agent inbox via
+ * `CustomersService.sendEmailForUser` → Email-Ops `composeEmail` (mode='draft',
+ * hardcoded — a draft-only write that is STILL a cross-app write: the row is
+ * created in ANOTHER app's database, F3-CUO-4). None is pure text, so none is
+ * read-only. None overwrites or deletes existing data (append-only rows + the
+ * draft staging), so none is destructive. Inference runs through OUR OWN
+ * gateway (AgentInferenceClient → AGENT_INFERENCE_BASE_URL /
+ * ORG_GATEWAY_BASE_URL, the suite's 4-lane inference — not a third-party LLM).
  *
  *   triage_customer              assessment only — no draft, no stage_draft arg
- *   draft_followup               draft + optional Email-Ops agent-inbox staging (mode='draft')
- *   draft_collections_nudge      draft + optional Email-Ops agent-inbox staging (mode='draft')
+ *                                — closed-world (F3-CUO-4)
+ *   draft_followup               draft + optional Email-Ops agent-inbox staging
+ *                                (sendEmailForUser → composeEmail,
+ *                                follow-up-drafter.agent.ts:185-202)
+ *                                — open-world (F3-CUO-4)
+ *   draft_collections_nudge      draft + optional Email-Ops agent-inbox staging
+ *                                (sendEmailForUser → composeEmail,
+ *                                collections-nudge.agent.ts:177-195)
+ *                                — open-world (F3-CUO-4)
  */
 export const AGENT_WRITE_TOOLS: ReadonlySet<string> = new Set([
   'triage_customer',
+  'draft_followup',
+  'draft_collections_nudge',
+]);
+
+/**
+ * F3-CUO-4 — the run:agents tools that stage a draft into Email-Ops' database
+ * via `sendEmailForUser` → `composeEmail` (a cross-app write). openWorldHint
+ * true. Both stay non-destructive (append-only staging + AGENT_RUN log row).
+ */
+export const AGENT_OPEN_WORLD_TOOLS: ReadonlySet<string> = new Set([
   'draft_followup',
   'draft_collections_nudge',
 ]);
@@ -150,7 +167,10 @@ export const AGENT_WRITE_TOOLS: ReadonlySet<string> = new Set([
  *   - a `run:agents` tool        → non-destructive write: the agents log an
  *                                  AGENT_RUN row (and the drafters optionally
  *                                  stage a draft) but never overwrite/delete —
- *                                  see AGENT_WRITE_TOOLS
+ *                                  see AGENT_WRITE_TOOLS; openWorld when the
+ *                                  tool is in AGENT_OPEN_WORLD_TOOLS (F3-CUO-4:
+ *                                  it stages a draft into Email-Ops' database
+ *                                  via sendEmailForUser → composeEmail)
  *   - a tool in MCP_TOOL_NO_SCOPE (health, list_my_workspaces) → read-only
  *   - anything else (no scope)   → undefined: do not guess. A tool that is
  *                                  neither mapped nor scope-exempt must never
@@ -182,7 +202,14 @@ export function mcpAnnotationsFor(
     };
   } else if (scope === 'run:agents') {
     if (!AGENT_WRITE_TOOLS.has(name)) return undefined; // fail closed: a new agent is audited before it ships
-    annotations = { readOnlyHint: false, destructiveHint: false, openWorldHint: false };
+    annotations = {
+      readOnlyHint: false,
+      destructiveHint: false,
+      // F3-CUO-4: the drafters stage the draft into Email-Ops' database
+      // (sendEmailForUser → composeEmail) when stage_draft=true — a cross-app
+      // write, so open-world. triage_customer stays closed-world.
+      openWorldHint: AGENT_OPEN_WORLD_TOOLS.has(name),
+    };
   } else {
     return undefined;
   }

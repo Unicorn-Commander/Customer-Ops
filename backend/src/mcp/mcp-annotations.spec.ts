@@ -3,6 +3,7 @@ import { MCP_TOOL_NO_SCOPE, MCP_TOOL_SCOPE_MAP } from '../auth/pat/pat.constants
 import { McpService } from './mcp.service';
 import {
   ADDITIVE_WRITE_TOOLS,
+  AGENT_OPEN_WORLD_TOOLS,
   AGENT_WRITE_TOOLS,
   mcpAnnotationsFor,
   OPEN_WORLD_TOOLS,
@@ -101,21 +102,27 @@ describe('mcpAnnotationsFor — pure cases', () => {
     });
   });
 
-  it('a run:agents tool (logs an AGENT_RUN row; the drafters may stage a draft) is a non-destructive write', () => {
+  it('F3-CUO-4: triage_customer (assessment only, no cross-app staging) is a closed-world non-destructive write', () => {
     expect(mcpAnnotationsFor('triage_customer', 'run:agents')).toEqual({
       readOnlyHint: false,
       destructiveHint: false,
       openWorldHint: false,
     });
+  });
+
+  it('F3-CUO-4: draft_followup (stages a draft into Email-Ops when stage_draft=true) is a non-destructive OPEN-WORLD write', () => {
     expect(mcpAnnotationsFor('draft_followup', 'run:agents')).toEqual({
       readOnlyHint: false,
       destructiveHint: false,
-      openWorldHint: false,
+      openWorldHint: true,
     });
+  });
+
+  it('F3-CUO-4: draft_collections_nudge (stages a draft into Email-Ops when stage_draft=true) is a non-destructive OPEN-WORLD write', () => {
     expect(mcpAnnotationsFor('draft_collections_nudge', 'run:agents')).toEqual({
       readOnlyHint: false,
       destructiveHint: false,
-      openWorldHint: false,
+      openWorldHint: true,
     });
   });
 
@@ -265,7 +272,14 @@ describe('McpService — the FULL annotation surface (F3-CUO-2)', () => {
         });
       } else if (scope === 'run:agents') {
         agents += 1;
-        expect(a).toEqual({ readOnlyHint: false, destructiveHint: false, openWorldHint: false });
+        // F3-CUO-4: the two drafters stage into Email-Ops (open-world),
+        // triage_customer stays closed-world; all three are non-destructive
+        // writes (AGENT_RUN log row + append-only draft staging).
+        expect(a).toEqual({
+          readOnlyHint: false,
+          destructiveHint: false,
+          openWorldHint: AGENT_OPEN_WORLD_TOOLS.has(name),
+        });
       } else {
         throw new Error(`registered tool "${name}" has no scope mapping — cannot annotate it`);
       }
@@ -331,19 +345,35 @@ describe('McpService — the FULL annotation surface (F3-CUO-2)', () => {
     ]) {
       expect(of(n)?.destructiveHint).toBe(true);
     }
-    // the run:agents tools: non-destructive writes, closed-world.
-    for (const n of ['triage_customer', 'draft_followup', 'draft_collections_nudge']) {
-      expect(of(n)).toEqual({ readOnlyHint: false, destructiveHint: false, openWorldHint: false });
-    }
+    // the run:agents tools: non-destructive writes (F3-CUO-4).
+    // triage_customer: closed-world (assessment only, no cross-app staging).
+    expect(of('triage_customer')).toEqual({
+      readOnlyHint: false,
+      destructiveHint: false,
+      openWorldHint: false,
+    });
+    // draft_followup / draft_collections_nudge: stage the draft into Email-Ops
+    // via sendEmailForUser → composeEmail when stage_draft=true — a cross-app
+    // write, so open-world; still non-destructive (append-only staging).
+    expect(of('draft_followup')).toEqual({
+      readOnlyHint: false,
+      destructiveHint: false,
+      openWorldHint: true,
+    });
+    expect(of('draft_collections_nudge')).toEqual({
+      readOnlyHint: false,
+      destructiveHint: false,
+      openWorldHint: true,
+    });
     // the scope-exempt tools: read-only.
     for (const n of ['health', 'list_my_workspaces']) {
       expect(of(n)).toEqual({ readOnlyHint: true, destructiveHint: false, openWorldHint: false });
     }
   });
 
-  it('every name in ADDITIVE_WRITE_TOOLS / OPEN_WORLD_TOOLS / AGENT_WRITE_TOOLS is a registered tool (a typo fails)', async () => {
+  it('every name in ADDITIVE_WRITE_TOOLS / OPEN_WORLD_TOOLS / AGENT_WRITE_TOOLS / AGENT_OPEN_WORLD_TOOLS is a registered tool (a typo fails)', async () => {
     const registered = await registeredTools();
-    for (const n of [...ADDITIVE_WRITE_TOOLS, ...OPEN_WORLD_TOOLS, ...AGENT_WRITE_TOOLS]) {
+    for (const n of [...ADDITIVE_WRITE_TOOLS, ...OPEN_WORLD_TOOLS, ...AGENT_WRITE_TOOLS, ...AGENT_OPEN_WORLD_TOOLS]) {
       expect({ set: n, registered: Boolean(registered[n]) }).toEqual({
         set: n,
         registered: true,
@@ -351,14 +381,16 @@ describe('McpService — the FULL annotation surface (F3-CUO-2)', () => {
       expect(MCP_TOOL_SCOPE_MAP[n]).toBeDefined();
     }
     // and the sets agree with the scope map: additive + open-world are write:* tools,
-    // the agent set is exactly the run:agents tools.
+    // the agent sets are exactly the run:agents tools (open-world ⊆ write).
     for (const n of [...ADDITIVE_WRITE_TOOLS, ...OPEN_WORLD_TOOLS]) {
       expect(MCP_TOOL_SCOPE_MAP[n]).toMatch(/^write:/);
     }
-    for (const n of AGENT_WRITE_TOOLS) expect(MCP_TOOL_SCOPE_MAP[n]).toBe('run:agents');
+    for (const n of [...AGENT_WRITE_TOOLS, ...AGENT_OPEN_WORLD_TOOLS])
+      expect(MCP_TOOL_SCOPE_MAP[n]).toBe('run:agents');
     const runAgentsInMap = Object.keys(MCP_TOOL_SCOPE_MAP).filter(
       (n) => MCP_TOOL_SCOPE_MAP[n] === 'run:agents',
     );
     expect(runAgentsInMap.sort()).toEqual([...AGENT_WRITE_TOOLS].sort());
+    for (const n of AGENT_OPEN_WORLD_TOOLS) expect(AGENT_WRITE_TOOLS.has(n)).toBe(true);
   });
 });
