@@ -17,7 +17,7 @@ import { MembershipService } from '../common/workspace/membership.service';
 import { ContactOpsLinkService } from '../contact-ops/contact-ops-link.service';
 import { customerOpsEntitlementsEnabled, resolveOrgEntitlement } from './org-entitlements.client';
 import {
-  UserinfoProfile,
+  UserinfoResolution,
   fetchRealmUserinfo,
   isUserinfoCandidate,
   userinfoFetchEnabled,
@@ -96,12 +96,6 @@ export interface KeycloakValidationOptions {
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
-  /**
-   * The raw realm bearer of the request being validated (set by the strategy
-   * before `validateJwtPayload`). Used ONLY for its sha256 digest as the
-   * userinfo cache key — never logged, never stored. Cleared per request.
-   */
-  private forwardedBearer?: string;
 
   constructor(
     private readonly jwtService: JwtService,
@@ -213,14 +207,33 @@ export class AuthService {
     // PO-CONN (step 3.5): a VERIFIED no-email realm human bearer may resolve
     // through the realm userinfo endpoint BEFORE the JIT branches, so the
     // resolved email flows through the normal access-list + create path. The
-    // resolver is a no-op (null) for everything except a trusted realm
-    // HUMAN-session token whose `sub` is not already linked and which carries
-    // no email claim — those are exactly the connector tokens that today 401'd
-    // with invalid_token, making a web connector re-run sign-in in a loop.
-    // Anything still not admitted below is a 403, never a 401.
-    if (!user && !email && userinfoToken) {
-      const userinfo = await this.resolveRealmUserinfo(keycloakId, profile, userinfoToken);
-      if (userinfo?.email) {
+    // resolver runs only when the userinfo fetch is armed (flag on + trusted
+    // realm HUMAN-session token, `sub` not already linked, no email claim) —
+    // with the flag off the JWT path skips the resolver entirely and this
+    // method's behavior is byte-for-byte today's (no 401→403 change).
+    const userinfoArmed =
+      typeof forwardedAccessToken === 'string' &&
+      userinfoFetchEnabled() &&
+      typeof userinfoToken?.iss === 'string' &&
+      userinfoToken.iss.trim() !== '';
+    if (userinfoArmed && !user && !email) {
+      const outcome = await this.resolveRealmUserinfo(
+        keycloakId,
+        forwardedAccessToken,
+        userinfoToken as { iss: string; exp?: number },
+      );
+      // Transient/unverifiable (5xx, timeout, transport, non-JSON, sub
+      // mismatch): NOT an admission verdict. A 403 here would tell a web
+      // connector to stop retrying sign-in, and the verdict is cached up to
+      // 900 s — so a 3 s Keycloak blip would stick. Keep today's 401.
+      if (outcome.outcome !== 'profile') {
+        this.logger.warn(
+          `Realm userinfo unresolved for ${keycloakId} (${outcome.outcome}); keeping the 401 sign-in answer`,
+        );
+        throw new UnauthorizedException('Invalid token');
+      }
+      const userinfo = outcome.profile!;
+      if (userinfo.email) {
         return this.validateKeycloakUser(
           keycloakId,
           { ...profile, ...userinfo },
@@ -229,6 +242,17 @@ export class AuthService {
           userinfoToken,
         );
       }
+      // The realm VERIFIED this bearer as a human identity (sub matched the
+      // token, profile fetched) but the existing gate below will still reject
+      // it (no email to key on, or no access). That is the 403 "signed in, no
+      // access" answer — never the 401 that loops a connector into sign-in.
+      return this.validateKeycloakUser(
+        keycloakId,
+        { ...profile, __poConnVerified: true },
+        forwardedAccessToken,
+        options,
+        userinfoToken,
+      );
     }
 
     // 4. JIT-provision. The access-list match ALWAYS wins first (unchanged in
@@ -287,12 +311,18 @@ export class AuthService {
         user = await this.provisionSelfServe(keycloakId, profile, email);
       } else {
         // Invite-only (default): a uchub account does not by itself grant access.
-        // A no-email bearer that reached here had the userinfo resolver
-        // attempted (step 3.5) and still did not yield an admitted email — a
-        // 403, never a 401, so a connector stops looping on sign-in.
-        this.logger.warn(`Rejected SSO JIT for ${email || '(no email)'} — ${access.reason}`);
+        // A no-email bearer that reached here had the userinfo resolver run
+        // (step 3.5) and the realm VERIFIED it as a human identity (`__poConnVerified`)
+        // that this gate still rejects — the 403, never a 401, so a connector
+        // stops looping on sign-in. Everything else (flag off, machine/
+        // delegation tokens, unverifiable bearers) keeps today's 401.
+        const verifiedHuman = profile?.__poConnVerified === true;
+        this.logger.warn(
+          `Rejected SSO JIT for ${email || '(no email)'} — ${access.reason}${verifiedHuman ? ' (verified realm identity)' : ''}`,
+        );
         if (email) throw new NoWorkspaceAccessException();
-        throw new ConnectorAdmissionException();
+        if (verifiedHuman) throw new ConnectorAdmissionException();
+        throw new UnauthorizedException('Invalid token');
       }
     }
 
@@ -344,30 +374,42 @@ export class AuthService {
    * userinfo endpoint. Runs ONLY on the forwarded-bearer path (a browser
    * callback always arrives with a profile) and ONLY for a trusted realm
    * HUMAN-session token whose `sub` is not already linked locally (guard (a)
-   * — an already-linked sub never triggers a fetch). Returns the merged
-   * profile fields (email, email_verified AND-ed with the same machine guard
-   * as the email-claim path, names, preferred_username) or null when the
-   * fetch is refused or unavailable — null keeps today's behavior exactly.
-   * The bearer is never logged; only its sha256 digest keys the cache.
+   * — an already-linked sub never triggers a fetch). Returns the resolution
+   * OUTCOME: `profile` carries the merged profile fields (email,
+   * email_verified AND-ed with the same machine guard as the email-claim
+   * path, names, preferred_username); `refused` is a deliberate refusal
+   * (untrusted issuer, machine shape, subject mismatch); `unavailable` is a
+   * transient transport failure — the caller maps those to 401, only a
+   * resolved profile that the gate rejects becomes the 403.
+   * The bearer is passed as a parameter (never stored on the singleton); it is
+   * never logged and only its sha256 digest (plus the sub) keys the cache.
    */
   private async resolveRealmUserinfo(
     keycloakId: string,
-    profile: any,
-    token?: { iss?: unknown; exp?: unknown },
-  ): Promise<UserinfoProfile | null> {
-    if (typeof token?.iss !== 'string' || token.iss.trim() === '') return null;
+    bearer: string,
+    token: { iss: string; exp?: number },
+  ): Promise<UserinfoResolution> {
+    const refused = (reason: string): UserinfoResolution => ({
+      outcome: 'refused',
+      profile: null,
+      reason,
+    });
+    // The bearer is the per-request input: an empty one resolves nothing
+    // (there is no credential to send, and no digest to key a cache entry on).
+    if (typeof bearer !== 'string' || bearer.trim() === '') return refused('empty bearer');
     // keycloakId is the verified JWT `sub` (payload.sub from the strategy); the
     // strategy's profile projection drops it, so use keycloakId directly.
-    if (typeof keycloakId !== 'string' || keycloakId.trim() === '') return null;
+    if (typeof keycloakId !== 'string' || keycloakId.trim() === '') return refused('empty subject');
     const iss = token.iss;
     const primary = AuthService.primaryRealmIssuer();
     const trusted = AuthService.trustedRealmIssuers();
-    if (trusted.size === 0 || !trusted.has(iss)) return null;
-    if (primary !== null && iss !== primary) return null;
-    if (!isUserinfoCandidate({ iss, sub: keycloakId }, [primary ?? ''])) return null;
+    if (trusted.size === 0 || !trusted.has(iss)) return refused('untrusted realm issuer');
+    if (primary !== null && iss !== primary) return refused('not the primary realm issuer');
+    if (!isUserinfoCandidate({ iss, sub: keycloakId }, [primary ?? '']))
+      return refused('not a realm human-session token');
     // Guard (a): an already-linked sub never triggers a fetch.
-    if (await this.prisma.user.findUnique({ where: { keycloakId } })) return null;
-    if (!userinfoFetchEnabled()) return null;
+    if (await this.prisma.user.findUnique({ where: { keycloakId } }))
+      return refused('subject already linked locally');
 
     const resolution = await fetchRealmUserinfo({
       trustedIssuers: [primary ?? ''],
@@ -375,9 +417,9 @@ export class AuthService {
       sub: keycloakId,
       exp: typeof token.exp === 'number' && Number.isFinite(token.exp) ? token.exp : undefined,
       cache: true,
-      bearer: this.forwardedBearer ?? '',
+      bearer,
     });
-    if (resolution.outcome !== 'profile' || !resolution.profile) return null;
+    if (resolution.outcome !== 'profile' || !resolution.profile) return resolution;
     const fetched = resolution.profile;
     // The same machine guard the email-claim path uses, AND-ed into
     // email_verified (guard (c)).
@@ -385,13 +427,17 @@ export class AuthService {
     const email =
       typeof fetched.email === 'string' && fetched.email.trim() !== '' ? fetched.email : undefined;
     return {
-      sub: fetched.sub,
-      email,
-      email_verified: !machine && fetched.email_verified === true && email !== undefined,
-      preferred_username:
-        typeof fetched.preferred_username === 'string' ? fetched.preferred_username : undefined,
-      given_name: typeof fetched.given_name === 'string' ? fetched.given_name : undefined,
-      family_name: typeof fetched.family_name === 'string' ? fetched.family_name : undefined,
+      outcome: 'profile',
+      profile: {
+        sub: fetched.sub,
+        email,
+        email_verified: !machine && fetched.email_verified === true && email !== undefined,
+        preferred_username:
+          typeof fetched.preferred_username === 'string' ? fetched.preferred_username : undefined,
+        given_name: typeof fetched.given_name === 'string' ? fetched.given_name : undefined,
+        family_name: typeof fetched.family_name === 'string' ? fetched.family_name : undefined,
+      },
+      reason: resolution.reason,
     };
   }
 
@@ -522,12 +568,6 @@ export class AuthService {
       typeof issuer === 'string' && AuthService.brigadeTrustedIssuers().includes(issuer);
 
     if (isKeycloakRealmToken || isBrigadeFederationToken) {
-      // PO-CONN: expose the raw realm bearer to the userinfo resolver (it uses
-      // only the sha256 digest as its cache key; it never logs the token).
-      this.forwardedBearer =
-        typeof forwardedAccessToken === 'string' && forwardedAccessToken.trim() !== ''
-          ? forwardedAccessToken
-          : undefined;
       // Brigade's transitional sub may be an email; surface it as the profile
       // email so the access-list + email-link path still resolves. Harmless for
       // Keycloak realm tokens (which DO emit email) and for the long-term

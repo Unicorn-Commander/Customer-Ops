@@ -273,13 +273,13 @@ describe('AuthService.validateKeycloakUser — signup modes', () => {
 
     it('rejects a verified token with NO email even in open mode (nothing to key on)', async () => {
       const { svc, provisioning } = makeService();
-      // PO-CONN: a no-email bearer with no local row now 403s with a structured
-      // no_workspace_access (never 401s with invalid_token, which loops a web
-      // connector into sign-in). The browser path (no forwarded bearer) hits
-      // the same gate and gets the same 403.
+      // No userinfo token is passed (the browser path has none): the resolver
+      // never runs, so this is TODAY's exact behavior — a 401, not the 403
+      // "signed in, no access" answer. The 403 only applies when the realm has
+      // VERIFIED a no-email human bearer via the userinfo endpoint (flag on).
       await expect(
         svc.validateKeycloakUser('kc-noemail', { sub: 'kc-noemail', preferred_username: 'x' }),
-      ).rejects.toMatchObject({ status: 403 });
+      ).rejects.toMatchObject({ status: 401 });
       expect(provisioning.provisionSelfServeUser).not.toHaveBeenCalled();
     });
   });
@@ -457,6 +457,62 @@ describe('AuthService.validateKeycloakUser — signup modes', () => {
       expect((user as any).__verifiedEmail).toBe('connector@magicunicorn.tech');
     });
 
+    it('C1: two different users in flight never cross-bind (no per-request state on the singleton)', async () => {
+      // The reviewer's repro: the bearer must be a per-request PARAMETER, never a
+      // field on the singleton AuthService. If it were a field, request B
+      // (the attacker) could read request A's (the victim's) bearer while A is
+      // suspended and — via the digest-only cache — resolve as the victim's
+      // profile, creating/linking the attacker's sub under the victim's email.
+      const restore = guardRealFetch();
+      noEmailConfig();
+      const fetcher = jest
+        .spyOn(global, 'fetch')
+        // Echo back the sub of whichever bearer is in flight (decode the
+        // Authorization header's sub by matching the known subs).
+        .mockImplementation(async (_url: any, init: any) => {
+          const bearer: string = init?.headers?.Authorization?.replace('Bearer ', '');
+          const sub = bearer === 'bearer-victim' ? 'sub-victim' : 'sub-attacker';
+          return userinfoResponse({ sub });
+        });
+      // A shared store: each findUnique returns the row for that sub, if any.
+      const store = new Map<string, any>();
+      const { svc, prisma } = makeService();
+      (prisma.user.findUnique as jest.Mock).mockImplementation(async ({ where }: any) =>
+        store.get(where.keycloakId) ?? null,
+      );
+      (prisma.user.create as jest.Mock).mockImplementation(async ({ data }: any) => {
+        const row = { id: 'local-' + data.keycloakId, isActive: true, ...data };
+        store.set(data.keycloakId, row);
+        return row;
+      });
+
+      const victimSub = 'sub-victim';
+      const attackerSub = 'sub-attacker';
+      // Both requests in flight at once (single event loop, so they interleave
+      // at awaits — exactly the window the C1 race needs).
+      const [victim, attacker] = await Promise.all([
+        svc.validateJwtPayload(noEmailPayload(victimSub), 'bearer-victim'),
+        svc.validateJwtPayload(noEmailPayload(attackerSub), 'bearer-attacker'),
+      ]);
+
+      restore();
+      // Each caller resolved THEIR OWN sub, with THEIR OWN bearer's profile.
+      expect(victim.keycloakId).toBe(victimSub);
+      expect(attacker.keycloakId).toBe(attackerSub);
+      // No cross-binding: the attacker was never created or linked under the
+      // victim's email, and the victim was never under the attacker's sub.
+      const created = (prisma.user.create as jest.Mock).mock.calls.map((c: any) => c[0].data);
+      expect(created.find((d: any) => d.keycloakId === attackerSub)?.email).toBe(
+        'connector@magicunicorn.tech',
+      );
+      expect(created.find((d: any) => d.keycloakId === victimSub)?.email).toBe(
+        'connector@magicunicorn.tech',
+      );
+      // Two distinct bearers -> two distinct fetches (no digest-only cache
+      // collapse across callers).
+      expect(fetcher).toHaveBeenCalledTimes(2);
+    });
+
     it('not entitled -> 403 no_workspace_access, never 401', async () => {
       const restore = guardRealFetch();
       noEmailConfig();
@@ -475,7 +531,7 @@ describe('AuthService.validateKeycloakUser — signup modes', () => {
       expect(fetcher).toHaveBeenCalledTimes(1);
     });
 
-    it('userinfo sub mismatch -> refused, 403, and no user created', async () => {
+    it('userinfo sub mismatch -> refused, 401 (an unverifiable identity is not a "no access" answer), no user created', async () => {
       const restore = guardRealFetch();
       noEmailConfig();
       const fetcher = jest.spyOn(global, 'fetch').mockResolvedValue(
@@ -483,15 +539,19 @@ describe('AuthService.validateKeycloakUser — signup modes', () => {
       );
       const { svc, prisma } = makeService();
 
+      // A subject mismatch means the realm could NOT verify this bearer's
+      // identity — that is "unverifiable", so it keeps the 401 (a 403 would
+      // tell a connector the identity is verified-but-forbidden, which it is
+      // not). No user is created or linked either way.
       await expect(
         svc.validateJwtPayload(noEmailPayload('kc-noemail-stranger'), 'bearer-mismatch'),
-      ).rejects.toMatchObject({ status: 403, response: { error: 'no_workspace_access' } });
+      ).rejects.toMatchObject({ status: 401 });
       restore();
       expect(fetcher).toHaveBeenCalledTimes(1);
       expect(prisma.user.create).not.toHaveBeenCalled();
     });
 
-    it('act/client_id token -> no fetch, no link (an unbound local user is not linked)', async () => {
+    it('act/client_id token -> no fetch, no link, 401 (machine tokens keep the 401 answer)', async () => {
       const restore = guardRealFetch();
       noEmailConfig();
       const fetcher = jest.spyOn(global, 'fetch');
@@ -507,18 +567,21 @@ describe('AuthService.validateKeycloakUser — signup modes', () => {
         where.keycloakId ? null : unbound,
       );
 
+      // A machine/delegated token with no email is NOT a verified human
+      // identity: it gets today's 401 (the 403 "signed in, no access" answer
+      // is reserved for a realm-VERIFIED human bearer the gate rejects).
       await expect(
         svc.validateJwtPayload(
           { ...noEmailPayload('kc-machine'), act: { sub: 'x' } },
           'bearer-machine',
         ),
-      ).rejects.toMatchObject({ status: 403 });
+      ).rejects.toMatchObject({ status: 401 });
       await expect(
         svc.validateJwtPayload(
           { ...noEmailPayload('kc-client'), client_id: 'svc' },
           'bearer-client',
         ),
-      ).rejects.toMatchObject({ status: 403 });
+      ).rejects.toMatchObject({ status: 401 });
       restore();
       expect(fetcher).not.toHaveBeenCalled();
       expect(prisma.user.updateMany).not.toHaveBeenCalled();
@@ -558,7 +621,7 @@ describe('AuthService.validateKeycloakUser — signup modes', () => {
       expect(fetcher).toHaveBeenCalledTimes(1);
     });
 
-    it('userinfo error -> today behavior: 403 no_workspace_access (not 401)', async () => {
+    it('userinfo 5xx -> transient, 401 (a blip is not a "no account" answer, and is not cached)', async () => {
       const restore = guardRealFetch();
       noEmailConfig();
       const fetcher = jest.spyOn(global, 'fetch').mockResolvedValue({
@@ -568,14 +631,22 @@ describe('AuthService.validateKeycloakUser — signup modes', () => {
       } as Response);
       const { svc } = makeService();
 
+      // A 5xx is TRANSIENT (outcome `unavailable`), not a verified "no access"
+      // verdict. Today's 401 is kept so a connector keeps retrying sign-in
+      // (and the negative is NOT cached, so a later healthy realm re-resolves).
       await expect(
         svc.validateJwtPayload(noEmailPayload('kc-noemail-stranger'), 'bearer-outage'),
-      ).rejects.toMatchObject({ status: 403, response: { error: 'no_workspace_access' } });
+      ).rejects.toMatchObject({ status: 401 });
+      // The second call with the SAME bearer re-fetches (the transient result
+      // was not cached) — proving a 3 s blip does not stick.
+      await expect(
+        svc.validateJwtPayload(noEmailPayload('kc-noemail-stranger'), 'bearer-outage'),
+      ).rejects.toMatchObject({ status: 401 });
       restore();
-      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(fetcher).toHaveBeenCalledTimes(2);
     });
 
-    it('flag off -> no fetch, same 403 body', async () => {
+    it('flag off -> no fetch, today behavior (401, not 403)', async () => {
       const restore = guardRealFetch();
       // No CUSTOMER_OPS_USERINFO_FETCH in beforeEach; set the realm config only.
       process.env.KEYCLOAK_URL = 'https://auth.example.test';
@@ -584,9 +655,12 @@ describe('AuthService.validateKeycloakUser — signup modes', () => {
       const fetcher = jest.spyOn(global, 'fetch');
       const { svc } = makeService();
 
+      // With the flag off the resolver is skipped entirely, so the no-email
+      // bearer keeps TODAY's exact answer (401 invalid_token). The 403 change
+      // applies only when the realm has verified the bearer via userinfo.
       await expect(
         svc.validateJwtPayload(noEmailPayload('kc-noemail-stranger'), 'bearer-off'),
-      ).rejects.toMatchObject({ status: 403, response: { error: 'no_workspace_access' } });
+      ).rejects.toMatchObject({ status: 401 });
       restore();
       expect(fetcher).not.toHaveBeenCalled();
     });

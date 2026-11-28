@@ -204,7 +204,11 @@ describe('auth/userinfo (PO-CONN realm userinfo client)', () => {
       expect(doFetch).toHaveBeenCalledTimes(2);
     });
 
-    it('caches negative (unavailable) results until exp', async () => {
+    it('does NOT cache transient (unavailable) results (a 3 s blip must not stick)', async () => {
+      // Caching an `unavailable` verdict would turn a transient Keycloak 5xx
+      // into a sticky "no access" answer for up to 900 s (the caller 403s on a
+      // cached verdict). So only `profile` results are cached: the second call
+      // re-fetches and can recover the moment the realm is healthy again.
       const restore = guard();
       const doFetch = jest.fn(async () => ({ ok: false, status: 503, json: async () => ({}) }));
       const first = await fetchRealmUserinfo(options({ fetchImpl: doFetch as any }));
@@ -212,7 +216,7 @@ describe('auth/userinfo (PO-CONN realm userinfo client)', () => {
       restore();
       expect(first).toMatchObject({ outcome: 'unavailable' });
       expect(second).toMatchObject({ outcome: 'unavailable' });
-      expect(doFetch).toHaveBeenCalledTimes(1);
+      expect(doFetch).toHaveBeenCalledTimes(2);
     });
 
     it('does not cache when the ttl is already <= 0 at exp', async () => {
@@ -308,7 +312,7 @@ describe('auth/userinfo (PO-CONN realm userinfo client)', () => {
       expect(quiet.warn).toHaveBeenCalled();
     });
 
-    it('degrades to unavailable on a non-JSON body (and caches the negative)', async () => {
+    it('degrades to unavailable on a non-JSON body (and does NOT cache it)', async () => {
       const restore = guard();
       const badJson = jest.fn(async () => ({ ok: true, status: 200, json: async () => { throw new Error('nope'); } }));
       const a = await fetchRealmUserinfo(options({ fetchImpl: badJson as any }));
@@ -316,7 +320,7 @@ describe('auth/userinfo (PO-CONN realm userinfo client)', () => {
       restore();
       expect(a).toMatchObject({ outcome: 'unavailable' });
       expect(b).toMatchObject({ outcome: 'unavailable' });
-      expect(badJson).toHaveBeenCalledTimes(1);
+      expect(badJson).toHaveBeenCalledTimes(2);
     });
 
     it('refuses a non-object body (no profile to merge)', async () => {

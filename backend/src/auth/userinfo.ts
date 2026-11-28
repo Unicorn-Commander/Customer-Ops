@@ -196,12 +196,34 @@ export async function fetchRealmUserinfo(options: UserinfoOptions): Promise<User
   }
 
   const nowMs = now();
-  const key = `userinfo:${bearerDigest(bearer)}`;
+  // The key binds BOTH the bearer digest and the verified sub: a cache entry
+  // is only ever returned for the request that fetched it (C1 — a bearer
+  // digest alone let a concurrent caller read another caller's entry).
+  const key = `userinfo:${bearerDigest(bearer)}:${sub}`;
   const shouldCache = options.cache === true && sub !== '';
   sweepCache(nowMs);
   if (shouldCache) {
     const cached = profileCache.get(key);
-    if (cached && cached.expiresAt > nowMs) return cached.resolution;
+    if (cached && cached.expiresAt > nowMs) {
+      const cachedSub =
+        typeof cached.resolution.profile?.sub === 'string' ? cached.resolution.profile.sub : '';
+      if (cachedSub === sub) {
+        // Same verified sub as the request that fetched this entry: return it
+        // as-is (only `profile` results are ever stored — see the insert below).
+        return cached.resolution;
+      }
+      // A different sub reached an entry keyed by this digest (only possible
+      // pre-fix, or via a shared-bearer path): never hand one caller another
+      // caller's profile. Treat it as a deliberate refusal, not a profile.
+      logger.warn(
+        `Realm userinfo refused: cached entry subject mismatch for a different caller (no bearer or email logged)`,
+      );
+      return {
+        outcome: 'refused',
+        profile: null,
+        reason: 'userinfo cache entry belongs to a different subject',
+      };
+    }
   }
 
   let outcome: UserinfoResolution['outcome'] = 'unavailable';
@@ -272,7 +294,12 @@ export async function fetchRealmUserinfo(options: UserinfoOptions): Promise<User
   }
 
   const resolution: UserinfoResolution = { outcome, profile, reason };
-  if (shouldCache && outcome !== 'refused') {
+  // Cache ONLY the `profile` outcome (a verified identity). `unavailable`
+  // (5xx / timeout / transport / non-JSON) is TRANSIENT — caching it would
+  // stick a 3 s Keycloak blip as a cached "no access" verdict for up to 900 s
+  // and make the caller 403 a caller that a healthy realm would admit.
+  // `refused` is deliberately not cached either (a sub mismatch must re-fetch).
+  if (shouldCache && outcome === 'profile' && profile) {
     const ttl = cacheTtlSeconds(options.exp, nowMs);
     if (ttl > 0) {
       evictOldest(nowMs);
